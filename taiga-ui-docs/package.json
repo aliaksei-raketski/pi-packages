@@ -1,0 +1,21 @@
+{
+  "name": "taiga-ui-docs",
+  "version": "0.1.0",
+  "description": "Pi package with a Taiga UI docs skill backed by a self-contained llms-full.txt helper script.",
+  "keywords": [
+    "pi-package",
+    "taiga-ui",
+    "agent-skills"
+  ],
+  "license": "Apache-2.0",
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "files": [
+    "skills",
+    "README.md",
+    "LICENSE"
+  ]
+}
