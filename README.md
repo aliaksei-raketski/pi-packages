@@ -53,6 +53,8 @@ Release PRs are generated automatically by:
 These release and publish workflows are triggered only after `CI` completes successfully on `main`, so a failed CI run does not start release or publishing.
 The publish workflow also short-circuits unless the latest `main` push changed both `.release-please-manifest.json` and at least one `packages/<package>/package.json`, to avoid running on non-release pushes.
 
+Release Please also needs a token that can create PRs from workflows. Configure a repository secret named `RELEASE_PLEASE_TOKEN` (a PAT or GitHub App token with repo + contents/pull request write). The workflow uses this token instead of `GITHUB_TOKEN`.
+
 When adding a new package, also update:
 
 - `release-please-config.json` with a new package entry (for example `packages/my-package` with `release-type: node`, `package-name`, and optional `changelog-path`).
