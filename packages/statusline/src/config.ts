@@ -45,7 +45,7 @@ export interface ConfigLoadContext {
 
 export const DEFAULT_STATUSLINE_CONFIG: StatuslineConfig = {
 	layout: [
-		["branch", "changes"],
+		["branch", "changes", "spacer", "project"],
 		["context", "cache", "cost", "spacer", "model", "thinking"],
 		["title"],
 		["cwd"],
@@ -53,9 +53,18 @@ export const DEFAULT_STATUSLINE_CONFIG: StatuslineConfig = {
 	separator: " • ",
 	separatorColor: "dim",
 	prefix: {
-		branch: "",
-		model: "🤖",
-		context: "ctx",
+		cwd: "⌂",
+		branch: "⎇",
+		project: "◯",
+		title: "✎",
+		model: "◉",
+		thinking: "◐",
+		changes: "±",
+		context: "◔",
+		tokens: "◈",
+		cache: "↻",
+		cost: "$",
+		statuses: "◍",
 	},
 	colors: {
 		cwd: "muted",

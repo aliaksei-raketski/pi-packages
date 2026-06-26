@@ -44,9 +44,18 @@ If no user config exists, statusline will create `~/.pi/statusline.json` with th
 	"separator": " • ",
 	"separatorColor": "dim",
 	"prefix": {
-		"branch": "",
-		"model": "🤖",
-		"context": "ctx"
+		"cwd": "⌂",
+		"branch": "⎇",
+		"project": "◯",
+		"title": "✎",
+		"model": "◉",
+		"thinking": "◐",
+		"changes": "±",
+		"context": "◔",
+		"tokens": "◈",
+		"cache": "↻",
+		"cost": "$",
+		"statuses": "◍"
 	},
 	"colors": {
 		"cwd": "muted",
