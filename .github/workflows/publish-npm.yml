@@ -8,6 +8,7 @@ on:
     paths:
       - angular-developer/**
       - taiga-ui-docs/**
+      - fast-mode/**
       - .github/workflows/publish-npm.yml
 
 permissions:
@@ -24,6 +25,7 @@ jobs:
         package:
           - angular-developer
           - taiga-ui-docs
+          - fast-mode
 
     steps:
       - name: Checkout

@@ -8,6 +8,7 @@ Monorepo for public npm-distributed [Pi](https://pi.dev) packages.
 | --- | --- | --- |
 | `angular-developer` | `@aliaksei-raketski/pi-angular-developer` | `pi install npm:@aliaksei-raketski/pi-angular-developer` |
 | `taiga-ui-docs` | `@aliaksei-raketski/pi-taiga-ui-docs` | `pi install npm:@aliaksei-raketski/pi-taiga-ui-docs` |
+| `fast-mode` | `@aliaksei-raketski/pi-fast-mode` | `pi install npm:@aliaksei-raketski/pi-fast-mode` |
 
 ## Development
 

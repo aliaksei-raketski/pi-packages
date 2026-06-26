@@ -4,7 +4,8 @@
   "description": "Monorepo for Pi packages published from nested workspaces.",
   "workspaces": [
     "angular-developer",
-    "taiga-ui-docs"
+    "taiga-ui-docs",
+    "fast-mode"
   ],
   "scripts": {
     "sync": "npm run sync --workspaces --if-present",
