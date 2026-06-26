@@ -4,7 +4,6 @@ node_modules/
 .pnp.js
 
 # Package manager artifacts generated locally
-package-lock.json
 pnpm-lock.yaml
 yarn.lock
 *.tgz

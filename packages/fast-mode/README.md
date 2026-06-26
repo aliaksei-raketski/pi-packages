@@ -22,6 +22,12 @@ pi install npm:@aliaksei-raketski/pi-fast-mode
 pi install -l npm:@aliaksei-raketski/pi-fast-mode
 ```
 
+Try locally from this repository:
+
+```bash
+pi -e ./packages/fast-mode
+```
+
 ## Behavior
 
 - Start Pi with fast mode enabled:

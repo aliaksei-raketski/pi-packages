@@ -1,14 +1,25 @@
 {
-  "name": "pi-packages",
-  "private": true,
-  "description": "Monorepo for Pi packages published from nested workspaces.",
-  "workspaces": [
-    "angular-developer",
-    "taiga-ui-docs",
-    "fast-mode"
-  ],
-  "scripts": {
-    "sync": "npm run sync --workspaces --if-present",
-    "pack:dry-run": "npm pack --workspaces --dry-run"
-  }
+	"name": "pi-packages",
+	"private": true,
+	"description": "Monorepo for Pi packages published from nested workspaces.",
+	"workspaces": [
+		"packages/*"
+	],
+	"scripts": {
+		"format": "biome format --write .",
+		"lint": "biome check .",
+		"typecheck": "tsc --noEmit",
+		"test": "node --import tsx --test \"packages/*/test/*.test.ts\"",
+		"check": "npm run lint && npm run typecheck && npm test && npm run pack:dry-run",
+		"sync": "npm run sync --workspaces --if-present",
+		"pack:dry-run": "npm pack --workspaces --dry-run",
+		"try:fast-mode": "pi -e ./packages/fast-mode"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.1",
+		"@earendil-works/pi-coding-agent": "^0.80.2",
+		"@types/node": "^22.10.0",
+		"tsx": "^4.19.2",
+		"typescript": "^5.6.3"
+	}
 }

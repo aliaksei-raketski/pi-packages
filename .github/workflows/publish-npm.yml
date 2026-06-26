@@ -6,9 +6,11 @@ on:
     branches:
       - main
     paths:
-      - angular-developer/**
-      - taiga-ui-docs/**
-      - fast-mode/**
+      - packages/**
+      - package.json
+      - package-lock.json
+      - tsconfig.json
+      - biome.json
       - .github/workflows/publish-npm.yml
 
 permissions:
@@ -17,15 +19,8 @@ permissions:
 
 jobs:
   publish:
-    name: Publish ${{ matrix.package }}
+    name: Publish unpublished workspace packages
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        package:
-          - angular-developer
-          - taiga-ui-docs
-          - fast-mode
 
     steps:
       - name: Checkout
@@ -36,35 +31,36 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          cache: npm
 
-      - name: Show publish toolchain
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify packages
+        run: npm run check
+
+      - name: Publish unpublished packages
+        env:
+          NPM_CONFIG_PROVENANCE: "true"
         run: |
-          node --version
-          npm --version
+          set -euo pipefail
 
-      - name: Read package metadata
-        id: metadata
-        working-directory: ${{ matrix.package }}
-        run: |
-          echo "name=$(node -p "require('./package.json').name")" >> "$GITHUB_OUTPUT"
-          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          for package_json in packages/*/package.json; do
+            package_dir="$(dirname "$package_json")"
+            package_name="$(node -p "require('./${package_json}').name")"
+            package_version="$(node -p "require('./${package_json}').version")"
+            package_private="$(node -p "Boolean(require('./${package_json}').private)")"
 
-      - name: Check whether version is already published
-        id: published
-        run: |
-          if npm view "${{ steps.metadata.outputs.name }}@${{ steps.metadata.outputs.version }}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "${{ steps.metadata.outputs.name }}@${{ steps.metadata.outputs.version }} is already published; skipping."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
+            if [ "$package_private" = "true" ]; then
+              echo "Skipping private package ${package_name}."
+              continue
+            fi
 
-      - name: Validate package contents
-        if: steps.published.outputs.exists != 'true'
-        working-directory: ${{ matrix.package }}
-        run: npm pack --dry-run
+            if npm view "${package_name}@${package_version}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+              echo "${package_name}@${package_version} is already published; skipping."
+              continue
+            fi
 
-      - name: Publish to npm
-        if: steps.published.outputs.exists != 'true'
-        working-directory: ${{ matrix.package }}
-        run: npm publish --access public
+            echo "Publishing ${package_name}@${package_version} from ${package_dir}..."
+            npm publish "${package_dir}" --access public
+          done
