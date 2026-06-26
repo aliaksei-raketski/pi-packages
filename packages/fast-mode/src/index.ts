@@ -54,6 +54,25 @@ function updateStatus(
 	ctx.ui.setStatus(FAST_STATUS_KEY, ctx.ui.theme.fg(status.color, status.text));
 }
 
+function toggleFastMode(pi: ExtensionAPI, ctx: ExtensionContext): void {
+	const state = getSessionState(ctx);
+	state.enabled = !state.enabled;
+	pi.appendEntry(FAST_STATE_CUSTOM_TYPE, createFastStateEntryData(state));
+
+	const modelStatus = syncFeatureState(toFastContext(ctx), state);
+	updateStatus(ctx, state, modelStatus);
+
+	ctx.ui.notify(`Fast mode is now ${state.enabled ? "on" : "off"}.`, "info");
+
+	if (state.enabled && !modelStatus.isSupported) {
+		const detail = modelStatus.reason ? ` (${modelStatus.reason})` : "";
+		ctx.ui.notify(
+			`Current model is not supported for fast mode${detail}. Fast mode will apply automatically once you switch to a supported model.`,
+			"warning",
+		);
+	}
+}
+
 export default function fastMode(pi: ExtensionAPI) {
 	pi.registerFlag(FAST_FLAG, {
 		description: "Start with fast mode enabled",
@@ -101,22 +120,14 @@ export default function fastMode(pi: ExtensionAPI) {
 				return;
 			}
 
-			const state = getSessionState(ctx);
-			state.enabled = !state.enabled;
-			pi.appendEntry(FAST_STATE_CUSTOM_TYPE, createFastStateEntryData(state));
+			toggleFastMode(pi, ctx);
+		},
+	});
 
-			const modelStatus = syncFeatureState(toFastContext(ctx), state);
-			updateStatus(ctx, state, modelStatus);
-
-			ctx.ui.notify(`Fast mode is now ${state.enabled ? "on" : "off"}.`, "info");
-
-			if (state.enabled && !modelStatus.isSupported) {
-				const detail = modelStatus.reason ? ` (${modelStatus.reason})` : "";
-				ctx.ui.notify(
-					`Current model is not supported for fast mode${detail}. Fast mode will apply automatically once you switch to a supported model.`,
-					"warning",
-				);
-			}
+	pi.registerShortcut("ctrl+f", {
+		description: "Toggle fast mode",
+		handler: async (ctx) => {
+			toggleFastMode(pi, ctx);
 		},
 	});
 }
