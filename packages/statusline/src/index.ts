@@ -7,6 +7,7 @@ import type {
 import { colorize, resolveColorValue } from "./colors.ts";
 import { collectStatusItems } from "./status-items.ts";
 import { loadStatuslineConfig, type StatuslineConfig } from "./config.ts";
+import { GitStatusCache, type GitStatusSource } from "./git-status.ts";
 import { renderLayoutLines } from "./layout.ts";
 
 interface FooterState {
@@ -31,11 +32,12 @@ function renderFooter(
 	theme: Theme,
 	footerData: ReadonlyFooterDataProvider,
 	config: StatuslineConfig,
+	gitStatusSource: GitStatusSource,
 	width: number,
 ): string[] {
 	const separator = colorize(config.separator, config.separatorColor, theme);
 	const requestedKeys = new Set(config.layout.flat().filter((token) => token !== "spacer"));
-	const items = collectStatusItems(ctx, pi, footerData, requestedKeys);
+	const items = collectStatusItems(ctx, pi, footerData, requestedKeys, gitStatusSource);
 
 	const tokenText = (key: string): string | undefined => {
 		const value = items.get(key);
@@ -68,6 +70,20 @@ export default function statusline(pi: ExtensionAPI) {
 		}
 
 		const config = configResult.config;
+		const requestedKeys = new Set(config.layout.flat().filter((token) => token !== "spacer"));
+		const includeGitStatus = shouldCollectGitItems(requestedKeys);
+		const includePullRequest = requestedKeys.has("pr");
+
+		const statusCache = includeGitStatus
+			? new GitStatusCache({
+					cwd: () => ctx.cwd,
+					includeGitStatus,
+					includePullRequest,
+					onChange: () => {
+						requestFooterRender(ctx);
+					},
+			  })
+			: undefined;
 
 		ctx.ui.setFooter((tui: { requestRender: () => void }, theme: Theme, footerData: ReadonlyFooterDataProvider) => {
 			const state: FooterState = {
@@ -80,6 +96,8 @@ export default function statusline(pi: ExtensionAPI) {
 			};
 
 			const offBranchChange = footerData.onBranchChange(() => {
+				statusCache?.invalidate();
+				void statusCache?.refresh();
 				state.requestRender();
 			});
 
@@ -87,11 +105,20 @@ export default function statusline(pi: ExtensionAPI) {
 
 			return {
 				render(width: number) {
-					return renderFooter(ctx, pi, theme, footerData, config, width);
+					return renderFooter(
+						ctx,
+						pi,
+						theme,
+						footerData,
+						config,
+						statusCache?.getGitInfo() ?? {},
+						width,
+					);
 				},
 				invalidate() {},
 				dispose() {
 					offBranchChange();
+					statusCache?.dispose();
 					state.dispose();
 				},
 			};
@@ -118,4 +145,8 @@ export default function statusline(pi: ExtensionAPI) {
 		}
 		ctx.ui.setFooter(undefined);
 	});
+}
+
+function shouldCollectGitItems(requestedKeys: Set<string>): boolean {
+	return requestedKeys.has("branch") || requestedKeys.has("changes") || requestedKeys.has("pr");
 }

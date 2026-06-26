@@ -17,7 +17,7 @@ pi install npm:@aliaksei-raketski/pi-statusline
 - Optional extension statuses from `ctx.ui.setStatus()`:
   - Use explicit `statuses` token to show all extension statuses.
   - Or reference any status key name directly in `layout` to show that extension status only.
-- Live updates for model, thinking level, branch, context, and session usage/cost.
+- Live updates for model, thinking level, branch, changes, PR, and session usage/cost.
 - Project-local config is loaded only when the project is trusted.
 
 ## Configuration
@@ -36,7 +36,7 @@ If no user config exists, statusline will create `~/.pi/statusline.json` with th
 ```json
 {
 	"layout": [
-		["branch", "changes"],
+		["branch", "changes", "pr", "spacer", "project"],
 		["context", "cache", "cost", "spacer", "model", "thinking"],
 		["title"],
 		["cwd"],
@@ -59,13 +59,14 @@ If no user config exists, statusline will create `~/.pi/statusline.json` with th
 		"cwd": "muted",
 		"branch": {
 			"clean": "success",
-			"dirty": "warning",
+			"dirty": "muted",
 			"default": "accent"
 		},
 		"title": "muted",
 		"project": "muted",
 		"model": "toolTitle",
 		"changes": "muted",
+		"pr": "muted",
 		"thinking": {
 			"off": "thinkingOff",
 			"minimal": "thinkingMinimal",
@@ -123,6 +124,7 @@ The `layout` array uses the following token names:
 - `thinking` — current thinking level from Pi: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
 - `branch` — current git branch from footer context. It is stateful: `clean` when working tree has no changes and `dirty` when there are staged/unstaged/untracked changes.
 - `changes` — git changes summary with counts: `!<conflicts> +<staged> ~<unstaged> ?<untracked> ↑<ahead> ↓<behind>` (only non-zero parts are shown; untracked files are counted per-file).
+- `pr` — current pull request number for current branch, shown as `PR #<number>` when `gh pr view` returns a number.
 - `title` — current session name (`ctx.sessionManager.getSessionName()`) if set.
 - `project` — project name from `package.json` when available, otherwise directory name.
 - `tokens` — total message tokens seen so far as `<input>↑ <output>↓`.

@@ -25,6 +25,44 @@ Run checks:
 npm run check
 ```
 
+The check includes a lockfile alignment validation (`npm ci --dry-run`).
+If it fails, fix lockfile alignment by running:
+
+```bash
+npm run lockfile:fix
+```
+
+## Releasing
+
+The repository uses **Release Please** with Conventional Commits. Merges to `main`
+that contain commit types like `feat:`/`fix:`/`feat!:` will create/update the
+release PR and generate changelogs under each package's `CHANGELOG.md`.
+
+Useful commit patterns:
+
+- `feat(scope): ...` -> minor
+- `fix(scope): ...` -> patch
+- `feat(scope)!: ...` / `fix(scope)!: ...` -> major
+
+Release PRs are generated automatically by:
+
+```bash
+.github/workflows/release-please.yml
+```
+
+These release and publish workflows are triggered only after `CI` completes successfully on `main`, so a failed CI run does not start release or publishing.
+The publish workflow also short-circuits unless the latest `main` push changed both `.release-please-manifest.json` and at least one `packages/<package>/package.json`, to avoid running on non-release pushes.
+
+When adding a new package, also update:
+
+- `release-please-config.json` with a new package entry (for example `packages/my-package` with `release-type: node`, `package-name`, and optional `changelog-path`).
+- `.release-please-manifest.json` with the current package version.
+- package metadata and `package-lock.json` alignment by running:
+
+```bash
+npm run lockfile:fix
+```
+
 Try extensions locally:
 
 ```bash

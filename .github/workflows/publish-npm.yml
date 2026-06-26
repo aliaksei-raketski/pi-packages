@@ -2,16 +2,11 @@ name: Publish npm packages
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - packages/**
-      - package.json
-      - package-lock.json
-      - tsconfig.json
-      - biome.json
-      - .github/workflows/publish-npm.yml
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
 
 permissions:
   contents: read
@@ -20,13 +15,42 @@ permissions:
 jobs:
   publish:
     name: Publish unpublished workspace packages
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Check if this push included a release candidate
+        id: release-check
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+
+          changed_files="$(git diff --name-only "HEAD~1" "HEAD")"
+          manifest_changed=false
+          package_json_changed=false
+
+          if printf '%s\n' "$changed_files" | grep -q '^\.release-please-manifest\.json$'; then
+            manifest_changed=true
+          fi
+
+          if printf '%s\n' "$changed_files" | grep -Eq '^packages/.+/package\.json$'; then
+            package_json_changed=true
+          fi
+
+          if [ "$manifest_changed" = true ] && [ "$package_json_changed" = true ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release candidate not detected (manifest changed: ${manifest_changed}, package.json changed: ${package_json_changed}); skipping publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup Node.js
+        if: github.event_name == 'workflow_dispatch' || steps.release-check.outputs.publish == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -34,12 +58,15 @@ jobs:
           cache: npm
 
       - name: Install dependencies
+        if: github.event_name == 'workflow_dispatch' || steps.release-check.outputs.publish == 'true'
         run: npm ci
 
       - name: Verify packages
+        if: github.event_name == 'workflow_dispatch' || steps.release-check.outputs.publish == 'true'
         run: npm run check
 
       - name: Publish unpublished packages
+        if: github.event_name == 'workflow_dispatch' || steps.release-check.outputs.publish == 'true'
         env:
           NPM_CONFIG_PROVENANCE: "true"
         run: |

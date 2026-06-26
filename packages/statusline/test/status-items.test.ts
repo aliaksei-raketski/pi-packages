@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { basename } from "node:path";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
 import test from "node:test";
 import type { ExtensionContext, ExtensionAPI, ReadonlyFooterDataProvider } from "@earendil-works/pi-coding-agent";
 import { collectStatusItems } from "../src/status-items.ts";
+import type { GitStatusSnapshot } from "../src/git-status.ts";
 
 function createContext(cwd: string): ExtensionContext {
 	return {
@@ -20,6 +20,19 @@ function createContext(cwd: string): ExtensionContext {
 	} as unknown as ExtensionContext;
 }
 
+function createGitStatus(status: Partial<GitStatusSnapshot>): GitStatusSnapshot {
+	return {
+		branch: undefined,
+		staged: 0,
+		unstaged: 0,
+		untracked: 0,
+		conflict: 0,
+		ahead: 0,
+		behind: 0,
+		...status,
+	};
+}
+
 const pi: ExtensionAPI = {
 	getThinkingLevel: () => "off",
 } as ExtensionAPI;
@@ -30,18 +43,6 @@ function createFooterProvider(overrides: Partial<ReadonlyFooterDataProvider>): R
 		getGitBranch: () => null,
 		...overrides,
 	} as ReadonlyFooterDataProvider;
-}
-
-function runGit(cwd: string, args: string[]): string {
-	const result = spawnSync("git", args, {
-		cwd,
-		encoding: "utf-8",
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-	if (result.status !== 0) {
-		throw new Error(result.stderr ?? "git command failed");
-	}
-	return result.stdout ?? "";
 }
 
 test("collectStatusItems only queries requested keys", () => {
@@ -66,7 +67,7 @@ test("collectStatusItems only queries requested keys", () => {
 test("collectStatusItems exposes extension statuses when explicitly requested", () => {
 	const ctx = createContext("/tmp");
 	const footerData = createFooterProvider({
-		getExtensionStatuses: () => new Map([["lsp", "ready"]]),
+		getExtensionStatuses: () => new Map([ ["lsp", "ready"] ]),
 	});
 
 	const items = collectStatusItems(ctx, pi, footerData, new Set(["statuses"]));
@@ -76,7 +77,7 @@ test("collectStatusItems exposes extension statuses when explicitly requested", 
 test("collectStatusItems exposes extension status keys by token", () => {
 	const ctx = createContext("/tmp");
 	const footerData = createFooterProvider({
-		getExtensionStatuses: () => new Map([["lsp", "ready"], ["build", "pass"]]),
+		getExtensionStatuses: () => new Map([ ["lsp", "ready"], ["build", "pass"] ]),
 	});
 
 	const items = collectStatusItems(ctx, pi, footerData, new Set(["cwd", "lsp", "build"]));
@@ -97,107 +98,127 @@ test("collectStatusItems formats context as percent/context-window", () => {
 });
 
 test("collectStatusItems marks branch as clean when git state is clean", () => {
-	const cwd = mkdtempSync(join(tmpdir(), "pi-statusline-branch-clean-"));
-	try {
-		runGit(cwd, ["init"]);
-
-		const ctx = createContext(cwd);
-		const items = collectStatusItems(
-			ctx,
-			pi,
-			createFooterProvider({
-				getGitBranch: () => "main",
+	const ctx = createContext("/tmp");
+	const items = collectStatusItems(
+		ctx,
+		pi,
+		createFooterProvider({
+			getGitBranch: () => "main",
+		}),
+		new Set(["branch"]),
+		{
+			gitStatus: createGitStatus({
+				branch: "main",
 			}),
-			new Set(["branch"]),
-		);
-		assert.equal(items.get("branch")?.state, "clean");
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
+		},
+	);
+	assert.equal(items.get("branch")?.state, "clean");
 });
 
 test("collectStatusItems marks branch as dirty when git state has changes", () => {
-	const cwd = mkdtempSync(join(tmpdir(), "pi-statusline-branch-dirty-"));
-	try {
-		runGit(cwd, ["init"]);
-		writeFileSync(join(cwd, "dirty.txt"), "dirty", "utf-8");
-
-		const ctx = createContext(cwd);
-		const items = collectStatusItems(
-			ctx,
-			pi,
-			createFooterProvider({
-				getGitBranch: () => "main",
+	const ctx = createContext("/tmp");
+	const items = collectStatusItems(
+		ctx,
+		pi,
+		createFooterProvider({
+			getGitBranch: () => "main",
+		}),
+		new Set(["branch"]),
+		{
+			gitStatus: createGitStatus({
+				branch: "main",
+				unstaged: 1,
 			}),
-			new Set(["branch"]),
-		);
-		assert.equal(items.get("branch")?.state, "dirty");
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
+		},
+	);
+	assert.equal(items.get("branch")?.state, "dirty");
+});
+
+test("collectStatusItems exposes pull request number as separate token", () => {
+	const ctx = createContext("/tmp");
+	const items = collectStatusItems(
+		ctx,
+		pi,
+		createFooterProvider({
+			getGitBranch: () => "main",
+		}),
+		new Set(["pr"]),
+		{
+			gitStatus: createGitStatus({
+				branch: "main",
+			}),
+			pullRequest: {
+				number: 123,
+			},
+		},
+	);
+	assert.equal(items.get("pr")?.text, "PR #123");
 });
 
 test("collectStatusItems uses package.json name for project", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-statusline-project-"));
-	writeFileSync(
-		join(cwd, "package.json"),
-		JSON.stringify({ name: "my-statusline-project" }),
-		"utf-8",
-	);
+	try {
+		writeFileSync(
+			join(cwd, "package.json"),
+			JSON.stringify({ name: "my-statusline-project" }),
+			"utf-8",
+		);
 
-	const ctx = createContext(cwd);
-	const items = collectStatusItems(ctx, pi, createFooterProvider({}), new Set(["project"]));
-	assert.equal(items.get("project")?.text, "my-statusline-project");
-	rmSync(cwd, { recursive: true, force: true });
+		const ctx = createContext(cwd);
+		const items = collectStatusItems(ctx, pi, createFooterProvider({}), new Set(["project"]));
+		assert.equal(items.get("project")?.text, "my-statusline-project");
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
 });
 
 test("collectStatusItems falls back to directory name for project", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-statusline-project-fallback-"));
-
-	const ctx = createContext(cwd);
-	const items = collectStatusItems(ctx, pi, createFooterProvider({}), new Set(["project"]));
-	assert.equal(items.get("project")?.text, basename(cwd));
-	rmSync(cwd, { recursive: true, force: true });
+	try {
+		const ctx = createContext(cwd);
+		const items = collectStatusItems(ctx, pi, createFooterProvider({}), new Set(["project"]));
+		assert.equal(items.get("project")?.text, basename(cwd));
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
 });
 
 test("collectStatusItems builds changes using git-style symbols", () => {
-	const cwd = mkdtempSync(join(tmpdir(), "pi-statusline-changes-"));
-	try {
-		runGit(cwd, ["init"]);
-		runGit(cwd, ["config", "user.name", "pi-statusline"]);
-		runGit(cwd, ["config", "user.email", "test@example.com"]);
-		writeFileSync(join(cwd, "a.txt"), "first\n", "utf-8");
-		runGit(cwd, ["add", "a.txt"]);
-		runGit(cwd, ["commit", "-m", "init"],);
-
-		writeFileSync(join(cwd, "a.txt"), "first\nsecond\n", "utf-8");
-		runGit(cwd, ["add", "a.txt"]);
-		writeFileSync(join(cwd, "a.txt"), "first\nsecond\nthird\n", "utf-8");
-		writeFileSync(join(cwd, "b.txt"), "new\n", "utf-8");
-
-		const ctx = createContext(cwd);
-		const items = collectStatusItems(ctx, pi, createFooterProvider({}), new Set(["changes"]));
-		assert.equal(items.get("changes")?.text, "+1 ~1 ?1");
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
+	const ctx = createContext("/tmp");
+	const items = collectStatusItems(
+		ctx,
+		pi,
+		createFooterProvider({
+			getGitBranch: () => "main",
+		}),
+		new Set(["changes"]),
+		{
+			gitStatus: createGitStatus({
+				branch: "main",
+				staged: 1,
+				unstaged: 1,
+				untracked: 1,
+			}),
+		},
+	);
+	assert.equal(items.get("changes")?.text, "+1 ~1 ?1");
 });
 
 test("collectStatusItems counts untracked files, including nested entries", () => {
-	const cwd = mkdtempSync(join(tmpdir(), "pi-statusline-changes-all-"));
-	try {
-		runGit(cwd, ["init"]);
-		runGit(cwd, ["config", "user.name", "pi-statusline"]);
-		runGit(cwd, ["config", "user.email", "test@example.com"]);
-
-		mkdirSync(join(cwd, "u"));
-		writeFileSync(join(cwd, "u", "a.txt"), "one\n", "utf-8");
-		writeFileSync(join(cwd, "u", "b.txt"), "two\n", "utf-8");
-
-		const ctx = createContext(cwd);
-		const items = collectStatusItems(ctx, pi, createFooterProvider({}), new Set(["changes"]));
-		assert.equal(items.get("changes")?.text, "?2");
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
+	const ctx = createContext("/tmp");
+	const items = collectStatusItems(
+		ctx,
+		pi,
+		createFooterProvider({
+			getGitBranch: () => "main",
+		}),
+		new Set(["changes"]),
+		{
+			gitStatus: createGitStatus({
+				branch: "main",
+				untracked: 2,
+			}),
+		},
+	);
+	assert.equal(items.get("changes")?.text, "?2");
 });

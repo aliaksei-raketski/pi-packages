@@ -45,7 +45,7 @@ export interface ConfigLoadContext {
 
 export const DEFAULT_STATUSLINE_CONFIG: StatuslineConfig = {
 	layout: [
-		["branch", "changes", "spacer", "project"],
+		["branch", "changes", "pr", "spacer", "project"],
 		["context", "cache", "cost", "spacer", "model", "thinking"],
 		["title"],
 		["cwd"],
@@ -68,7 +68,7 @@ export const DEFAULT_STATUSLINE_CONFIG: StatuslineConfig = {
 		cwd: "muted",
 		branch: {
 			clean: "success",
-			dirty: "warning",
+			dirty: "muted",
 			default: "accent",
 		},
 		title: "muted",
@@ -83,6 +83,7 @@ export const DEFAULT_STATUSLINE_CONFIG: StatuslineConfig = {
 			xhigh: "thinkingXhigh",
 		},
 		changes: "dim",
+		pr: "muted",
 		context: {
 			normal: "muted",
 			warning: "warning",

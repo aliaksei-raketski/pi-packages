@@ -66,9 +66,10 @@ export const THEME_DEFAULT_COLORS = {
 	cwd: "muted",
 	branch: {
 		clean: "success",
-		dirty: "warning",
+		dirty: "muted",
 		default: "accent",
 	},
+	pr: "muted",
 	title: "muted",
 	model: "toolTitle",
 	thinking: {

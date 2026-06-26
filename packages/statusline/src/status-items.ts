@@ -1,7 +1,13 @@
-import { existsSync, readFileSync } from "node:fs";
-import { relative, basename, join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { basename, join, relative } from "node:path";
 import type { ExtensionContext, ExtensionAPI, ReadonlyFooterDataProvider } from "@earendil-works/pi-coding-agent";
+import {
+	formatGitStatusChanges,
+	formatPullRequest,
+	isBranchDirty,
+	type GitStatusSnapshot,
+	type GitStatusSource,
+} from "./git-status.ts";
 
 export interface StatusValue {
 	text: string;
@@ -20,6 +26,7 @@ export type BuiltinStatusKey =
 	| "cache"
 	| "cost"
 	| "project"
+	| "pr"
 	| "statuses";
 
 const BUILTIN_STATUS_KEYS: Set<string> = new Set([
@@ -34,6 +41,7 @@ const BUILTIN_STATUS_KEYS: Set<string> = new Set([
 	"cache",
 	"cost",
 	"project",
+	"pr",
 	"statuses",
 ]);
 
@@ -48,6 +56,13 @@ interface UsageTotals {
 	cacheWrite: number;
 	cost: number;
 }
+
+interface ProjectNameCacheEntry {
+	name: string;
+	mtimeMs?: number;
+}
+
+const PROJECT_NAME_CACHE = new Map<string, ProjectNameCacheEntry>();
 
 function formatNumber(value: number): string {
 	if (value >= 1_000_000) {
@@ -85,20 +100,36 @@ function shortPath(cwd: string): string {
 function collectProjectValue(cwd: string): string {
 	const packagePath = join(cwd, "package.json");
 	if (!existsSync(packagePath)) {
+		PROJECT_NAME_CACHE.delete(cwd);
 		return basename(cwd);
 	}
 
+	let mtimeMs: number | undefined;
+	try {
+		mtimeMs = statSync(packagePath).mtimeMs;
+	} catch {
+		PROJECT_NAME_CACHE.delete(cwd);
+		return basename(cwd);
+	}
+
+	const cached = PROJECT_NAME_CACHE.get(cwd);
+	if (cached && cached.mtimeMs === mtimeMs) {
+		return cached.name;
+	}
+
+	let name = basename(cwd);
 	try {
 		const raw = readFileSync(packagePath, "utf-8");
 		const parsed = JSON.parse(raw) as { name?: unknown };
 		if (typeof parsed.name === "string" && parsed.name) {
-			return parsed.name;
+			name = parsed.name;
 		}
 	} catch {
-		return basename(cwd);
+		name = basename(cwd);
 	}
 
-	return basename(cwd);
+	PROJECT_NAME_CACHE.set(cwd, { name, mtimeMs });
+	return name;
 }
 
 function collectUsageTotals(ctx: ExtensionContext): UsageTotals {
@@ -141,108 +172,12 @@ function collectUsageTotals(ctx: ExtensionContext): UsageTotals {
 	return totals;
 }
 
-function parseAheadBehind(branchLine: string): { ahead: number; behind: number } {
-	const openBracket = branchLine.indexOf("[");
-	if (openBracket === -1) {
-		return { ahead: 0, behind: 0 };
-	}
-
-	const closeBracket = branchLine.indexOf("]", openBracket);
-	if (closeBracket === -1) {
-		return { ahead: 0, behind: 0 };
-	}
-
-	const summary = branchLine.slice(openBracket + 1, closeBracket);
-	const aheadMatch = /ahead (\d+)/.exec(summary);
-	const behindMatch = /behind (\d+)/.exec(summary);
-
-	return {
-		ahead: aheadMatch ? Number.parseInt(aheadMatch[1], 10) : 0,
-		behind: behindMatch ? Number.parseInt(behindMatch[1], 10) : 0,
-	};
+function collectChangesText(changes: GitStatusSnapshot | undefined): string | undefined {
+	return formatGitStatusChanges(changes);
 }
 
-function collectChangesValue(cwd: string): StatusValue | undefined {
-	const result = spawnSync("git", ["status", "--short", "--branch", "--untracked-files=all"], {
-		cwd,
-		encoding: "utf-8",
-		windowsHide: true,
-		timeout: 2000,
-		maxBuffer: 1024 * 1024,
-	});
-
-	if (result.error || result.status !== 0) {
-		return undefined;
-	}
-
-	const raw = result.stdout;
-	if (!raw) {
-		return undefined;
-	}
-
-	let staged = 0;
-	let unstaged = 0;
-	let untracked = 0;
-	let conflicts = 0;
-	let ahead = 0;
-	let behind = 0;
-
-	for (const line of raw.split(/\r?\n/)) {
-		if (!line) {
-			continue;
-		}
-
-		if (line.startsWith("## ")) {
-			const aheadBehind = parseAheadBehind(line);
-			ahead = aheadBehind.ahead;
-			behind = aheadBehind.behind;
-			continue;
-		}
-
-		if (line[0] === "?" && line[1] === "?") {
-			untracked += 1;
-			continue;
-		}
-
-		if (line[0] === "U" || line[1] === "U") {
-			conflicts += 1;
-			continue;
-		}
-
-		if (line[0] && line[0] !== " ") {
-			staged += 1;
-		}
-
-		if (line[1] && line[1] !== " ") {
-			unstaged += 1;
-		}
-	}
-
-	const parts: string[] = [];
-	if (conflicts > 0) {
-		parts.push(`!${conflicts}`);
-	}
-	if (staged > 0) {
-		parts.push(`+${staged}`);
-	}
-	if (unstaged > 0) {
-		parts.push(`~${unstaged}`);
-	}
-	if (untracked > 0) {
-		parts.push(`?${untracked}`);
-	}
-	if (ahead > 0) {
-		parts.push(`↑${ahead}`);
-	}
-	if (behind > 0) {
-		parts.push(`↓${behind}`);
-	}
-
-	if (parts.length === 0) {
-		return undefined;
-	}
-
-	return { text: parts.join(" ") };
+function resolveBranchChangesState(gitStatus: GitStatusSnapshot | undefined): "dirty" | "clean" {
+	return isBranchDirty(gitStatus) ? "dirty" : "clean";
 }
 
 function collectContextValue(ctx: ExtensionContext): StatusValue | undefined {
@@ -293,6 +228,7 @@ export function collectStatusItems(
 	pi: ExtensionAPI,
 	footerData: ReadonlyFooterDataProvider,
 	requestedKeys: Set<string> = new Set(),
+	gitStatusSource?: GitStatusSource,
 ): Map<string, StatusValue> {
 	const items = new Map<string, StatusValue>();
 	const should = (key: string): boolean => requestedKeys.size === 0 || requestedKeys.has(key);
@@ -301,13 +237,17 @@ export function collectStatusItems(
 		items.set("cwd", { text: shortPath(ctx.cwd) });
 	}
 
-	const includeChangesForBranch = should("branch") || should("changes");
-	const changesValueForBranch = includeChangesForBranch ? collectChangesValue(ctx.cwd) : undefined;
+	const includeChangesForBranch = should("branch") || should("changes") || should("pr");
+	const changesStatus = includeChangesForBranch ? gitStatusSource?.gitStatus : undefined;
+	const prValue = should("pr") ? formatPullRequest(gitStatusSource?.pullRequest) : undefined;
 
 	if (should("branch")) {
-		const branch = footerData.getGitBranch();
+		const branch = footerData.getGitBranch() || gitStatusSource?.gitStatus?.branch;
 		if (branch) {
-			items.set("branch", { text: branch, state: changesValueForBranch ? "dirty" : "clean" });
+			items.set("branch", {
+				text: branch,
+				state: resolveBranchChangesState(changesStatus),
+			});
 		}
 	}
 
@@ -329,8 +269,15 @@ export function collectStatusItems(
 		items.set("thinking", collectThinkingValue(pi));
 	}
 
-	if (should("changes") && changesValueForBranch) {
-		items.set("changes", changesValueForBranch);
+	if (should("changes")) {
+		const changesText = collectChangesText(changesStatus);
+		if (changesText) {
+			items.set("changes", { text: changesText });
+		}
+	}
+
+	if (should("pr") && prValue) {
+		items.set("pr", { text: prValue });
 	}
 
 	if (should("project")) {
@@ -356,7 +303,9 @@ export function collectStatusItems(
 		if (should("cache")) {
 			const totalCache = usageTotals.cacheRead + usageTotals.cacheWrite;
 			const cacheHitPercent = totalCache > 0 ? Math.round((usageTotals.cacheRead / totalCache) * 100) : 0;
-			items.set("cache", { text: `${formatNumber(usageTotals.cacheRead)}/${formatNumber(usageTotals.cacheWrite)} ${cacheHitPercent}%` });
+			items.set("cache", {
+				text: `${formatNumber(usageTotals.cacheRead)}/${formatNumber(usageTotals.cacheWrite)} ${cacheHitPercent}%`,
+			});
 		}
 
 		if (should("cost")) {
