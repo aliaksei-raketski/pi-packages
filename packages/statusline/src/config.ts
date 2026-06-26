@@ -54,16 +54,14 @@ export const DEFAULT_STATUSLINE_CONFIG: StatuslineConfig = {
 	separatorColor: "dim",
 	prefix: {
 		cwd: "⌂",
-		branch: "⎇",
+		branch: "↳",
 		project: "◯",
 		title: "✎",
 		model: "◉",
 		thinking: "◐",
-		changes: "±",
 		context: "◔",
 		tokens: "◈",
 		cache: "↻",
-		cost: "$",
 		statuses: "◍",
 	},
 	colors: {
