@@ -62,5 +62,5 @@ jobs:
             fi
 
             echo "Publishing ${package_name}@${package_version} from ${package_dir}..."
-            npm publish "${package_dir}" --access public
+            npm publish "./${package_dir}" --access public
           done
