@@ -44,6 +44,7 @@ Before handing off code changes, run `npm run check` when practical. If you cann
 - Add or update tests when changing executable TypeScript behavior.
 - If a package has a sync or generation script, prefer changing the source/overlay/script that produces generated content rather than hand-editing generated output. Run sync scripts only when you intend to refresh that content.
 - When adding a new workspace package, add the package under `packages/`, include the required package metadata/assets, and update the root `README.md` package table.
+- Use short, unprefixed workspace directory names under `packages/` (for example `packages/fast-mode`); publishable npm package names use the scoped `@aliaksei-raketski/pi-<workspace>` form (for example `@aliaksei-raketski/pi-fast-mode`).
 
 ## Pi package metadata
 
