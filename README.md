@@ -50,11 +50,11 @@ Release PRs are generated automatically by:
 .github/workflows/release-please.yml
 ```
 
-This workflow starts only after `CI` completes successfully on `main`, so a failed CI run does not start release automation. Release Please opens or updates release PRs on normal `main` pushes. When a release PR is merged, Release Please creates the GitHub releases and the same workflow publishes only the released package paths reported by Release Please.
+This workflow starts only after `CI` completes successfully on `main`, so a failed CI run does not start release automation. Release Please opens or updates release PRs on normal `main` pushes. When a release PR is merged, Release Please creates GitHub releases, then dispatches `.github/workflows/publish-npm.yml` with the exact released package paths.
 
-Release Please also needs a token that can create PRs from workflows. Configure a repository secret named `RELEASE_PLEASE_TOKEN` (a PAT or GitHub App token with repo + contents/pull request write). The workflow uses this token instead of `GITHUB_TOKEN`.
+Release Please needs a token that can create PRs from workflows. Configure a repository secret named `RELEASE_PLEASE_TOKEN` (a PAT or GitHub App token with repo + contents/pull request write). The workflow uses this token instead of `GITHUB_TOKEN`.
 
-`.github/workflows/publish-npm.yml` is kept as a manual fallback via `workflow_dispatch`; automatic publishing happens from the Release Please workflow.
+All npm publishing happens from `.github/workflows/publish-npm.yml` so npm trusted publishing only needs to authorize that workflow. Manual `workflow_dispatch` runs remain available as a fallback and publish all unpublished workspace versions unless `paths_released` is provided.
 
 When adding a new package, also update:
 

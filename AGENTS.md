@@ -64,6 +64,6 @@ Each published workspace must keep its `package.json` Pi metadata accurate:
 ## CI and publishing
 
 CI runs on Node.js 24 with `npm ci` followed by `npm run check`.
-Release Please runs after successful CI on `main`; when it creates GitHub releases after a release PR merge, the same workflow publishes only the released package paths reported by Release Please.
-The standalone npm publish workflow is a manual fallback and still runs the same verification before publishing unpublished workspace versions.
+Release Please runs after successful CI on `main`; when it creates GitHub releases after a release PR merge, it dispatches `.github/workflows/publish-npm.yml` with only the released package paths reported by Release Please.
+All npm publishing must happen from `.github/workflows/publish-npm.yml` because npm trusted publishing is authorized for that workflow. The workflow also supports manual `workflow_dispatch` fallback and still runs verification before publishing.
 When changing publishable package contents, use Conventional Commits so Release Please can determine the affected version bump.
