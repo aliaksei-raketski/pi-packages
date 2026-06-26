@@ -44,18 +44,12 @@ export interface ConfigLoadContext {
 }
 
 export const DEFAULT_STATUSLINE_CONFIG: StatuslineConfig = {
-	layout: [[
-		"cwd",
-		"model",
-		"thinking",
-		"branch",
-		"changes",
-		"title",
-		"tokens",
-		"context",
-		"cache",
-		"cost",
-	]],
+	layout: [
+		["branch", "changes"],
+		["context", "cache", "cost", "spacer", "model", "thinking"],
+		["title"],
+		["cwd"],
+	],
 	separator: " • ",
 	separatorColor: "dim",
 	prefix: {

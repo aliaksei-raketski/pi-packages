@@ -134,19 +134,20 @@ export function renderLayoutLine(
 	}
 
 	const segments = getLineSegments(layoutLine, itemText, separator);
+	const visibleSegments = segments.filter((segment) => visibleWidth(segment) > 0);
 
-	if (segments.length === 0) {
+	if (visibleSegments.length === 0) {
 		return "";
 	}
 
-	const spacerCount = Math.max(0, segments.length - 1);
-	const totalContentWidth = segments.reduce((sum, segment) => sum + visibleWidth(segment), 0);
+	const spacerCount = Math.max(0, visibleSegments.length - 1);
+	const totalContentWidth = visibleSegments.reduce((sum, segment) => sum + visibleWidth(segment), 0);
 	const remaining = width - totalContentWidth;
 	const spaces = allocateSpacing(remaining, spacerCount);
 
 	let rendered = "";
-	for (let i = 0; i < segments.length; i++) {
-		rendered += segments[i] ?? "";
+	for (let i = 0; i < visibleSegments.length; i++) {
+		rendered += visibleSegments[i] ?? "";
 		if (i < spaces.length) {
 			rendered += " ".repeat(Math.max(0, spaces[i] ?? 0));
 		}
@@ -173,6 +174,8 @@ export function renderLayoutLines(
 			.map((text) => truncateToWidth(text, width));
 	}
 
-	return layout.map((line) => renderLayoutLine(line, itemText, separator, width));
+	return layout
+		.map((line) => renderLayoutLine(line, itemText, separator, width))
+		.filter((line) => visibleWidth(line) > 0);
 }
 

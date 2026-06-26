@@ -35,7 +35,12 @@ If no user config exists, statusline will create `~/.pi/statusline.json` with th
 
 ```json
 {
-	"layout": ["cwd", "model", "thinking", "branch", "changes", "title", "tokens", "context", "cache", "cost"],
+	"layout": [
+		["branch", "changes"],
+		["context", "cache", "cost", "spacer", "model", "thinking"],
+		["title"],
+		["cwd"],
+	],
 	"separator": " • ",
 	"separatorColor": "dim",
 	"prefix": {
@@ -80,6 +85,7 @@ If no user config exists, statusline will create `~/.pi/statusline.json` with th
 A line can include the reserved token `spacer` to allocate flexible spacing. Note: `separator` is only inserted between tokens inside the same segment, so if you put `spacer` between every token, separators may not be visible.
 
 On narrow terminals, the renderer falls back to one item per line (ordered by layout), using all available width and without segment separators/spacers.
+Lines that render to no visible content are omitted automatically (for example an empty `title` line).
 
 Examples:
 

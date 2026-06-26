@@ -50,6 +50,37 @@ test("renders multiple layout rows", () => {
 	assert.equal(visibleWidth(rendered[0]), 20);
 });
 
+test("collapses empty-only lines", () => {
+	const values = new Map<string, string>([
+		["cwd", "shell"],
+		["model", "gpt"],
+	]);
+	const layout: StatuslineLayout = [["title"], ["cwd", "model"]];
+	const rendered = renderLayoutLines(layout, (key) => values.get(key), " • ", 80);
+	assert.deepEqual(rendered, ["shell • gpt"]);
+});
+
+test("collapses all-empty output into no rows", () => {
+	const layout: StatuslineLayout = [["title"], ["branch"]];
+	const rendered = renderLayoutLines(layout, () => undefined, " • ", 80);
+	assert.deepEqual(rendered, []);
+});
+
+test("drops empty leading segments in a line", () => {
+	const rendered = renderLayoutLine(
+		["branch", "changes", "spacer", "model"],
+		(token) => {
+			if (token === "model") {
+				return "gpt";
+			}
+			return undefined;
+		},
+		" • ",
+		20,
+	);
+	assert.equal(rendered, "gpt");
+});
+
 test("handles ANSI-coded values safely while truncating", () => {
 	const ansiValues = new Map<string, string>([
 		["cwd", "\x1b[31mvery-long-project-path\x1b[0m"],
