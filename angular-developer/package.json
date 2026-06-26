@@ -1,0 +1,23 @@
+{
+  "name": "angular-developer",
+  "keywords": [
+    "pi-package",
+    "angular",
+    "agent-skills"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "scripts": {
+    "sync": "node scripts/sync-angular-skill.mjs"
+  },
+  "files": [
+    "skills/",
+    "scripts/",
+    "overlays/",
+    "README.md",
+    "plan.md"
+  ]
+}
