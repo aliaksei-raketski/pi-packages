@@ -52,6 +52,7 @@ If no user config exists, statusline will create `~/.pi/statusline.json` with th
 		"cwd": "muted",
 		"branch": { "normal": "accent" },
 		"title": "muted",
+		"project": "muted",
 		"model": "toolTitle",
 		"changes": "muted",
 		"thinking": {
@@ -112,6 +113,7 @@ The `layout` array uses the following token names:
 - `branch` — current git branch from footer context.
 - `changes` — git changes summary with counts: `!<conflicts> +<staged> ~<unstaged> ?<untracked> ↑<ahead> ↓<behind>` (only non-zero parts are shown; untracked files are counted per-file).
 - `title` — current session name (`ctx.sessionManager.getSessionName()`) if set.
+- `project` — project name from `package.json` when available, otherwise directory name.
 - `tokens` — total message tokens seen so far as `<input>↑ <output>↓`.
 - `context` — context usage: `<percent>%/<contextWindow>` (for example `52.5%/128k`) and optional state (`normal`, `warning`, `full`) based on percent.
 - `cache` — cache usage: `<cacheRead>/<cacheWrite> <percent>%` using branch history assistant usage.

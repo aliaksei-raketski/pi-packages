@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { basename } from "node:path";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -93,6 +94,29 @@ test("collectStatusItems formats context as percent/context-window", () => {
 
 	const items = collectStatusItems(ctx, pi, createFooterProvider({}), new Set(["context"]));
 	assert.equal(items.get("context")?.text, "52.5%/128k");
+});
+
+test("collectStatusItems uses package.json name for project", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-statusline-project-"));
+	writeFileSync(
+		join(cwd, "package.json"),
+		JSON.stringify({ name: "my-statusline-project" }),
+		"utf-8",
+	);
+
+	const ctx = createContext(cwd);
+	const items = collectStatusItems(ctx, pi, createFooterProvider({}), new Set(["project"]));
+	assert.equal(items.get("project")?.text, "my-statusline-project");
+	rmSync(cwd, { recursive: true, force: true });
+});
+
+test("collectStatusItems falls back to directory name for project", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-statusline-project-fallback-"));
+
+	const ctx = createContext(cwd);
+	const items = collectStatusItems(ctx, pi, createFooterProvider({}), new Set(["project"]));
+	assert.equal(items.get("project")?.text, basename(cwd));
+	rmSync(cwd, { recursive: true, force: true });
 });
 
 test("collectStatusItems builds changes using git-style symbols", () => {

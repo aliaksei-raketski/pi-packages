@@ -63,6 +63,7 @@ export const DEFAULT_STATUSLINE_CONFIG: StatuslineConfig = {
 			normal: "accent",
 		},
 		title: "muted",
+		project: "muted",
 		model: "toolTitle",
 		thinking: {
 			off: "thinkingOff",

@@ -1,4 +1,5 @@
-import { relative, basename } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { relative, basename, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { ExtensionContext, ExtensionAPI, ReadonlyFooterDataProvider } from "@earendil-works/pi-coding-agent";
 
@@ -18,6 +19,7 @@ export type BuiltinStatusKey =
 	| "tokens"
 	| "cache"
 	| "cost"
+	| "project"
 	| "statuses";
 
 const BUILTIN_STATUS_KEYS: Set<string> = new Set([
@@ -31,6 +33,7 @@ const BUILTIN_STATUS_KEYS: Set<string> = new Set([
 	"tokens",
 	"cache",
 	"cost",
+	"project",
 	"statuses",
 ]);
 
@@ -76,6 +79,25 @@ function shortPath(cwd: string): string {
 		const suffix = cwd === home ? "" : relative(home, cwd);
 		return `~${suffix ? `/${suffix}` : ""}`;
 	}
+	return basename(cwd);
+}
+
+function collectProjectValue(cwd: string): string {
+	const packagePath = join(cwd, "package.json");
+	if (!existsSync(packagePath)) {
+		return basename(cwd);
+	}
+
+	try {
+		const raw = readFileSync(packagePath, "utf-8");
+		const parsed = JSON.parse(raw) as { name?: unknown };
+		if (typeof parsed.name === "string" && parsed.name) {
+			return parsed.name;
+		}
+	} catch {
+		return basename(cwd);
+	}
+
 	return basename(cwd);
 }
 
@@ -309,6 +331,10 @@ export function collectStatusItems(
 		if (changes) {
 			items.set("changes", changes);
 		}
+	}
+
+	if (should("project")) {
+		items.set("project", { text: collectProjectValue(ctx.cwd) });
 	}
 
 	if (should("context")) {
