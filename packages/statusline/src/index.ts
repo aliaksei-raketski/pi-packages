@@ -44,7 +44,7 @@ function renderFooter(
 		}
 
 		const prefix = config.prefix[key];
-		const itemText = prefix ? `${prefix} ${value.text}` : value.text;
+		const itemText = prefix ? `${prefix.endsWith(" ") ? prefix : `${prefix} `}${value.text}` : value.text;
 		const color = resolveColorValue(config.colors, key, value.state);
 		return colorize(itemText, color, theme);
 	};

@@ -45,7 +45,7 @@ If no user config exists, statusline will create `~/.pi/statusline.json` with th
 	"separatorColor": "dim",
 	"prefix": {
 		"cwd": "⌂",
-		"branch": "↳",
+		"branch": "↳ ",
 		"project": "◯",
 		"title": "✎",
 		"model": "◉",
