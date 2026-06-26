@@ -12,9 +12,15 @@ The skill replaces the `@taiga-ui/mcp` tool surface with CLI-equivalent commands
 ## Install
 
 ```bash
-pi install ./taiga-ui-docs
+pi install npm:@aliaksei-raketski/pi-taiga-ui-docs
 # or project-local
-pi install -l ./taiga-ui-docs
+pi install -l npm:@aliaksei-raketski/pi-taiga-ui-docs
+```
+
+For local development from this repository:
+
+```bash
+pi install ./taiga-ui-docs
 ```
 
 ## Skill

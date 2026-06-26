@@ -2,39 +2,45 @@
 node_modules/
 .pnp/
 .pnp.js
-package-lock.json
 
-# Build and distribution artifacts
+# Package manager artifacts generated locally
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+*.tgz
+
+# Build/test output
 dist/
 build/
 out/
 coverage/
+*.tsbuildinfo
 
 # Tool/cache artifacts
 .cache/
+.npm/
 tmp/
 temp/
 
 # Logs
+logs/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-*.log
-
-# TypeScript / JavaScript build metadata
-*.tsbuildinfo
 
 # Environment files
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
 
-# IDE / OS artifacts
+# IDE/editor files
 .vscode/
 .idea/
 *.swp
 *.swo
+
+# OS files
 .DS_Store
+Thumbs.db

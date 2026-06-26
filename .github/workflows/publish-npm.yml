@@ -1,0 +1,68 @@
+name: Publish npm packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - angular-developer/**
+      - taiga-ui-docs/**
+      - .github/workflows/publish-npm.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - angular-developer
+          - taiga-ui-docs
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Show publish toolchain
+        run: |
+          node --version
+          npm --version
+
+      - name: Read package metadata
+        id: metadata
+        working-directory: ${{ matrix.package }}
+        run: |
+          echo "name=$(node -p "require('./package.json').name")" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether version is already published
+        id: published
+        run: |
+          if npm view "${{ steps.metadata.outputs.name }}@${{ steps.metadata.outputs.version }}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.metadata.outputs.name }}@${{ steps.metadata.outputs.version }} is already published; skipping."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate package contents
+        if: steps.published.outputs.exists != 'true'
+        working-directory: ${{ matrix.package }}
+        run: npm pack --dry-run
+
+      - name: Publish to npm
+        if: steps.published.outputs.exists != 'true'
+        working-directory: ${{ matrix.package }}
+        run: npm publish --access public

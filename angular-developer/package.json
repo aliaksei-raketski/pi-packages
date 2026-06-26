@@ -1,10 +1,29 @@
 {
-  "name": "angular-developer",
+  "name": "@aliaksei-raketski/pi-angular-developer",
+  "version": "0.2.0",
+  "description": "Pi package that vendors the official Angular developer skill with local documentation helper scripts.",
   "keywords": [
     "pi-package",
     "angular",
     "agent-skills"
   ],
+  "license": "MIT",
+  "homepage": "https://github.com/aliaksei-raketski/pi-packages/tree/main/angular-developer",
+  "bugs": {
+    "url": "https://github.com/aliaksei-raketski/pi-packages/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aliaksei-raketski/pi-packages.git",
+    "directory": "angular-developer"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "pi": {
     "skills": [
       "./skills"
@@ -17,7 +36,6 @@
     "skills/",
     "scripts/",
     "overlays/",
-    "README.md",
-    "plan.md"
+    "README.md"
   ]
 }

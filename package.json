@@ -1,0 +1,13 @@
+{
+  "name": "pi-packages",
+  "private": true,
+  "description": "Monorepo for Pi packages published from nested workspaces.",
+  "workspaces": [
+    "angular-developer",
+    "taiga-ui-docs"
+  ],
+  "scripts": {
+    "sync": "npm run sync --workspaces --if-present",
+    "pack:dry-run": "npm pack --workspaces --dry-run"
+  }
+}

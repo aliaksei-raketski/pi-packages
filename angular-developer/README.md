@@ -2,6 +2,14 @@
 
 A Pi package that vendors the official Angular `angular-developer` Agent Skill and replaces Angular MCP guidance with local helper scripts.
 
+## Install
+
+```bash
+pi install npm:@aliaksei-raketski/pi-angular-developer
+# or project-local
+pi install -l npm:@aliaksei-raketski/pi-angular-developer
+```
+
 ## Installed skill
 
 - `skills/angular-developer`
