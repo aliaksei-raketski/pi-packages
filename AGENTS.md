@@ -64,5 +64,6 @@ Each published workspace must keep its `package.json` Pi metadata accurate:
 ## CI and publishing
 
 CI runs on Node.js 24 with `npm ci` followed by `npm run check`.
-Publishing runs the same verification, then publishes workspace versions that are not already on npm.
-When changing publishable package contents, consider whether the affected workspace version should be bumped.
+Release Please runs after successful CI on `main`; when it creates GitHub releases after a release PR merge, the same workflow publishes only the released package paths reported by Release Please.
+The standalone npm publish workflow is a manual fallback and still runs the same verification before publishing unpublished workspace versions.
+When changing publishable package contents, use Conventional Commits so Release Please can determine the affected version bump.

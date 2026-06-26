@@ -50,10 +50,11 @@ Release PRs are generated automatically by:
 .github/workflows/release-please.yml
 ```
 
-These release and publish workflows are triggered only after `CI` completes successfully on `main`, so a failed CI run does not start release or publishing.
-The publish workflow also short-circuits unless the latest `main` push changed both `.release-please-manifest.json` and at least one `packages/<package>/package.json`, to avoid running on non-release pushes.
+This workflow starts only after `CI` completes successfully on `main`, so a failed CI run does not start release automation. Release Please opens or updates release PRs on normal `main` pushes. When a release PR is merged, Release Please creates the GitHub releases and the same workflow publishes only the released package paths reported by Release Please.
 
 Release Please also needs a token that can create PRs from workflows. Configure a repository secret named `RELEASE_PLEASE_TOKEN` (a PAT or GitHub App token with repo + contents/pull request write). The workflow uses this token instead of `GITHUB_TOKEN`.
+
+`.github/workflows/publish-npm.yml` is kept as a manual fallback via `workflow_dispatch`; automatic publishing happens from the Release Please workflow.
 
 When adding a new package, also update:
 

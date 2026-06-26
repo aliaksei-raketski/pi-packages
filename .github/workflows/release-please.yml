@@ -7,20 +7,98 @@ on:
     types:
       - completed
 
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
   release-please:
     name: release-please
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      paths_released: ${{ steps.release.outputs.paths_released }}
 
     steps:
-      - name: Generate release pull requests
+      - name: Generate release pull requests and releases
+        id: release
         uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  publish:
+    name: Publish released npm packages
+    needs: release-please
+    if: needs.release-please.outputs.releases_created == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify packages
+        run: npm run check
+
+      - name: Publish released packages
+        env:
+          NPM_CONFIG_PROVENANCE: "true"
+          PATHS_RELEASED: ${{ needs.release-please.outputs.paths_released }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t release_paths < <(
+            node -e '
+              const paths = JSON.parse(process.env.PATHS_RELEASED || "[]");
+              for (const path of paths) {
+                if (path && path !== ".") console.log(path);
+              }
+            '
+          )
+
+          if [ "${#release_paths[@]}" -eq 0 ]; then
+            echo "No package release paths reported by Release Please; skipping publish."
+            exit 0
+          fi
+
+          for package_dir in "${release_paths[@]}"; do
+            package_json="${package_dir}/package.json"
+
+            if [ ! -f "$package_json" ]; then
+              echo "Skipping ${package_dir}; package.json not found."
+              continue
+            fi
+
+            package_name="$(node -p "require('./${package_json}').name")"
+            package_version="$(node -p "require('./${package_json}').version")"
+            package_private="$(node -p "Boolean(require('./${package_json}').private)")"
+
+            if [ "$package_private" = "true" ]; then
+              echo "Skipping private package ${package_name}."
+              continue
+            fi
+
+            if npm view "${package_name}@${package_version}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+              echo "${package_name}@${package_version} is already published; skipping."
+              continue
+            fi
+
+            echo "Publishing ${package_name}@${package_version} from ${package_dir}..."
+            npm publish "./${package_dir}" --access public
+          done
