@@ -46,3 +46,5 @@ When fast mode is enabled but the current model is not supported, status stays a
 - `fast on` in gray (so you can see it is enabled, but inactive for current model)
 
 When you switch to a supported model, fast mode is applied automatically if it is enabled.
+
+The fast mode toggle is stored in the current session, so it survives `/reload`, resume, and branch navigation.

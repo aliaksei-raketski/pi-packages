@@ -2,10 +2,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import {
 	FAST_COMMAND,
 	FAST_FLAG,
+	FAST_STATE_CUSTOM_TYPE,
 	FAST_STATUS_KEY,
 	createFastModeState,
+	createFastStateEntryData,
 	getFastPayload,
 	getStatusView,
+	restoreFastModeState,
 	syncFeatureState,
 	type FastContext,
 	type FastModeState,
@@ -21,6 +24,12 @@ function getSessionState(ctx: ExtensionContext): FastModeState {
 		state = createFastModeState();
 		sessionStates.set(ctx.sessionManager, state);
 	}
+	return state;
+}
+
+function restoreSessionState(ctx: ExtensionContext, defaultEnabled: boolean): FastModeState {
+	const state = restoreFastModeState(ctx.sessionManager.getBranch(), defaultEnabled);
+	sessionStates.set(ctx.sessionManager, state);
 	return state;
 }
 
@@ -53,14 +62,19 @@ export default function fastMode(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", (_event, ctx) => {
-		const state = getSessionState(ctx);
-		state.enabled = pi.getFlag(FAST_FLAG) === true;
+		const state = restoreSessionState(ctx, pi.getFlag(FAST_FLAG) === true);
 		const modelStatus = syncFeatureState(toFastContext(ctx), state);
 		updateStatus(ctx, state, modelStatus);
 	});
 
 	pi.on("model_select", (_event, ctx) => {
 		const state = getSessionState(ctx);
+		const modelStatus = syncFeatureState(toFastContext(ctx), state);
+		updateStatus(ctx, state, modelStatus);
+	});
+
+	pi.on("session_tree", (_event, ctx) => {
+		const state = restoreSessionState(ctx, pi.getFlag(FAST_FLAG) === true);
 		const modelStatus = syncFeatureState(toFastContext(ctx), state);
 		updateStatus(ctx, state, modelStatus);
 	});
@@ -89,6 +103,7 @@ export default function fastMode(pi: ExtensionAPI) {
 
 			const state = getSessionState(ctx);
 			state.enabled = !state.enabled;
+			pi.appendEntry(FAST_STATE_CUSTOM_TYPE, createFastStateEntryData(state));
 
 			const modelStatus = syncFeatureState(toFastContext(ctx), state);
 			updateStatus(ctx, state, modelStatus);

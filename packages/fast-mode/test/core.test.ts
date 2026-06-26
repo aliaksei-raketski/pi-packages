@@ -5,6 +5,7 @@ import {
 	getCurrentModelStatus,
 	getFastPayload,
 	getStatusView,
+	restoreFastModeState,
 	syncFeatureState,
 	type FastContext,
 	type FastModel,
@@ -31,6 +32,25 @@ test("unsupported current model keeps fast enabled but inactive", () => {
 	assert.equal(modelStatus.isSupported, false);
 	assert.equal(getFastPayload({ model: "claude-sonnet-4-5" }, ctx, state, modelStatus), undefined);
 	assert.deepEqual(getStatusView(state, modelStatus), { text: "fast on", color: "muted" });
+});
+
+test("restores fast mode from latest session custom entry", () => {
+	const state = restoreFastModeState(
+		[
+			{ type: "custom", customType: "fast", data: { enabled: true } },
+			{ type: "custom", customType: "other", data: { enabled: false } },
+			{ type: "custom", customType: "fast", data: { enabled: false } },
+		],
+		true,
+	);
+
+	assert.equal(state.enabled, false);
+});
+
+test("uses launch default when session has no fast mode entry", () => {
+	const state = restoreFastModeState([], true);
+
+	assert.equal(state.enabled, true);
 });
 
 test("status is muted when off and accent when enabled for a supported model", () => {

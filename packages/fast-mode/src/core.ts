@@ -1,6 +1,7 @@
 export const FAST_COMMAND = "fast";
 export const FAST_FLAG = "fast";
 export const FAST_STATUS_KEY = "fast";
+export const FAST_STATE_CUSTOM_TYPE = "fast";
 
 export const FAST_ON_TEXT = "fast on";
 export const FAST_OFF_TEXT = "fast off";
@@ -43,6 +44,16 @@ export type FastModeState = {
 	enabled: boolean;
 };
 
+export type FastStateEntryData = {
+	enabled: boolean;
+};
+
+export type FastSessionEntry = {
+	type: string;
+	customType?: string;
+	data?: unknown;
+};
+
 export type CurrentModelStatus = {
 	feature?: FastFeature;
 	isSupported: boolean;
@@ -81,6 +92,25 @@ export const FEATURES: FastFeature[] = [
 
 export function createFastModeState(enabled = false): FastModeState {
 	return { enabled };
+}
+
+export function createFastStateEntryData(state: FastModeState): FastStateEntryData {
+	return { enabled: state.enabled };
+}
+
+export function restoreFastModeState(
+	entries: Iterable<FastSessionEntry>,
+	defaultEnabled = false,
+): FastModeState {
+	let enabled = defaultEnabled;
+
+	for (const entry of entries) {
+		if (entry.type !== "custom" || entry.customType !== FAST_STATE_CUSTOM_TYPE) continue;
+		if (!isPayloadRecord(entry.data) || typeof entry.data.enabled !== "boolean") continue;
+		enabled = entry.data.enabled;
+	}
+
+	return createFastModeState(enabled);
 }
 
 export function getCurrentModelStatus(ctx: FastContext): CurrentModelStatus {
