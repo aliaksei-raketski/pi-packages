@@ -124,7 +124,7 @@ export default function fastMode(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerShortcut("ctrl+f", {
+	pi.registerShortcut("f3", {
 		description: "Toggle fast mode",
 		handler: async (ctx) => {
 			toggleFastMode(pi, ctx);

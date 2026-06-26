@@ -3,7 +3,7 @@
 A Pi extension that enables fast mode for supported models with one command and shortcut:
 
 - **`/fast`**: toggles fast mode on/off.
-- **`Ctrl+F`**: toggles fast mode on/off.
+- **`F3`**: toggles fast mode on/off.
 - No arguments. `/fast` always toggles.
 
 The current model determines what gets injected:
