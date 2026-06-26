@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -42,6 +42,33 @@ test("loads defaults when no config files exist", () => {
 	assert.deepEqual(result.config.layout, DEFAULT_STATUSLINE_CONFIG.layout);
 	assert.equal(result.config.separator, DEFAULT_STATUSLINE_CONFIG.separator);
 	assert.equal(result.config.separatorColor, DEFAULT_STATUSLINE_CONFIG.separatorColor);
+	rmSync(cwd, { recursive: true, force: true });
+});
+
+test("writes default config file when requested", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-statusline-default-write-"));
+	const user = join(cwd, "user.json");
+	const project = join(cwd, "project.json");
+
+	const result = loadStatuslineConfig({
+		cwd,
+		isProjectTrusted: () => true,
+		writeDefaultConfig: true,
+		paths: {
+			user,
+			project,
+		},
+	});
+
+	assert.equal(result.diagnostics.length, 0);
+	assert.ok(existsSync(user));
+	const written = JSON.parse(readFileSync(user, "utf-8"));
+	assert.deepEqual(written.layout, DEFAULT_STATUSLINE_CONFIG.layout);
+	assert.equal(written.separator, DEFAULT_STATUSLINE_CONFIG.separator);
+	assert.equal(written.separatorColor, DEFAULT_STATUSLINE_CONFIG.separatorColor);
+	assert.deepEqual(written.prefix, DEFAULT_STATUSLINE_CONFIG.prefix);
+	assert.deepEqual(written.colors, DEFAULT_STATUSLINE_CONFIG.colors);
+
 	rmSync(cwd, { recursive: true, force: true });
 });
 

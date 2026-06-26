@@ -14,7 +14,9 @@ pi install npm:@aliaksei-raketski/pi-statusline
 - Single-line and multi-line layouts.
 - Automatic narrow-terminal fallback to one status item per line.
 - Per-token and per-state color control (`muted`, theme names, hex, or 256-color numbers).
-- Optional extension statuses from `ctx.ui.setStatus()` (via explicit `statuses` token).
+- Optional extension statuses from `ctx.ui.setStatus()`:
+  - Use explicit `statuses` token to show all extension statuses.
+  - Or reference any status key name directly in `layout` to show that extension status only.
 - Live updates for model, thinking level, branch, context, and session usage/cost.
 - Project-local config is loaded only when the project is trusted.
 
@@ -26,6 +28,8 @@ Configuration is loaded from two files and merged in order:
 2. **Project config**: `.<project>/.pi/statusline.json` (only when project is trusted)
 
 Invalid config values are ignored and fall back to defaults, with warnings emitted in the UI.
+
+If no user config exists, statusline will create `~/.pi/statusline.json` with the default configuration on first launch for easy editing.
 
 ### Default config
 
@@ -107,7 +111,9 @@ The `layout` array uses the following token names:
 - `cache` — cache usage: `<cacheRead>/<cacheWrite> <percent>%` using branch history assistant usage.
 - `cost` — accumulated usage cost shown as `$<value>`.
 
-Note: extension statuses are only rendered when `statuses` is explicitly in `layout`.
+`statuses` is rendered when `statuses` is explicitly in `layout`.
+
+You can also include any status key directly (for example `my_extension`); if another extension sets it via `ctx.ui.setStatus("my_extension", "...")`, it will be rendered in that slot.
 
 ### Colors
 

@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { ColorConfigValue } from "./colors.ts";
 import { mergeColorMaps, normalizeColorMap } from "./colors.ts";
 import { normalizeLayout, type StatuslineLayout } from "./layout.ts";
@@ -33,6 +33,10 @@ export interface ConfigLoadContext {
 	cwd: string;
 	isProjectTrusted(): boolean;
 	notify?(message: string): void;
+	/**
+	 * If true, write a default config file to user config path when missing.
+	 */
+	writeDefaultConfig?: boolean;
 	paths?: {
 		user?: string;
 		project?: string;
@@ -109,6 +113,22 @@ function readConfigFile(path: string, diagnostics: string[]): unknown | undefine
 	} catch (error) {
 		diagnostics.push(`Failed to parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
 		return undefined;
+	}
+}
+
+const DEFAULT_STATUSLINE_CONFIG_JSON = JSON.stringify(DEFAULT_STATUSLINE_CONFIG, null, 2);
+
+function ensureDefaultConfig(path: string, diagnostics: string[]): void {
+	if (existsSync(path)) {
+		return;
+	}
+	try {
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(path, `${DEFAULT_STATUSLINE_CONFIG_JSON}\n`, "utf-8");
+	} catch (error) {
+		diagnostics.push(
+			`Could not create default config at ${path}: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 }
 
@@ -215,6 +235,10 @@ export function loadStatuslineConfig(context: ConfigLoadContext): StatuslineConf
 		prefix: { ...DEFAULT_STATUSLINE_CONFIG.prefix },
 		colors: { ...DEFAULT_STATUSLINE_CONFIG.colors },
 	};
+
+	if (context.writeDefaultConfig === true) {
+		ensureDefaultConfig(resolvedPaths.user, diagnostics);
+	}
 
 	const userRaw = readConfigFile(resolvedPaths.user, diagnostics);
 	if (userRaw !== undefined) {

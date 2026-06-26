@@ -20,6 +20,24 @@ export type BuiltinStatusKey =
 	| "cost"
 	| "statuses";
 
+const BUILTIN_STATUS_KEYS: Set<string> = new Set([
+	"cwd",
+	"branch",
+	"title",
+	"model",
+	"thinking",
+	"changes",
+	"context",
+	"tokens",
+	"cache",
+	"cost",
+	"statuses",
+]);
+
+function isBuiltinStatusKey(key: string): key is BuiltinStatusKey {
+	return BUILTIN_STATUS_KEYS.has(key);
+}
+
 interface UsageTotals {
 	input: number;
 	output: number;
@@ -320,11 +338,22 @@ export function collectStatusItems(
 		}
 	}
 
-	if (should("statuses")) {
+	const customStatusKeys = Array.from(requestedKeys).filter(
+		(key) => !isBuiltinStatusKey(key) && key !== "spacer",
+	);
+
+	if (should("statuses") || customStatusKeys.length > 0) {
 		const statuses = footerData.getExtensionStatuses();
-		if (statuses.size > 0) {
+		if (should("statuses") && statuses.size > 0) {
 			const entries = Array.from(statuses.entries()).map(([name, text]) => `${name}: ${text}`);
 			items.set("statuses", { text: entries.join(" • ") });
+		}
+
+		for (const key of customStatusKeys) {
+			const status = statuses.get(key);
+			if (status !== undefined) {
+				items.set(key, { text: status });
+			}
 		}
 	}
 

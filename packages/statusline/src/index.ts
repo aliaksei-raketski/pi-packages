@@ -61,6 +61,7 @@ export default function statusline(pi: ExtensionAPI) {
 		const configResult = loadStatuslineConfig({
 			cwd: ctx.cwd,
 			isProjectTrusted: () => ctx.isProjectTrusted(),
+			writeDefaultConfig: true,
 		});
 		for (const message of configResult.diagnostics) {
 			ctx.ui.notify(`statusline: ${message}`, "warning");

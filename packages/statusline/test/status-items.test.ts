@@ -65,11 +65,22 @@ test("collectStatusItems only queries requested keys", () => {
 test("collectStatusItems exposes extension statuses when explicitly requested", () => {
 	const ctx = createContext("/tmp");
 	const footerData = createFooterProvider({
-		getExtensionStatuses: () => new Map([ ["lsp", "ready"] ]),
+		getExtensionStatuses: () => new Map([["lsp", "ready"]]),
 	});
 
 	const items = collectStatusItems(ctx, pi, footerData, new Set(["statuses"]));
 	assert.equal(items.get("statuses")?.text, "lsp: ready");
+});
+
+test("collectStatusItems exposes extension status keys by token", () => {
+	const ctx = createContext("/tmp");
+	const footerData = createFooterProvider({
+		getExtensionStatuses: () => new Map([["lsp", "ready"], ["build", "pass"]]),
+	});
+
+	const items = collectStatusItems(ctx, pi, footerData, new Set(["cwd", "lsp", "build"]));
+	assert.equal(items.get("lsp")?.text, "ready");
+	assert.equal(items.get("build")?.text, "pass");
 });
 
 test("collectStatusItems formats context as percent/context-window", () => {
