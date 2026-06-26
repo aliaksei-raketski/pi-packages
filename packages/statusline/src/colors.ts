@@ -64,7 +64,11 @@ const HEX_COLOR_RE = /^#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/;
 
 export const THEME_DEFAULT_COLORS = {
 	cwd: "muted",
-	branch: "accent",
+	branch: {
+		clean: "success",
+		dirty: "warning",
+		default: "accent",
+	},
 	title: "muted",
 	model: "toolTitle",
 	thinking: {

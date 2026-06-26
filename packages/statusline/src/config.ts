@@ -67,7 +67,9 @@ export const DEFAULT_STATUSLINE_CONFIG: StatuslineConfig = {
 	colors: {
 		cwd: "muted",
 		branch: {
-			normal: "accent",
+			clean: "success",
+			dirty: "warning",
+			default: "accent",
 		},
 		title: "muted",
 		project: "muted",

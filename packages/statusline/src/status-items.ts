@@ -301,10 +301,13 @@ export function collectStatusItems(
 		items.set("cwd", { text: shortPath(ctx.cwd) });
 	}
 
+	const includeChangesForBranch = should("branch") || should("changes");
+	const changesValueForBranch = includeChangesForBranch ? collectChangesValue(ctx.cwd) : undefined;
+
 	if (should("branch")) {
 		const branch = footerData.getGitBranch();
 		if (branch) {
-			items.set("branch", { text: branch, state: "normal" });
+			items.set("branch", { text: branch, state: changesValueForBranch ? "dirty" : "clean" });
 		}
 	}
 
@@ -326,11 +329,8 @@ export function collectStatusItems(
 		items.set("thinking", collectThinkingValue(pi));
 	}
 
-	if (should("changes")) {
-		const changes = collectChangesValue(ctx.cwd);
-		if (changes) {
-			items.set("changes", changes);
-		}
+	if (should("changes") && changesValueForBranch) {
+		items.set("changes", changesValueForBranch);
 	}
 
 	if (should("project")) {

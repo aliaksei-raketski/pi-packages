@@ -56,6 +56,8 @@ test("resolves stateful color values with fallback", () => {
 	assert.equal(fromState, "warning");
 	assert.equal(fromFallback, THEME_DEFAULT_COLORS.context.full);
 	assert.equal(resolveColorValue({}, "model", "off"), THEME_DEFAULT_COLORS.model);
+	assert.equal(resolveColorValue({}, "branch", "clean"), THEME_DEFAULT_COLORS.branch.clean);
+	assert.equal(resolveColorValue({}, "branch", "dirty"), THEME_DEFAULT_COLORS.branch.dirty);
 });
 
 test("normalizes color maps with string-number values", () => {

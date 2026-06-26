@@ -57,7 +57,11 @@ If no user config exists, statusline will create `~/.pi/statusline.json` with th
 	},
 	"colors": {
 		"cwd": "muted",
-		"branch": { "normal": "accent" },
+		"branch": {
+			"clean": "success",
+			"dirty": "warning",
+			"default": "accent"
+		},
 		"title": "muted",
 		"project": "muted",
 		"model": "toolTitle",
@@ -117,7 +121,7 @@ The `layout` array uses the following token names:
 - `cwd` — current working directory, shortened with `~` for your home directory.
 - `model` — current model name (model id only, e.g. `gpt-4.1`), or `unknown` if unavailable.
 - `thinking` — current thinking level from Pi: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
-- `branch` — current git branch from footer context.
+- `branch` — current git branch from footer context. It is stateful: `clean` when working tree has no changes and `dirty` when there are staged/unstaged/untracked changes.
 - `changes` — git changes summary with counts: `!<conflicts> +<staged> ~<unstaged> ?<untracked> ↑<ahead> ↓<behind>` (only non-zero parts are shown; untracked files are counted per-file).
 - `title` — current session name (`ctx.sessionManager.getSessionName()`) if set.
 - `project` — project name from `package.json` when available, otherwise directory name.
@@ -134,7 +138,7 @@ You can also include any status key directly (for example `my_extension`); if an
 
 - `colors` values can be theme tokens (e.g. `muted`, `warning`, `accent`),
   hex colors (e.g. `#8aadf4`), 256 colors (`0`-`255`), or `""` for no color.
-- For stateful items (`thinking`, `context`) you can pass an object keyed by state:
+- For stateful items (`branch`, `thinking`, `context`) you can pass an object keyed by state:
 
 ```json
 {

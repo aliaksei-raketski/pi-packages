@@ -96,6 +96,47 @@ test("collectStatusItems formats context as percent/context-window", () => {
 	assert.equal(items.get("context")?.text, "52.5%/128k");
 });
 
+test("collectStatusItems marks branch as clean when git state is clean", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-statusline-branch-clean-"));
+	try {
+		runGit(cwd, ["init"]);
+
+		const ctx = createContext(cwd);
+		const items = collectStatusItems(
+			ctx,
+			pi,
+			createFooterProvider({
+				getGitBranch: () => "main",
+			}),
+			new Set(["branch"]),
+		);
+		assert.equal(items.get("branch")?.state, "clean");
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("collectStatusItems marks branch as dirty when git state has changes", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "pi-statusline-branch-dirty-"));
+	try {
+		runGit(cwd, ["init"]);
+		writeFileSync(join(cwd, "dirty.txt"), "dirty", "utf-8");
+
+		const ctx = createContext(cwd);
+		const items = collectStatusItems(
+			ctx,
+			pi,
+			createFooterProvider({
+				getGitBranch: () => "main",
+			}),
+			new Set(["branch"]),
+		);
+		assert.equal(items.get("branch")?.state, "dirty");
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 test("collectStatusItems uses package.json name for project", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-statusline-project-"));
 	writeFileSync(
