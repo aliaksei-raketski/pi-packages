@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+          filter: tree:0
+
+      - name: Check release target
+        id: release_target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          should_release=true
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            actual_sha="$(git rev-parse HEAD)"
+            if [ "$actual_sha" != "$EXPECTED_SHA" ]; then
+              echo "main advanced after CI. Expected $EXPECTED_SHA but checked out $actual_sha."
+              echo "Skipping this release run; the newer main commit should get its own CI/release run."
+              should_release=false
+            fi
+          fi
+
+          echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
+
+      - name: Install pnpm
+        if: steps.release_target.outputs.should_release == 'true'
+        uses: pnpm/action-setup@v6
+
+      - name: Set up Node.js
+        if: steps.release_target.outputs.should_release == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        if: steps.release_target.outputs.should_release == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure git user
+        if: steps.release_target.outputs.should_release == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run Nx release without publishing
+        if: steps.release_target.outputs.should_release == 'true'
+        id: nx_release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          before_sha="$(git rev-parse HEAD)"
+          pnpm run release
+          after_sha="$(git rev-parse HEAD)"
+
+          echo "before_sha=$before_sha" >> "$GITHUB_OUTPUT"
+          echo "after_sha=$after_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch npm publish workflow
+        if: >
+          steps.release_target.outputs.should_release == 'true' &&
+          steps.nx_release.outputs.before_sha != steps.nx_release.outputs.after_sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.nx_release.outputs.after_sha }}
+        run: |
+          set -euo pipefail
+
+          payload_file="${RUNNER_TEMP}/publish-dispatch.json"
+          PAYLOAD_FILE="$payload_file" node <<'NODE'
+          const fs = require('node:fs');
+
+          const payload = {
+            ref: 'main',
+            inputs: {
+              ref: process.env.RELEASE_SHA,
+            },
+          };
+
+          fs.writeFileSync(process.env.PAYLOAD_FILE, JSON.stringify(payload));
+          NODE
+
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/publish-npm.yml/dispatches" \
+            --input "$payload_file"
