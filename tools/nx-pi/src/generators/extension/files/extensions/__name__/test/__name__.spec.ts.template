@@ -1,0 +1,22 @@
+import { describe, expect, it, vi } from 'vitest';
+import { <%= propertyName %> } from '../src/<%= name %>.ts';
+
+describe('<%= name %> extension', () => {
+  it('registers lifecycle hooks and commands', () => {
+    const pi = {
+      on: vi.fn(),
+      registerCommand: vi.fn(),
+    };
+
+    <%= propertyName %>(pi as never);
+
+    expect(pi.on).toHaveBeenCalledWith('session_start', expect.any(Function));
+    expect(pi.registerCommand).toHaveBeenCalledWith(
+      '<%= name %>',
+      expect.objectContaining({
+        description: '<%= className %> extension command',
+        handler: expect.any(Function),
+      }),
+    );
+  });
+});

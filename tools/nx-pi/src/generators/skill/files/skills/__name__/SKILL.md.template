@@ -1,0 +1,29 @@
+---
+name: <%- yamlName %>
+description: <%- yamlDescription %>
+---
+
+# <%= className %>
+
+Use this skill when the user asks for <%= name %> help or when the task matches the description above.
+
+## Workflow
+
+1. Clarify the desired outcome and inputs.
+2. Inspect relevant files before making changes.
+3. Use the helper script when structured output is useful.
+4. Report what changed and any follow-up steps.
+
+## Helper Script
+
+This skill includes a self-contained Node.js helper script in `scripts/`.
+It is non-interactive, supports `--help`, writes structured data to stdout, and writes diagnostics to stderr.
+
+Run from this skill directory:
+
+```bash
+node scripts/example.mjs --help
+node scripts/example.mjs --message "hello from <%= name %>"
+```
+
+Use script output as data. Do not rely on prompts or interactive input.

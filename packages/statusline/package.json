@@ -1,41 +1,42 @@
 {
-	"name": "@aliaksei-raketski/pi-statusline",
-	"version": "0.2.0",
-	"description": "Pi extension for a highly customizable, ANSI-aware statusline footer.",
-	"keywords": [
-		"pi-package",
-		"pi",
-		"pi-extension",
-		"statusline"
-	],
-	"license": "MIT",
-	"homepage": "https://github.com/aliaksei-raketski/pi-packages/tree/main/packages/statusline",
-	"bugs": {
-		"url": "https://github.com/aliaksei-raketski/pi-packages/issues"
-	},
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/aliaksei-raketski/pi-packages.git",
-		"directory": "packages/statusline"
-	},
-	"publishConfig": {
-		"access": "public",
-		"registry": "https://registry.npmjs.org/"
-	},
-	"engines": {
-		"node": ">=18"
-	},
-	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": "*"
-	},
-	"pi": {
-		"extensions": [
-			"./src/index.ts"
-		]
-	},
-	"files": [
-		"src",
-		"README.md",
-		"LICENSE"
-	]
+  "name": "@aliaksei-raketski/pi-statusline",
+  "version": "0.2.1",
+  "type": "module",
+  "description": "Pi extension for a highly customizable, ANSI-aware statusline footer.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "statusline"
+  ],
+  "license": "MIT",
+  "homepage": "https://github-main/aliaksei-raketski/pi-packages/tree/main/packages/statusline",
+  "bugs": {
+    "url": "https://github-main/aliaksei-raketski/pi-packages/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github-main/aliaksei-raketski/pi-packages.git",
+    "directory": "packages/statusline"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
 }

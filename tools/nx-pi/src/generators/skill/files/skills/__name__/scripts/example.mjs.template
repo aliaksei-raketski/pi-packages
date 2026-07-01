@@ -1,0 +1,68 @@
+#!/usr/bin/env node
+
+import { parseArgs } from 'node:util';
+
+const usage = `Usage: node scripts/example.mjs [OPTIONS]
+
+Generate a small structured response for the <%= name %> skill.
+
+Options:
+  -m, --message <text>  Message to include in the response (default: "hello")
+  --format <format>     Output format: json, text (default: json)
+  -h, --help            Show this help message
+
+Examples:
+  node scripts/example.mjs --message "summarize this"
+  node scripts/example.mjs --format text --message "hello"
+`;
+
+try {
+  const { values } = parseArgs({
+    options: {
+      help: {
+        type: 'boolean',
+        short: 'h',
+      },
+      message: {
+        type: 'string',
+        short: 'm',
+        default: 'hello',
+      },
+      format: {
+        type: 'string',
+        default: 'json',
+      },
+    },
+  });
+
+  if (values.help) {
+    process.stdout.write(usage);
+    process.exit(0);
+  }
+
+  if (!['json', 'text'].includes(values.format)) {
+    process.stderr.write(
+      `Error: --format must be one of: json, text. Received: "${values.format}".\n`,
+    );
+    process.stderr.write(usage);
+    process.exit(2);
+  }
+
+  const payload = {
+    skill: '<%= name %>',
+    message: values.message,
+    length: values.message.length,
+  };
+
+  process.stderr.write(`Prepared <%= name %> response.\n`);
+
+  if (values.format === 'text') {
+    process.stdout.write(`${payload.message}\n`);
+  } else {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+  }
+} catch (error) {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(usage);
+  process.exit(2);
+}

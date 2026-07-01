@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/schema",
+  "generators": {
+    "package": {
+      "factory": "./dist/generators/package/package",
+      "schema": "./dist/generators/package/schema.json",
+      "description": "Create a Pi npm package workspace project."
+    },
+    "extension": {
+      "factory": "./dist/generators/extension/extension",
+      "schema": "./dist/generators/extension/schema.json",
+      "description": "Add a Pi extension to an existing Pi package."
+    },
+    "skill": {
+      "factory": "./dist/generators/skill/skill",
+      "schema": "./dist/generators/skill/schema.json",
+      "description": "Add an Agent Skill to an existing Pi package."
+    },
+    "prompt": {
+      "factory": "./dist/generators/prompt/prompt",
+      "schema": "./dist/generators/prompt/schema.json",
+      "description": "Add a Pi prompt template to an existing Pi package."
+    },
+    "theme": {
+      "factory": "./dist/generators/theme/theme",
+      "schema": "./dist/generators/theme/schema.json",
+      "description": "Add a Pi theme to an existing Pi package."
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/schema",
+  "$id": "PiPackage",
+  "title": "Create a Pi package",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Unprefixed package name, for example fast-mode. The npm package name defaults to @scope/pi-fast-mode.",
+      "$default": {
+        "$source": "argv",
+        "index": 0
+      },
+      "x-prompt": "What Pi package would you like to create?",
+      "x-hint": "Do not include the pi- prefix unless you want to override normalization."
+    },
+    "description": {
+      "type": "string",
+      "description": "Package description written to package.json and README.md."
+    },
+    "directory": {
+      "type": "string",
+      "description": "Project root. Defaults to packages/<name>.",
+      "x-priority": "internal"
+    },
+    "importPath": {
+      "type": "string",
+      "description": "Npm package name. Defaults to the workspace scope plus pi-<name>, for example @scope/pi-fast-mode."
+    },
+    "repositoryUrl": {
+      "type": "string",
+      "description": "Git repository URL for package metadata. Defaults to git origin; required in non-interactive mode when origin is missing or ambiguous."
+    },
+    "skipFormat": {
+      "type": "boolean",
+      "description": "Skip formatting files.",
+      "default": false,
+      "x-priority": "internal"
+    }
+  },
+  "required": ["name"]
+}

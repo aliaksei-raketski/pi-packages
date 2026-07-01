@@ -1,0 +1,1 @@
+export { <%= propertyName %> as default } from './src/<%= name %>.ts';

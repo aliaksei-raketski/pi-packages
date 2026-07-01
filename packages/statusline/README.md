@@ -35,56 +35,56 @@ If no user config exists, statusline will create `~/.pi/statusline.json` with th
 
 ```json
 {
-	"layout": [
-		["branch", "changes", "pr", "spacer", "project"],
-		["context", "cache", "cost", "spacer", "model", "thinking"],
-		["title"],
-		["cwd"],
-	],
-	"separator": " • ",
-	"separatorColor": "dim",
-	"prefix": {
-		"cwd": "⌂",
-		"branch": "↳ ",
-		"project": "◯",
-		"title": "✎",
-		"model": "◉",
-		"thinking": "◐",
-		"context": "◔",
-		"tokens": "◈",
-		"cache": "↻",
-		"statuses": "◍"
-	},
-	"colors": {
-		"cwd": "muted",
-		"branch": {
-			"clean": "success",
-			"dirty": "muted",
-			"default": "accent"
-		},
-		"title": "muted",
-		"project": "muted",
-		"model": "toolTitle",
-		"changes": "muted",
-		"pr": "muted",
-		"thinking": {
-			"off": "thinkingOff",
-			"minimal": "thinkingMinimal",
-			"low": "thinkingLow",
-			"medium": "thinkingMedium",
-			"high": "thinkingHigh",
-			"xhigh": "thinkingXhigh"
-		},
-		"context": {
-			"normal": "muted",
-			"warning": "warning",
-			"full": "error",
-			"default": "muted"
-		},
-		"tokens": "muted",
-		"cache": "muted",
-		"cost": "muted"
-	}
+  "layout": [
+    ["branch", "changes", "pr", "spacer", "project"],
+    ["context", "cache", "cost", "spacer", "model", "thinking"],
+    ["title"],
+    ["cwd"]
+  ],
+  "separator": " • ",
+  "separatorColor": "dim",
+  "prefix": {
+    "cwd": "⌂",
+    "branch": "↳ ",
+    "project": "◯",
+    "title": "✎",
+    "model": "◉",
+    "thinking": "◐",
+    "context": "◔",
+    "tokens": "◈",
+    "cache": "↻",
+    "statuses": "◍"
+  },
+  "colors": {
+    "cwd": "muted",
+    "branch": {
+      "clean": "success",
+      "dirty": "muted",
+      "default": "accent"
+    },
+    "title": "muted",
+    "project": "muted",
+    "model": "toolTitle",
+    "changes": "muted",
+    "pr": "muted",
+    "thinking": {
+      "off": "thinkingOff",
+      "minimal": "thinkingMinimal",
+      "low": "thinkingLow",
+      "medium": "thinkingMedium",
+      "high": "thinkingHigh",
+      "xhigh": "thinkingXhigh"
+    },
+    "context": {
+      "normal": "muted",
+      "warning": "warning",
+      "full": "error",
+      "default": "muted"
+    },
+    "tokens": "muted",
+    "cache": "muted",
+    "cost": "muted"
+  }
 }
 ```
 
@@ -108,10 +108,10 @@ Examples:
 
 ```json
 {
-	"layout": [
-		["cwd", "model", "thinking"],
-		["changes", "title", "context"]
-	]
+  "layout": [
+    ["cwd", "model", "thinking"],
+    ["changes", "title", "context"]
+  ]
 }
 ```
 
@@ -144,22 +144,22 @@ You can also include any status key directly (for example `my_extension`); if an
 
 ```json
 {
-	"colors": {
-		"thinking": {
-			"off": "dim",
-			"minimal": "muted",
-			"low": "warning",
-			"medium": "accent",
-			"high": "error",
-			"xhigh": "error"
-		},
-		"context": {
-			"normal": "muted",
-			"warning": "warning",
-			"full": "error",
-			"default": "muted"
-		}
-	}
+  "colors": {
+    "thinking": {
+      "off": "dim",
+      "minimal": "muted",
+      "low": "warning",
+      "medium": "accent",
+      "high": "error",
+      "xhigh": "error"
+    },
+    "context": {
+      "normal": "muted",
+      "warning": "warning",
+      "full": "error",
+      "default": "muted"
+    }
+  }
 }
 ```
 

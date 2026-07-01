@@ -1,95 +1,111 @@
 # Pi Packages
 
-Monorepo for public npm-distributed [Pi](https://pi.dev) packages.
+Nx monorepo for public npm-distributed [Pi](https://pi.dev) packages.
 
 ## Packages
 
-| Workspace | npm package | Install |
-| --- | --- | --- |
-| `packages/angular-developer` | `@aliaksei-raketski/pi-angular-developer` | `pi install npm:@aliaksei-raketski/pi-angular-developer` |
-| `packages/taiga-ui-docs` | `@aliaksei-raketski/pi-taiga-ui-docs` | `pi install npm:@aliaksei-raketski/pi-taiga-ui-docs` |
-| `packages/fast-mode` | `@aliaksei-raketski/pi-fast-mode` | `pi install npm:@aliaksei-raketski/pi-fast-mode` |
-| `packages/statusline` | `@aliaksei-raketski/pi-statusline` | `pi install npm:@aliaksei-raketski/pi-statusline` |
+| Workspace                    | npm package                               | Description                                                                         | Install                                                  |
+| ---------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `packages/angular-developer` | `@aliaksei-raketski/pi-angular-developer` | Angular developer skill with local documentation helper scripts.                    | `pi install npm:@aliaksei-raketski/pi-angular-developer` |
+| `packages/taiga-ui-docs`     | `@aliaksei-raketski/pi-taiga-ui-docs`     | Taiga UI docs skill backed by a bundled helper script.                              | `pi install npm:@aliaksei-raketski/pi-taiga-ui-docs`     |
+| `packages/fast-mode`         | `@aliaksei-raketski/pi-fast-mode`         | Extension that enables fast-mode payload tuning for supported Claude/OpenAI models. | `pi install npm:@aliaksei-raketski/pi-fast-mode`         |
+| `packages/statusline`        | `@aliaksei-raketski/pi-statusline`        | Extension for a customizable, ANSI-aware statusline footer.                         | `pi install npm:@aliaksei-raketski/pi-statusline`        |
 
 ## Development
 
 Install dependencies:
 
 ```bash
-npm install
+pnpm install
 ```
 
-Run checks:
+List Nx projects:
 
 ```bash
-npm run check
+pnpm exec nx show projects
 ```
 
-The check includes a lockfile alignment validation (`npm ci --dry-run`).
-If it fails, fix lockfile alignment by running:
+Inspect a project:
 
 ```bash
-npm run lockfile:fix
+pnpm exec nx show project @aliaksei-raketski/pi-fast-mode --json
 ```
 
-## Releasing
-
-The repository uses **Release Please** with Conventional Commits. Merges to `main`
-that contain commit types like `feat:`/`fix:`/`feat!:` will create/update the
-release PR and generate changelogs under each package's `CHANGELOG.md`.
-
-Useful commit patterns:
-
-- `feat(scope): ...` -> minor
-- `fix(scope): ...` -> patch
-- `feat(scope)!: ...` / `fix(scope)!: ...` -> major
-
-Release PRs are generated automatically by:
+Run checks for all Pi packages:
 
 ```bash
-.github/workflows/release-please.yml
+pnpm exec nx run-many \
+  --projects=@aliaksei-raketski/pi-angular-developer,@aliaksei-raketski/pi-fast-mode,@aliaksei-raketski/pi-statusline,@aliaksei-raketski/pi-taiga-ui-docs \
+  -t lint,typecheck
 ```
 
-This workflow starts only after `CI` completes successfully on `main`, so a failed CI run does not start release automation. Release Please opens or updates release PRs on normal `main` pushes. When a release PR is merged, Release Please creates GitHub releases, then dispatches `.github/workflows/publish-npm.yml` with the exact released package paths.
-
-Release Please needs a token that can create PRs from workflows. Configure a repository secret named `RELEASE_PLEASE_TOKEN` (a PAT or GitHub App token with repo + contents/pull request write). The workflow uses this token instead of `GITHUB_TOKEN`.
-
-All npm publishing happens from `.github/workflows/publish-npm.yml` so npm trusted publishing only needs to authorize that workflow. Manual `workflow_dispatch` runs remain available as a fallback and publish all unpublished workspace versions unless `paths_released` is provided.
-
-When adding a new package, also update:
-
-- `release-please-config.json` with a new package entry (for example `packages/my-package` with `release-type: node`, `package-name`, and optional `changelog-path`).
-- `.release-please-manifest.json` with the current package version.
-- package metadata and `package-lock.json` alignment by running:
+Run extension tests:
 
 ```bash
-npm run lockfile:fix
+pnpm exec nx run @aliaksei-raketski/pi-fast-mode:test
+pnpm exec nx run @aliaksei-raketski/pi-statusline:test
 ```
 
-Try extensions locally:
+Explore the workspace graph:
 
 ```bash
-npm run try:fast-mode
-# or
+pnpm exec nx graph
+```
+
+## Generating Pi packages and components
+
+Use the local Nx generators instead of hand-rolling package metadata or Pi component folders.
+
+Create a package container:
+
+```bash
+pnpm exec nx g @aliaksei-raketski/nx-pi:package my-package --dry-run --no-interactive
+pnpm exec nx g @aliaksei-raketski/nx-pi:package my-package --no-interactive
+```
+
+Add components to an existing Pi package:
+
+```bash
+pnpm exec nx g @aliaksei-raketski/nx-pi:skill my-skill \
+  --project=@aliaksei-raketski/pi-my-package \
+  --no-interactive
+
+pnpm exec nx g @aliaksei-raketski/nx-pi:prompt my-prompt \
+  --project=@aliaksei-raketski/pi-my-package \
+  --no-interactive
+
+pnpm exec nx g @aliaksei-raketski/nx-pi:theme my-theme \
+  --project=@aliaksei-raketski/pi-my-package \
+  --no-interactive
+
+pnpm exec nx g @aliaksei-raketski/nx-pi:extension my-extension \
+  --project=@aliaksei-raketski/pi-my-package \
+  --no-interactive
+```
+
+Check available options before applying changes:
+
+```bash
+pnpm exec nx g @aliaksei-raketski/nx-pi:package --help
+pnpm exec nx g @aliaksei-raketski/nx-pi:skill --help
+pnpm exec nx g @aliaksei-raketski/nx-pi:extension --help
+```
+
+## Trying extensions locally
+
+```bash
 pi -e ./packages/fast-mode
-
-npm run try:statusline
-# or
 pi -e ./packages/statusline
 ```
 
-Preview package contents:
+## Syncing vendored skills
+
+Some skill packages include their own maintenance scripts. For example:
 
 ```bash
-npm run pack:dry-run
-```
-
-Sync vendored skills:
-
-```bash
-npm run sync
+pnpm --filter @aliaksei-raketski/pi-angular-developer sync
 ```
 
 ## Publishing
 
-Packages are published to the public npm registry from GitHub Actions.
+Packages are intended to be published to the public npm registry. Use Nx project metadata and package-level `package.json` versions as the source of truth during release automation.

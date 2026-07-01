@@ -1,42 +1,46 @@
 {
-	"name": "@aliaksei-raketski/pi-angular-developer",
-	"version": "0.2.0",
-	"description": "Pi package that vendors the official Angular developer skill with local documentation helper scripts.",
-	"keywords": [
-		"pi-package",
-		"angular",
-		"agent-skills"
-	],
-	"license": "MIT",
-	"homepage": "https://github.com/aliaksei-raketski/pi-packages/tree/main/packages/angular-developer",
-	"bugs": {
-		"url": "https://github.com/aliaksei-raketski/pi-packages/issues"
-	},
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/aliaksei-raketski/pi-packages.git",
-		"directory": "packages/angular-developer"
-	},
-	"publishConfig": {
-		"access": "public",
-		"registry": "https://registry.npmjs.org/"
-	},
-	"engines": {
-		"node": ">=18"
-	},
-	"pi": {
-		"skills": [
-			"./skills"
-		]
-	},
-	"scripts": {
-		"sync": "node scripts/sync-angular-skill.mjs"
-	},
-	"files": [
-		"skills/",
-		"scripts/",
-		"overlays/",
-		"README.md",
-		"LICENSE"
-	]
+  "name": "@aliaksei-raketski/pi-angular-developer",
+  "version": "0.2.1",
+  "type": "module",
+  "description": "Pi package that vendors the official Angular developer skill with local documentation helper scripts.",
+  "keywords": [
+    "pi-package",
+    "angular",
+    "agent-skills",
+    "pi",
+    "angular-developer",
+    "pi-skill"
+  ],
+  "license": "MIT",
+  "homepage": "https://github-main/aliaksei-raketski/pi-packages/tree/main/packages/angular-developer",
+  "bugs": {
+    "url": "https://github-main/aliaksei-raketski/pi-packages/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github-main/aliaksei-raketski/pi-packages.git",
+    "directory": "packages/angular-developer"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "files": [
+    "skills/",
+    "scripts/",
+    "overlays/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "sync": "node scripts/sync-angular-skill.mjs"
+  }
 }

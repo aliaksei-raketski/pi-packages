@@ -1,37 +1,41 @@
 {
-	"name": "@aliaksei-raketski/pi-taiga-ui-docs",
-	"version": "0.2.0",
-	"description": "Pi package with a Taiga UI docs skill backed by a self-contained llms-full.txt helper script.",
-	"keywords": [
-		"pi-package",
-		"taiga-ui",
-		"agent-skills"
-	],
-	"license": "Apache-2.0",
-	"homepage": "https://github.com/aliaksei-raketski/pi-packages/tree/main/packages/taiga-ui-docs",
-	"bugs": {
-		"url": "https://github.com/aliaksei-raketski/pi-packages/issues"
-	},
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/aliaksei-raketski/pi-packages.git",
-		"directory": "packages/taiga-ui-docs"
-	},
-	"publishConfig": {
-		"access": "public",
-		"registry": "https://registry.npmjs.org/"
-	},
-	"engines": {
-		"node": ">=18"
-	},
-	"pi": {
-		"skills": [
-			"./skills"
-		]
-	},
-	"files": [
-		"skills",
-		"README.md",
-		"LICENSE"
-	]
+  "name": "@aliaksei-raketski/pi-taiga-ui-docs",
+  "version": "0.2.1",
+  "type": "module",
+  "description": "Pi package with a Taiga UI docs skill backed by a self-contained llms-full.txt helper script.",
+  "keywords": [
+    "pi-package",
+    "taiga-ui",
+    "agent-skills",
+    "pi",
+    "taiga-ui-docs",
+    "pi-skill"
+  ],
+  "license": "MIT",
+  "homepage": "https://github-main/aliaksei-raketski/pi-packages/tree/main/packages/taiga-ui-docs",
+  "bugs": {
+    "url": "https://github-main/aliaksei-raketski/pi-packages/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github-main/aliaksei-raketski/pi-packages.git",
+    "directory": "packages/taiga-ui-docs"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "files": [
+    "skills",
+    "README.md",
+    "LICENSE"
+  ]
 }

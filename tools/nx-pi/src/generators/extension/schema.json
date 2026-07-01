@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/schema",
+  "$id": "PiExtension",
+  "title": "Create a Pi extension",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Extension folder and command name. Use letters, numbers, spaces, underscores, or hyphens; it is normalized to lowercase hyphen form.",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9 _-]*[A-Za-z0-9])?$",
+      "$default": {
+        "$source": "argv",
+        "index": 0
+      },
+      "x-prompt": "What extension would you like to create?"
+    },
+    "project": {
+      "type": "string",
+      "description": "Target Pi package project.",
+      "$default": {
+        "$source": "projectName"
+      },
+      "x-dropdown": "projects",
+      "x-prompt": "Which Pi package project should receive this extension?"
+    },
+    "overwrite": {
+      "type": "boolean",
+      "description": "Overwrite existing extension files.",
+      "default": false
+    },
+    "skipFormat": {
+      "type": "boolean",
+      "description": "Skip formatting files.",
+      "default": false,
+      "x-priority": "internal"
+    }
+  },
+  "required": ["name", "project"]
+}
