@@ -4,6 +4,8 @@
   "license": "MIT",
   "scripts": {
     "nx": "nx",
+    "prepare": "git config core.hooksPath .githooks && chmod +x .githooks/pre-commit || true",
+    "format:staged": "node tools/scripts/format-staged.mjs",
     "check": "nx sync:check && nx format:check --all && nx run-many -t lint,typecheck --parallel=3",
     "test": "nx run-many -t test --parallel=3",
     "release": "nx release --skip-publish",
