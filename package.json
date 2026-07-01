@@ -1,28 +1,41 @@
 {
-	"name": "pi-packages",
-	"private": true,
-	"description": "Monorepo for Pi packages published from nested workspaces.",
-	"workspaces": [
-		"packages/*"
-	],
-	"scripts": {
-		"format": "biome format --write .",
-		"lint": "biome check .",
-		"typecheck": "tsc --noEmit",
-		"test": "node --import tsx --test \"packages/*/test/*.test.ts\"",
-		"lockfile:check": "npm ci --dry-run --ignore-scripts",
-		"lockfile:fix": "npm install --package-lock-only --ignore-scripts",
-		"check": "npm run lockfile:check && npm run lint && npm run typecheck && npm test && npm run pack:dry-run",
-		"sync": "npm run sync --workspaces --if-present",
-		"pack:dry-run": "npm pack --workspaces --dry-run",
-		"try:fast-mode": "pi -e ./packages/fast-mode",
-		"try:statusline": "pi -e ./packages/statusline"
-	},
-	"devDependencies": {
-		"@biomejs/biome": "2.5.1",
-		"@earendil-works/pi-coding-agent": "^0.80.2",
-		"@types/node": "^22.10.0",
-		"tsx": "^4.19.2",
-		"typescript": "^5.6.3"
-	}
+  "name": "@aliaksei-raketski/pi-packages",
+  "version": "0.0.0",
+  "license": "MIT",
+  "scripts": {
+    "nx": "nx",
+    "check": "nx sync:check && nx format:check --all && nx run-many -t lint,typecheck --parallel=3",
+    "test-ci": "nx run-many -t test-ci --parallel=3"
+  },
+  "private": true,
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@eslint/js": "^9.8.0",
+    "@nx/eslint": "23.0.1",
+    "@nx/eslint-plugin": "23.0.1",
+    "@nx/js": "23.0.1",
+    "@nx/plugin": "23.0.1",
+    "@nx/vitest": "23.0.1",
+    "@swc-node/register": "1.11.1",
+    "@swc/cli": "~0.8.0",
+    "@swc/core": "1.15.8",
+    "@swc/helpers": "0.5.18",
+    "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "~4.1.0",
+    "eslint": "^9.8.0",
+    "eslint-config-prettier": "^10.0.0",
+    "jsdom": "^27.1.0",
+    "jsonc-eslint-parser": "^2.1.0",
+    "nx": "23.0.1",
+    "prettier": "^3.8.1",
+    "tslib": "^2.3.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.40.0",
+    "vite": "^8.0.0",
+    "vitest": "~4.1.0"
+  },
+  "dependencies": {
+    "@nx/devkit": "23.0.1"
+  },
+  "packageManager": "pnpm@11.9.0+sha512.bd682d5d03fe525ef7c9fd6780c6884d1e756ac4c9c9fe00c538782824310dcf90e3ddc4f53835f06dfaebd5085e41855e0bcbb3b60de2ac5bbab89e5036f03b"
 }

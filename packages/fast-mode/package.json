@@ -1,41 +1,42 @@
 {
-	"name": "@aliaksei-raketski/pi-fast-mode",
-	"version": "0.3.0",
-	"description": "Pi extension that enables fast-mode payload tuning for supported Claude/OpenAI models.",
-	"keywords": [
-		"pi-package",
-		"pi",
-		"pi-extension",
-		"fast-mode"
-	],
-	"license": "MIT",
-	"homepage": "https://github.com/aliaksei-raketski/pi-packages/tree/main/packages/fast-mode",
-	"bugs": {
-		"url": "https://github.com/aliaksei-raketski/pi-packages/issues"
-	},
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/aliaksei-raketski/pi-packages.git",
-		"directory": "packages/fast-mode"
-	},
-	"publishConfig": {
-		"access": "public",
-		"registry": "https://registry.npmjs.org/"
-	},
-	"engines": {
-		"node": ">=18"
-	},
-	"peerDependencies": {
-		"@earendil-works/pi-coding-agent": "*"
-	},
-	"pi": {
-		"extensions": [
-			"./src/index.ts"
-		]
-	},
-	"files": [
-		"src",
-		"README.md",
-		"LICENSE"
-	]
+  "name": "@aliaksei-raketski/pi-fast-mode",
+  "version": "0.2.1",
+  "type": "module",
+  "description": "Pi extension that enables fast-mode payload tuning for supported Claude/OpenAI models.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "fast-mode"
+  ],
+  "license": "MIT",
+  "homepage": "https://github-main/aliaksei-raketski/pi-packages/tree/main/packages/fast-mode",
+  "bugs": {
+    "url": "https://github-main/aliaksei-raketski/pi-packages/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github-main/aliaksei-raketski/pi-packages.git",
+    "directory": "packages/fast-mode"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
 }

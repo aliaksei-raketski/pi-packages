@@ -1,0 +1,15 @@
+import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+
+export function <%= propertyName %>(pi: ExtensionAPI) {
+  pi.on('session_start', async (_event, ctx) => {
+    ctx.ui.notify('<%= className %> extension loaded.', 'info');
+  });
+
+  pi.registerCommand('<%= name %>', {
+    description: '<%= className %> extension command',
+    handler: async (args, ctx) => {
+      const suffix = args.trim() ? `: ${args.trim()}` : '';
+      ctx.ui.notify(`<%= className %>${suffix}`, 'info');
+    },
+  });
+}
