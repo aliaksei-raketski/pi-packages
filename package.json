@@ -5,7 +5,7 @@
   "scripts": {
     "nx": "nx",
     "check": "nx sync:check && nx format:check --all && nx run-many -t lint,typecheck --parallel=3",
-    "test-ci": "nx run-many -t test-ci --parallel=3"
+    "test": "nx run-many -t test --parallel=3"
   },
   "private": true,
   "devDependencies": {
