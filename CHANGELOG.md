@@ -1,3 +1,13 @@
+## 0.3.6 (2026-07-02)
+
+### 🩹 Fixes
+
+- **statusline:** preserve footer data receiver ([35893fa](https://github.com/aliaksei-raketski/pi-packages/commit/35893fa))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.5 (2026-07-02)
 
 ### 🩹 Fixes
