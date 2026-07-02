@@ -2,6 +2,22 @@
   "name": "@aliaksei-raketski/pi-statusline-protocol",
   "version": "0.3.3",
   "type": "module",
+  "description": "Shared structured statusline protocol helpers for Pi packages.",
+  "keywords": [
+    "pi",
+    "statusline",
+    "protocol"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/aliaksei-raketski/pi-packages/tree/main/packages/statusline-protocol",
+  "bugs": {
+    "url": "https://github.com/aliaksei-raketski/pi-packages/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aliaksei-raketski/pi-packages.git",
+    "directory": "packages/statusline-protocol"
+  },
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
