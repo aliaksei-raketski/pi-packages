@@ -1,4 +1,4 @@
-# Pi Fast Extension
+# @aliaksei-raketski/pi-fast-mode
 
 A Pi extension that enables fast mode for supported models with one command and shortcut:
 
@@ -23,7 +23,7 @@ pi install npm:@aliaksei-raketski/pi-fast-mode
 pi install -l npm:@aliaksei-raketski/pi-fast-mode
 ```
 
-Try locally from this repository:
+Try locally from the repository root:
 
 ```bash
 pi -e ./packages/fast-mode

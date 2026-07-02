@@ -22,19 +22,19 @@ pnpm install
 List Nx projects:
 
 ```bash
-pnpm exec nx show projects
+pnpm nx show projects
 ```
 
 Inspect a project:
 
 ```bash
-pnpm exec nx show project @aliaksei-raketski/pi-fast-mode --json
+pnpm nx show project @aliaksei-raketski/pi-fast-mode --json
 ```
 
 Run checks for all Pi packages:
 
 ```bash
-pnpm exec nx run-many \
+pnpm nx run-many \
   --projects=@aliaksei-raketski/pi-angular-developer,@aliaksei-raketski/pi-fast-mode,@aliaksei-raketski/pi-statusline,@aliaksei-raketski/pi-taiga-ui-docs \
   -t lint,typecheck
 ```
@@ -42,14 +42,14 @@ pnpm exec nx run-many \
 Run extension tests:
 
 ```bash
-pnpm exec nx run @aliaksei-raketski/pi-fast-mode:test
-pnpm exec nx run @aliaksei-raketski/pi-statusline:test
+pnpm nx run @aliaksei-raketski/pi-fast-mode:test
+pnpm nx run @aliaksei-raketski/pi-statusline:test
 ```
 
 Explore the workspace graph:
 
 ```bash
-pnpm exec nx graph
+pnpm nx graph
 ```
 
 ## Generating Pi packages and components
@@ -59,26 +59,26 @@ Use the local Nx generators instead of hand-rolling package metadata or Pi compo
 Create a package container:
 
 ```bash
-pnpm exec nx g @aliaksei-raketski/nx-pi:package my-package --dry-run --no-interactive
-pnpm exec nx g @aliaksei-raketski/nx-pi:package my-package --no-interactive
+pnpm nx g @aliaksei-raketski/nx-pi:package my-package --dry-run --no-interactive
+pnpm nx g @aliaksei-raketski/nx-pi:package my-package --no-interactive
 ```
 
 Add components to an existing Pi package:
 
 ```bash
-pnpm exec nx g @aliaksei-raketski/nx-pi:skill my-skill \
+pnpm nx g @aliaksei-raketski/nx-pi:skill my-skill \
   --project=@aliaksei-raketski/pi-my-package \
   --no-interactive
 
-pnpm exec nx g @aliaksei-raketski/nx-pi:prompt my-prompt \
+pnpm nx g @aliaksei-raketski/nx-pi:prompt my-prompt \
   --project=@aliaksei-raketski/pi-my-package \
   --no-interactive
 
-pnpm exec nx g @aliaksei-raketski/nx-pi:theme my-theme \
+pnpm nx g @aliaksei-raketski/nx-pi:theme my-theme \
   --project=@aliaksei-raketski/pi-my-package \
   --no-interactive
 
-pnpm exec nx g @aliaksei-raketski/nx-pi:extension my-extension \
+pnpm nx g @aliaksei-raketski/nx-pi:extension my-extension \
   --project=@aliaksei-raketski/pi-my-package \
   --no-interactive
 ```
@@ -86,9 +86,9 @@ pnpm exec nx g @aliaksei-raketski/nx-pi:extension my-extension \
 Check available options before applying changes:
 
 ```bash
-pnpm exec nx g @aliaksei-raketski/nx-pi:package --help
-pnpm exec nx g @aliaksei-raketski/nx-pi:skill --help
-pnpm exec nx g @aliaksei-raketski/nx-pi:extension --help
+pnpm nx g @aliaksei-raketski/nx-pi:package --help
+pnpm nx g @aliaksei-raketski/nx-pi:skill --help
+pnpm nx g @aliaksei-raketski/nx-pi:extension --help
 ```
 
 ## Trying extensions locally

@@ -1,4 +1,4 @@
-# Taiga UI Docs Pi Package
+# @aliaksei-raketski/pi-taiga-ui-docs
 
 A Pi package that ships one skill (`taiga-ui-docs`) with a bundled helper script for Taiga UI documentation.
 
@@ -17,10 +17,10 @@ pi install npm:@aliaksei-raketski/pi-taiga-ui-docs
 pi install -l npm:@aliaksei-raketski/pi-taiga-ui-docs
 ```
 
-For local development from this repository:
+For local development from the repository root:
 
 ```bash
-pi install ./taiga-ui-docs
+pi install ./packages/taiga-ui-docs
 ```
 
 ## Skill

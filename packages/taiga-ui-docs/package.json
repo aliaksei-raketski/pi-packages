@@ -12,13 +12,13 @@
     "pi-skill"
   ],
   "license": "MIT",
-  "homepage": "https://github-main/aliaksei-raketski/pi-packages/tree/main/packages/taiga-ui-docs",
+  "homepage": "https://github.com/aliaksei-raketski/pi-packages/tree/main/packages/taiga-ui-docs",
   "bugs": {
-    "url": "https://github-main/aliaksei-raketski/pi-packages/issues"
+    "url": "https://github.com/aliaksei-raketski/pi-packages/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github-main/aliaksei-raketski/pi-packages.git",
+    "url": "git+https://github.com/aliaksei-raketski/pi-packages.git",
     "directory": "packages/taiga-ui-docs"
   },
   "publishConfig": {

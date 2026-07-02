@@ -6,6 +6,8 @@ A Pi extension that replaces the footer statusline with a configurable, multi-li
 
 ```bash
 pi install npm:@aliaksei-raketski/pi-statusline
+# or project-local
+pi install -l npm:@aliaksei-raketski/pi-statusline
 ```
 
 ## Features
@@ -25,7 +27,7 @@ pi install npm:@aliaksei-raketski/pi-statusline
 Configuration is loaded from two files and merged in order:
 
 1. **User config**: `~/.pi/statusline.json`
-2. **Project config**: `.<project>/.pi/statusline.json` (only when project is trusted)
+2. **Project config**: `<project>/.pi/statusline.json` (only when project is trusted)
 
 Invalid config values are ignored and fall back to defaults, with warnings emitted in the UI.
 
@@ -65,7 +67,7 @@ If no user config exists, statusline will create `~/.pi/statusline.json` with th
     "title": "muted",
     "project": "muted",
     "model": "toolTitle",
-    "changes": "muted",
+    "changes": "dim",
     "pr": "muted",
     "thinking": {
       "off": "thinkingOff",
@@ -169,13 +171,13 @@ For `separator`, use `separator` or `separatorColor` to control token separators
 
 ## Development
 
-Tests live in `packages/statusline/test`:
+Tests live in `packages/statusline/extensions/statusline/test`. From the repository root:
 
 ```bash
-npm test
+pnpm nx run @aliaksei-raketski/pi-statusline:test
 ```
 
-To try locally:
+To try locally from the repository root:
 
 ```bash
 pi -e ./packages/statusline

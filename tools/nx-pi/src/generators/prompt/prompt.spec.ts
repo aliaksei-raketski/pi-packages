@@ -1,5 +1,5 @@
 import { addProjectConfiguration, readJson, type Tree, writeJson } from '@nx/devkit';
-import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
+import { cleanupTestWorkspaceRoots, createTreeWithExistingWorkspaceRoot } from '../test-tree';
 
 import { promptGenerator } from './prompt';
 import type { PromptGeneratorSchema } from './schema';
@@ -13,8 +13,12 @@ describe('prompt generator', () => {
     argumentHint: '<PR-URL>',
   };
 
+  afterEach(() => {
+    cleanupTestWorkspaceRoots();
+  });
+
   beforeEach(() => {
-    tree = createTreeWithEmptyWorkspace();
+    tree = createTreeWithExistingWorkspaceRoot();
     setupPiPackageProject(tree);
   });
 

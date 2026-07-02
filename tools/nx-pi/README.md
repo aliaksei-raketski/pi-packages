@@ -1,11 +1,29 @@
-# nx-pi
+# @aliaksei-raketski/nx-pi
 
-This library was generated with [Nx](https://nx.dev).
+Nx plugin with generators for creating and maintaining Pi package workspaces.
 
-## Building
+## Generators
 
-Run `nx build nx-pi` to build the library.
+Use these generators from the repository root:
 
-## Running unit tests
+```bash
+pnpm nx g @aliaksei-raketski/nx-pi:package my-package --dry-run --no-interactive
+pnpm nx g @aliaksei-raketski/nx-pi:extension my-extension --project=@aliaksei-raketski/pi-my-package --no-interactive
+pnpm nx g @aliaksei-raketski/nx-pi:skill my-skill --project=@aliaksei-raketski/pi-my-package --no-interactive
+pnpm nx g @aliaksei-raketski/nx-pi:prompt my-prompt --project=@aliaksei-raketski/pi-my-package --no-interactive
+pnpm nx g @aliaksei-raketski/nx-pi:theme my-theme --project=@aliaksei-raketski/pi-my-package --no-interactive
+```
 
-Run `nx test nx-pi` to execute the unit tests via [Vitest](https://vitest.dev/).
+Check generator options before applying changes:
+
+```bash
+pnpm nx g @aliaksei-raketski/nx-pi:package --help
+pnpm nx g @aliaksei-raketski/nx-pi:extension --help
+```
+
+## Development
+
+```bash
+pnpm nx run @aliaksei-raketski/nx-pi:build
+pnpm nx run @aliaksei-raketski/nx-pi:test
+```

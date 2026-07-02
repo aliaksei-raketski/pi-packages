@@ -1,4 +1,4 @@
-# Angular Developer Pi Package
+# @aliaksei-raketski/pi-angular-developer
 
 A Pi package that vendors the official Angular `angular-developer` Agent Skill and replaces Angular MCP guidance with local helper scripts.
 

@@ -1,5 +1,5 @@
 import { addProjectConfiguration, readJson, type Tree, writeJson } from '@nx/devkit';
-import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
+import { cleanupTestWorkspaceRoots, createTreeWithExistingWorkspaceRoot } from '../test-tree';
 
 import { extensionGenerator } from './extension';
 import type { ExtensionGeneratorSchema } from './schema';
@@ -11,8 +11,12 @@ describe('extension generator', () => {
     project: '@scope/pi-demo',
   };
 
+  afterEach(() => {
+    cleanupTestWorkspaceRoots();
+  });
+
   beforeEach(() => {
-    tree = createTreeWithEmptyWorkspace();
+    tree = createTreeWithExistingWorkspaceRoot();
     setupPiPackageProject(tree);
   });
 

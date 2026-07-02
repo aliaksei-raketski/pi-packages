@@ -10,7 +10,9 @@ import {
 import { promptWhenInteractive } from '@nx/devkit/internal';
 import { libraryGenerator } from '@nx/js';
 import { execFileSync } from 'node:child_process';
-import { isAbsolute } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
 
 import type { PackageGeneratorSchema } from './schema';
 
@@ -32,6 +34,17 @@ interface GitRemote {
   url: string;
 }
 
+interface GitHubRepository {
+  browserUrl: string;
+  nameWithOwner: string;
+}
+
+interface ParsedRepositoryUrl {
+  host: string;
+  path: string;
+  usesSshConfig: boolean;
+}
+
 const PACKAGE_NAME_MAX_LENGTH = 64;
 const NPM_PACKAGE_MAX_LENGTH = 214;
 const SAFE_PACKAGE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
@@ -44,7 +57,7 @@ export async function packageGenerator(tree: Tree, options: PackageGeneratorSche
     directory: normalizedOptions.projectRoot,
     importPath: normalizedOptions.importPath,
     bundler: 'none',
-    linter: 'eslint',
+    linter: 'none',
     unitTestRunner: 'none',
     useProjectJson: false,
     skipFormat: true,
@@ -52,6 +65,7 @@ export async function packageGenerator(tree: Tree, options: PackageGeneratorSche
 
   tree.delete(joinPathFragments(normalizedOptions.projectRoot, 'src'));
   updateTypeScriptConfigs(tree, normalizedOptions.projectRoot);
+  writeEslintConfig(tree, normalizedOptions.projectRoot);
   updatePackageJson(tree, normalizedOptions);
   writeReadme(tree, normalizedOptions);
 
@@ -251,7 +265,17 @@ function getWorkspaceNpmScope(tree: Tree): string | undefined {
 async function resolveRepositoryMetadata(
   repositoryUrl: string | undefined,
 ): Promise<RepositoryMetadata> {
-  const gitRemoteUrl = repositoryUrl?.trim() || (await resolveGitRemoteUrl());
+  const explicitRepositoryUrl = repositoryUrl?.trim();
+  const gitRemoteUrl = explicitRepositoryUrl || (await resolveGitRemoteUrl());
+  const githubRepository = parseGitHubRepository(gitRemoteUrl);
+
+  if (githubRepository) {
+    return toGitHubRepositoryMetadata(
+      explicitRepositoryUrl
+        ? githubRepository
+        : (readGitHubCliRepository(githubRepository) ?? githubRepository),
+    );
+  }
 
   return {
     browserUrl: toBrowserUrl(gitRemoteUrl),
@@ -327,45 +351,235 @@ function readGitRemotes(): GitRemote[] {
   }
 }
 
-function toPackageJsonRepositoryUrl(gitRemoteUrl: string): string {
-  if (gitRemoteUrl.startsWith('git+')) {
-    return gitRemoteUrl;
+function parseGitHubRepository(gitRemoteUrl: string): GitHubRepository | undefined {
+  const parsedUrl = parseRepositoryUrl(gitRemoteUrl);
+  if (!parsedUrl) {
+    return undefined;
   }
 
-  const scpLikeUrl = gitRemoteUrl.match(/^git@([^:]+):(.+)$/);
-  if (scpLikeUrl) {
-    return ensureGitSuffix(`git+ssh://git@${scpLikeUrl[1]}/${scpLikeUrl[2]}`);
+  const host = parsedUrl.usesSshConfig ? resolveSshHostName(parsedUrl.host) : parsedUrl.host;
+  if (host !== 'github.com') {
+    return undefined;
   }
 
-  if (gitRemoteUrl.startsWith('http://') || gitRemoteUrl.startsWith('https://')) {
-    return ensureGitSuffix(`git+${gitRemoteUrl}`);
+  const [owner, repo, ...extraPath] = normalizeRepositoryPath(parsedUrl.path).split('/');
+  if (!owner || !repo || extraPath.length > 0) {
+    return undefined;
   }
 
-  if (gitRemoteUrl.startsWith('ssh://') || gitRemoteUrl.startsWith('git://')) {
-    return ensureGitSuffix(`git+${gitRemoteUrl}`);
-  }
-
-  return gitRemoteUrl;
+  const nameWithOwner = `${owner}/${repo}`;
+  return {
+    browserUrl: `https://github.com/${nameWithOwner}`,
+    nameWithOwner,
+  };
 }
 
-function toBrowserUrl(gitRemoteUrl: string): string | undefined {
-  const normalizedUrl = gitRemoteUrl.replace(/^git\+/, '').replace(/\.git$/, '');
-
-  if (normalizedUrl.startsWith('http://') || normalizedUrl.startsWith('https://')) {
-    return normalizedUrl;
+function readGitHubCliRepository(repository: GitHubRepository): GitHubRepository | undefined {
+  let rawMetadata: string;
+  try {
+    rawMetadata = execFileSync(
+      'gh',
+      ['repo', 'view', repository.nameWithOwner, '--json', 'url,sshUrl,nameWithOwner'],
+      {
+        cwd: workspaceRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: 2_000,
+      },
+    );
+  } catch {
+    return undefined;
   }
 
-  const scpLikeUrl = normalizedUrl.match(/^git@([^:]+):(.+)$/);
-  if (scpLikeUrl) {
-    return `https://${scpLikeUrl[1]}/${scpLikeUrl[2]}`;
+  let parsedMetadata: unknown;
+  try {
+    parsedMetadata = JSON.parse(rawMetadata);
+  } catch {
+    return undefined;
   }
 
-  const sshUrl = normalizedUrl.match(/^(?:ssh|git):\/\/(?:git@)?([^/]+)\/(.+)$/);
-  if (sshUrl) {
-    return `https://${sshUrl[1]}/${sshUrl[2]}`;
+  if (!isPlainObject(parsedMetadata)) {
+    return undefined;
+  }
+
+  const browserUrl =
+    typeof parsedMetadata.url === 'string' ? normalizeBrowserUrl(parsedMetadata.url) : undefined;
+  const nameWithOwner =
+    typeof parsedMetadata.nameWithOwner === 'string' &&
+    isValidGitHubNameWithOwner(parsedMetadata.nameWithOwner)
+      ? parsedMetadata.nameWithOwner
+      : (extractGitHubNameWithOwner(browserUrl) ?? repository.nameWithOwner);
+
+  return {
+    browserUrl: browserUrl ?? `https://github.com/${nameWithOwner}`,
+    nameWithOwner,
+  };
+}
+
+function toGitHubRepositoryMetadata(repository: GitHubRepository): RepositoryMetadata {
+  const browserUrl = normalizeBrowserUrl(repository.browserUrl);
+  return {
+    browserUrl,
+    packageJsonUrl: ensureGitSuffix(`git+${browserUrl}`),
+  };
+}
+
+function parseRepositoryUrl(gitRemoteUrl: string): ParsedRepositoryUrl | undefined {
+  const normalizedUrl = gitRemoteUrl.trim().replace(/^git\+/, '');
+  if (!normalizedUrl) {
+    return undefined;
+  }
+
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(normalizedUrl)) {
+    try {
+      const url = new URL(normalizedUrl);
+      return {
+        host: url.hostname,
+        path: url.pathname,
+        usesSshConfig: url.protocol === 'ssh:' || url.protocol === 'git:',
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  const scpLikeUrl = normalizedUrl.match(/^[^@:/]+@([^:]+):(.+)$/);
+  if (scpLikeUrl?.[1] && scpLikeUrl[2]) {
+    return {
+      host: scpLikeUrl[1],
+      path: scpLikeUrl[2],
+      usesSshConfig: true,
+    };
   }
 
   return undefined;
+}
+
+function toPackageJsonRepositoryUrl(gitRemoteUrl: string): string {
+  const normalizedRemoteUrl = gitRemoteUrl.trim();
+  if (normalizedRemoteUrl.startsWith('git+')) {
+    return ensureGitSuffix(normalizedRemoteUrl);
+  }
+
+  const scpLikeUrl = normalizedRemoteUrl.match(/^([^@:/]+)@([^:]+):(.+)$/);
+  if (scpLikeUrl?.[1] && scpLikeUrl[2] && scpLikeUrl[3]) {
+    return ensureGitSuffix(`git+ssh://${scpLikeUrl[1]}@${scpLikeUrl[2]}/${scpLikeUrl[3]}`);
+  }
+
+  if (normalizedRemoteUrl.startsWith('http://') || normalizedRemoteUrl.startsWith('https://')) {
+    return ensureGitSuffix(`git+${normalizedRemoteUrl}`);
+  }
+
+  if (normalizedRemoteUrl.startsWith('ssh://') || normalizedRemoteUrl.startsWith('git://')) {
+    return ensureGitSuffix(`git+${normalizedRemoteUrl}`);
+  }
+
+  return normalizedRemoteUrl;
+}
+
+function toBrowserUrl(gitRemoteUrl: string): string | undefined {
+  const normalizedUrl = gitRemoteUrl.trim().replace(/^git\+/, '');
+
+  if (normalizedUrl.startsWith('http://') || normalizedUrl.startsWith('https://')) {
+    return normalizeBrowserUrl(normalizedUrl);
+  }
+
+  const scpLikeUrl = normalizedUrl.match(/^[^@:/]+@([^:]+):(.+)$/);
+  if (scpLikeUrl?.[1] && scpLikeUrl[2]) {
+    return `https://${resolveSshHostName(scpLikeUrl[1])}/${normalizeRepositoryPath(scpLikeUrl[2])}`;
+  }
+
+  const sshUrl = normalizedUrl.match(/^(?:ssh|git):\/\/(?:[^@/]+@)?([^/]+)\/(.+)$/);
+  if (sshUrl?.[1] && sshUrl[2]) {
+    return `https://${resolveSshHostName(sshUrl[1])}/${normalizeRepositoryPath(sshUrl[2])}`;
+  }
+
+  return undefined;
+}
+
+function resolveSshHostName(host: string): string {
+  return readSshHostName(host) ?? host;
+}
+
+function readSshHostName(host: string): string | undefined {
+  let sshConfig: string;
+  try {
+    sshConfig = readFileSync(join(homedir(), '.ssh', 'config'), 'utf8');
+  } catch {
+    return undefined;
+  }
+
+  let hostBlockMatches = false;
+  for (const rawLine of sshConfig.split('\n')) {
+    const line = normalizeSshConfigLine(rawLine);
+    if (!line) {
+      continue;
+    }
+
+    const [keyword = '', ...values] = line.split(/\s+/);
+    const normalizedKeyword = keyword.toLowerCase();
+    if (normalizedKeyword === 'host') {
+      hostBlockMatches = values.some((pattern) => sshHostPatternMatches(pattern, host));
+      continue;
+    }
+
+    if (hostBlockMatches && normalizedKeyword === 'hostname' && values[0]) {
+      return values[0];
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeSshConfigLine(line: string): string {
+  const trimmedLine = line.trim();
+  if (!trimmedLine || trimmedLine.startsWith('#')) {
+    return '';
+  }
+
+  return trimmedLine.replace(/\s+#.*$/, '').trim();
+}
+
+function sshHostPatternMatches(pattern: string, host: string): boolean {
+  if (!pattern || pattern.startsWith('!')) {
+    return false;
+  }
+
+  const escapedPattern = pattern.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&');
+  const regexPattern = escapedPattern.replace(/\\\*/g, '.*').replace(/\\\?/g, '.');
+  return new RegExp(`^${regexPattern}$`, 'i').test(host);
+}
+
+function normalizeRepositoryPath(path: string): string {
+  return path
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+    .replace(/\.git$/, '');
+}
+
+function normalizeBrowserUrl(url: string): string {
+  return url
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\.git$/, '');
+}
+
+function extractGitHubNameWithOwner(browserUrl: string | undefined): string | undefined {
+  if (!browserUrl) {
+    return undefined;
+  }
+
+  const parsedUrl = parseRepositoryUrl(browserUrl);
+  if (!parsedUrl || parsedUrl.host !== 'github.com') {
+    return undefined;
+  }
+
+  const path = normalizeRepositoryPath(parsedUrl.path);
+  return isValidGitHubNameWithOwner(path) ? path : undefined;
+}
+
+function isValidGitHubNameWithOwner(value: string): boolean {
+  return /^[^/\s]+\/[^/\s]+$/.test(value);
 }
 
 function ensureGitSuffix(repositoryUrl: string): string {
@@ -375,6 +589,29 @@ function ensureGitSuffix(repositoryUrl: string): string {
 function updateTypeScriptConfigs(tree: Tree, projectRoot: string): void {
   updateProjectTypeScriptConfig(tree, projectRoot);
   updateLibraryTypeScriptConfig(tree, projectRoot);
+}
+
+function writeEslintConfig(tree: Tree, projectRoot: string): void {
+  if (!tree.exists('eslint.config.mjs')) {
+    return;
+  }
+
+  const rootImportPath = `${projectRoot
+    .split('/')
+    .map(() => '..')
+    .join('/')}/eslint.config.mjs`;
+  tree.write(
+    joinPathFragments(projectRoot, 'eslint.config.mjs'),
+    `import baseConfig from '${rootImportPath}';
+
+export default [
+  ...baseConfig,
+  {
+    ignores: ['**/out-tsc'],
+  },
+];
+`,
+  );
 }
 
 function updateProjectTypeScriptConfig(tree: Tree, projectRoot: string): void {

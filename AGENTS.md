@@ -26,8 +26,8 @@
 
 ## Nx Command Invocation
 
-- In this workspace, run Nx through the root package script with `pnpm run nx ...` for ad hoc Nx commands. Do not use a globally installed `nx`.
-- Use `pnpm run nx <args>` directly; do not insert `--` after `nx` because it is passed through to the Nx CLI.
+- In this workspace, run Nx with `pnpm nx ...` for ad hoc Nx commands. Do not use a globally installed `nx`.
+- Use `pnpm nx <args>` directly; do not insert `--` after `nx` because it is passed through to the Nx CLI.
 - Existing package scripts may call `nx` directly because npm scripts resolve `node_modules/.bin` automatically.
 
 ## Pi Package Management
@@ -36,4 +36,4 @@
 - Use `@aliaksei-raketski/nx-pi:package` for new Pi package containers.
 - Use the Pi component generators for package internals: `@aliaksei-raketski/nx-pi:extension`, `@aliaksei-raketski/nx-pi:skill`, `@aliaksei-raketski/nx-pi:prompt`, and `@aliaksei-raketski/nx-pi:theme`.
 - For existing Pi packages, add or update components through those generators as well; do not hand-roll folders, `package.json` `pi` entries, `files` allowlists, keywords, test config, or TypeScript config unless a generator is missing required behavior.
-- Check generator options with `pnpm run nx g <generator> --help` and prefer `--dry-run` before applying changes.
+- Check generator options with `pnpm nx g <generator> --help` and prefer `--dry-run` before applying changes.

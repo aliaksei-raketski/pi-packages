@@ -1,5 +1,9 @@
 import { readJson, type Tree, writeJson } from '@nx/devkit';
-import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { cleanupTestWorkspaceRoots, createTreeWithExistingWorkspaceRoot } from '../test-tree';
 
 import { packageGenerator } from './package';
 import type { PackageGeneratorSchema } from './schema';
@@ -11,12 +15,17 @@ describe('package generator', () => {
     repositoryUrl: 'git@github.com:aliaksei-raketski/pi-packages.git',
   };
 
+  afterEach(() => {
+    cleanupTestWorkspaceRoots();
+  });
+
   beforeEach(() => {
-    tree = createTreeWithEmptyWorkspace();
+    tree = createTreeWithExistingWorkspaceRoot();
     writeJson(tree, 'package.json', {
       name: '@aliaksei-raketski/pi-packages',
       private: true,
     });
+    tree.write('eslint.config.mjs', 'export default [];\n');
   });
 
   it('scaffolds a publishable Pi package without default source files', async () => {
@@ -34,9 +43,13 @@ describe('package generator', () => {
       description: 'Pi package for demo.',
       keywords: ['pi-package', 'pi', 'demo'],
       license: 'MIT',
+      homepage: 'https://github.com/aliaksei-raketski/pi-packages/tree/main/packages/demo',
+      bugs: {
+        url: 'https://github.com/aliaksei-raketski/pi-packages/issues',
+      },
       repository: {
         type: 'git',
-        url: 'git+ssh://git@github.com/aliaksei-raketski/pi-packages.git',
+        url: 'git+https://github.com/aliaksei-raketski/pi-packages.git',
         directory: 'packages/demo',
       },
       publishConfig: {
@@ -53,6 +66,9 @@ describe('package generator', () => {
     expect(readJson(tree, 'packages/demo/package.json').dependencies).toBeUndefined();
     expect(tree.read('packages/demo/README.md', 'utf-8')).toContain(
       'pi install npm:@aliaksei-raketski/pi-demo',
+    );
+    expect(tree.read('packages/demo/eslint.config.mjs', 'utf-8')).toContain(
+      '../../eslint.config.mjs',
     );
     expect(readJson(tree, 'packages/demo/tsconfig.json')).toMatchObject({
       compilerOptions: {
@@ -115,6 +131,55 @@ describe('package generator', () => {
       },
       repository: {
         url: 'git+https://github.com/owner/repo.git',
+      },
+    });
+  });
+
+  it('normalizes GitHub SSH aliases from ssh config', async () => {
+    const originalHome = process.env.HOME;
+    const home = mkdtempSync(join(tmpdir(), 'nx-pi-home-'));
+    try {
+      mkdirSync(join(home, '.ssh'), { recursive: true });
+      writeFileSync(join(home, '.ssh', 'config'), 'Host github-main\n  HostName github.com\n');
+      process.env.HOME = home;
+
+      await packageGenerator(tree, {
+        ...options,
+        repositoryUrl: 'git@github-main:owner/repo.git',
+      });
+
+      expect(readJson(tree, 'packages/demo/package.json')).toMatchObject({
+        homepage: 'https://github.com/owner/repo/tree/main/packages/demo',
+        bugs: {
+          url: 'https://github.com/owner/repo/issues',
+        },
+        repository: {
+          url: 'git+https://github.com/owner/repo.git',
+        },
+      });
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps explicit repository URLs for unsupported remotes', async () => {
+    await packageGenerator(tree, {
+      ...options,
+      repositoryUrl: 'ssh://git@git.example.test/team/repo.git',
+    });
+
+    expect(readJson(tree, 'packages/demo/package.json')).toMatchObject({
+      homepage: 'https://git.example.test/team/repo/tree/main/packages/demo',
+      bugs: {
+        url: 'https://git.example.test/team/repo/issues',
+      },
+      repository: {
+        url: 'git+ssh://git@git.example.test/team/repo.git',
       },
     });
   });

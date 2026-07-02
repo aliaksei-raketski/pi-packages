@@ -10,13 +10,13 @@
     "statusline"
   ],
   "license": "MIT",
-  "homepage": "https://github-main/aliaksei-raketski/pi-packages/tree/main/packages/statusline",
+  "homepage": "https://github.com/aliaksei-raketski/pi-packages/tree/main/packages/statusline",
   "bugs": {
-    "url": "https://github-main/aliaksei-raketski/pi-packages/issues"
+    "url": "https://github.com/aliaksei-raketski/pi-packages/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github-main/aliaksei-raketski/pi-packages.git",
+    "url": "git+https://github.com/aliaksei-raketski/pi-packages.git",
     "directory": "packages/statusline"
   },
   "publishConfig": {

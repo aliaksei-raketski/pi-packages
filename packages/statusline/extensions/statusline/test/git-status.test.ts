@@ -75,7 +75,7 @@ test('GitStatusCache refreshes and deduplicates snapshots', async () => {
     includeGitStatus: true,
     includePullRequest: true,
     refreshIntervalMs: 60_000,
-    runner: async (command, _args, _options) => {
+    runner: async (command) => {
       if (command === 'git') {
         const output = gitOutputs[gitIndex++];
         if (!output) {

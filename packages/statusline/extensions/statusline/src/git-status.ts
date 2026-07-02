@@ -96,8 +96,12 @@ function parseBranchAheadBehind(line: string, status: GitStatusSnapshot): void {
   if (!match) {
     return;
   }
-  status.ahead = Number.parseInt(match[1]!, 10);
-  status.behind = Number.parseInt(match[2]!, 10);
+  const [, ahead, behind] = match;
+  if (ahead === undefined || behind === undefined) {
+    return;
+  }
+  status.ahead = Number.parseInt(ahead, 10);
+  status.behind = Number.parseInt(behind, 10);
 }
 
 function addTrackedStatusCounts(status: GitStatusSnapshot, xy: string): void {

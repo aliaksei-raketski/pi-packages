@@ -1,5 +1,5 @@
 import { addProjectConfiguration, readJson, type Tree, writeJson } from '@nx/devkit';
-import { createTreeWithEmptyWorkspace } from '@nx/devkit/testing';
+import { cleanupTestWorkspaceRoots, createTreeWithExistingWorkspaceRoot } from '../test-tree';
 
 import { skillGenerator } from './skill';
 import type { SkillGeneratorSchema } from './schema';
@@ -12,8 +12,12 @@ describe('skill generator', () => {
     description: 'Review code changes with a helper script.',
   };
 
+  afterEach(() => {
+    cleanupTestWorkspaceRoots();
+  });
+
   beforeEach(() => {
-    tree = createTreeWithEmptyWorkspace();
+    tree = createTreeWithExistingWorkspaceRoot();
     setupPiPackageProject(tree);
   });
 
