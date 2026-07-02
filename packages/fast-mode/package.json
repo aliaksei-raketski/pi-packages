@@ -1,6 +1,6 @@
 {
   "name": "@aliaksei-raketski/pi-fast-mode",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "type": "module",
   "description": "Pi extension that enables fast-mode payload tuning for supported Claude/OpenAI models.",
   "keywords": [

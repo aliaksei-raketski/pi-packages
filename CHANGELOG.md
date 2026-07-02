@@ -1,3 +1,15 @@
+## 0.3.3 (2026-07-02)
+
+### 🩹 Fixes
+
+- **release:** remove protocol registry override ([c39dacc](https://github.com/aliaksei-raketski/pi-packages/commit/c39dacc))
+- **release:** remove package registry overrides ([52ddb9f](https://github.com/aliaksei-raketski/pi-packages/commit/52ddb9f))
+- **release:** align protocol package config ([a84b88d](https://github.com/aliaksei-raketski/pi-packages/commit/a84b88d))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.2 (2026-07-02)
 
 ### 🚀 Features
