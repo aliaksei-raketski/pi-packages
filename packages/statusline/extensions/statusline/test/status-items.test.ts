@@ -81,6 +81,23 @@ test('collectStatusItems exposes extension statuses when explicitly requested', 
   expect(items.get('statuses')?.text).toBe('lsp: ready');
 });
 
+test('collectStatusItems calls footer status provider with its receiver', () => {
+  const ctx = createContext('/tmp');
+  const statuses = new Map([['lsp', 'ready']]);
+  const footerData = {
+    getGitBranch: () => null,
+    getExtensionStatuses() {
+      if (this !== footerData) {
+        throw new Error('footer status provider was called without its receiver');
+      }
+      return statuses;
+    },
+  } as unknown as ReadonlyFooterDataProvider;
+
+  const items = collectStatusItems(ctx, pi, footerData, new Set(['statuses']));
+  expect(items.get('statuses')?.text).toBe('lsp: ready');
+});
+
 test('collectStatusItems exposes extension status keys by token', () => {
   const ctx = createContext('/tmp');
   const footerData = createFooterProvider({

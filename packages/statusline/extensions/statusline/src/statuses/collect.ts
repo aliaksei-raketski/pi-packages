@@ -33,7 +33,7 @@ function collectBuiltinItems(context: StatuslineCollectContext): Map<string, Sta
 
 function collectRawStatusesIfNeeded(
   requestedKeys: Set<string>,
-  footerStatuses: ReadonlyFooterDataProvider['getExtensionStatuses'],
+  footerData: ReadonlyFooterDataProvider,
 ): Map<string, string> | undefined {
   const customKeys = Array.from(requestedKeys).filter(
     (key) => key !== RESERVED_SPACER_TOKEN && key !== 'statuses' && !isBuiltinStatusKey(key),
@@ -44,7 +44,7 @@ function collectRawStatusesIfNeeded(
     return undefined;
   }
 
-  return new Map(footerStatuses());
+  return new Map(footerData.getExtensionStatuses());
 }
 
 export function collectStatusItems(
@@ -78,10 +78,7 @@ export function collectStatusItems(
     });
   }
 
-  const extensionStatuses = collectRawStatusesIfNeeded(
-    requestedKeys,
-    footerData.getExtensionStatuses,
-  );
+  const extensionStatuses = collectRawStatusesIfNeeded(requestedKeys, footerData);
   if (!extensionStatuses) {
     return items;
   }
