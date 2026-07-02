@@ -22,8 +22,7 @@
     "directory": "packages/angular-developer"
   },
   "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
+    "access": "public"
   },
   "engines": {
     "node": ">=18"
