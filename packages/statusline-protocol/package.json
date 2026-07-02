@@ -17,9 +17,6 @@
     "dist",
     "!**/*.tsbuildinfo"
   ],
-  "nx": {
-    "name": "statusline-protocol"
-  },
   "publishConfig": {
     "access": "public"
   },
