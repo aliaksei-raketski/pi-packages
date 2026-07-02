@@ -1,3 +1,13 @@
+## 0.3.4 (2026-07-02)
+
+### 🩹 Fixes
+
+- **release:** add protocol repository metadata ([d5c2049](https://github.com/aliaksei-raketski/pi-packages/commit/d5c2049))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.3 (2026-07-02)
 
 ### 🩹 Fixes
