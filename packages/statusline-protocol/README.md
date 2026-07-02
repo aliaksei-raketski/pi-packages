@@ -4,6 +4,11 @@ Shared structured statusline protocol helpers for Pi packages.
 
 This package is a normal JavaScript library consumed by Pi extensions such as `@aliaksei-raketski/pi-statusline` and `@aliaksei-raketski/pi-fast-mode`. Unlike extension packages that Pi can load from TypeScript source, this package is imported through npm package exports and must publish its compiled `dist` artifacts.
 
+## Package contents
+
+- TypeScript source under `src/`.
+- Compiled runtime and declaration files under `dist/` in published tarballs.
+
 ## Exports
 
 - `STATUSLINE_STATUS_SET_EVENT`
