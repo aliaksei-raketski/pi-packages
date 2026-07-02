@@ -1,3 +1,18 @@
+## 0.3.5 (2026-07-02)
+
+### 🩹 Fixes
+
+- **angular-developer:** document package contents ([7b8a852](https://github.com/aliaksei-raketski/pi-packages/commit/7b8a852))
+- **fast-mode:** document package contents ([04134e5](https://github.com/aliaksei-raketski/pi-packages/commit/04134e5))
+- **release:** verify package artifacts before publishing ([41ba220](https://github.com/aliaksei-raketski/pi-packages/commit/41ba220))
+- **statusline:** document package contents ([94a23b1](https://github.com/aliaksei-raketski/pi-packages/commit/94a23b1))
+- **statusline-protocol:** document package contents ([87149c8](https://github.com/aliaksei-raketski/pi-packages/commit/87149c8))
+- **taiga-ui-docs:** document package contents ([1ad9cfe](https://github.com/aliaksei-raketski/pi-packages/commit/1ad9cfe))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.4 (2026-07-02)
 
 ### 🩹 Fixes

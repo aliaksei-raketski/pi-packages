@@ -1,6 +1,6 @@
 {
   "name": "@aliaksei-raketski/pi-angular-developer",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "type": "module",
   "description": "Pi package that vendors the official Angular developer skill with local documentation helper scripts.",
   "keywords": [
