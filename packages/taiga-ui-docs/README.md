@@ -27,6 +27,8 @@ pi install ./packages/taiga-ui-docs
 
 See `skills/taiga-ui-docs/SKILL.md`.
 
+The published package includes the skill markdown and helper script source files directly; no generated build output is required.
+
 ## Helper script
 
 ```bash
