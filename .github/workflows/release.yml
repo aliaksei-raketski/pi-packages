@@ -75,7 +75,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Run Nx release without publishing
+      - name: Verify and run Nx release without publishing
         if: steps.release_target.outputs.should_release == 'true'
         id: nx_release
         env:

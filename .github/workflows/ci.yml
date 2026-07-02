@@ -33,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run checks
+      - name: Run checks and verify package artifacts
         run: pnpm run check
 
       - name: Test projects with tests

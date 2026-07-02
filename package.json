@@ -6,12 +6,15 @@
     "nx": "nx",
     "prepare": "git config core.hooksPath .githooks && chmod +x .githooks/pre-commit || true",
     "format:staged": "node tools/scripts/format-staged.mjs",
-    "check": "nx sync:check && nx format:check --all && nx run-many -t lint,typecheck --parallel=3",
+    "check": "nx sync:check && nx format:check --all && nx run-many -t lint,typecheck --parallel=3 && pnpm run check:package-artifacts",
     "test": "nx run-many -t test --parallel=3",
-    "release": "nx release --skip-publish",
-    "release:dry-run": "nx release --skip-publish --dry-run",
-    "publish": "nx release publish",
-    "release:publish:dry-run": "nx release publish --dry-run"
+    "build:packages": "nx run-many -t build --projects=packages/* --parallel=3",
+    "verify:package-artifacts": "node tools/scripts/verify-package-artifacts.mjs",
+    "check:package-artifacts": "pnpm run build:packages && pnpm run verify:package-artifacts",
+    "release": "pnpm run check:package-artifacts && nx release --skip-publish",
+    "release:dry-run": "pnpm run check:package-artifacts && nx release --skip-publish --dry-run",
+    "publish": "pnpm run check:package-artifacts && nx release publish",
+    "release:publish:dry-run": "pnpm run check:package-artifacts && nx release publish --dry-run"
   },
   "private": true,
   "devDependencies": {

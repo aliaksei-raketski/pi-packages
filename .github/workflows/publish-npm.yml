@@ -40,7 +40,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Publish with Nx Release
+      - name: Build, verify, and publish with Nx Release
         env:
           NPM_CONFIG_PROVENANCE: 'true'
         run: pnpm run publish
