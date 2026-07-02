@@ -31,6 +31,11 @@ pi -e ./packages/fast-mode
 
 This package ships the extension as TypeScript source. Pi loads extension entrypoints with its runtime TypeScript loader, so no JavaScript build output is required for this package.
 
+## Package contents
+
+- `extensions/fast-mode/index.ts` Pi extension entrypoint.
+- Fast-mode request hooks and session state helpers.
+
 ## Behavior
 
 - Start Pi with fast mode enabled:
