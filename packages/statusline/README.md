@@ -12,6 +12,7 @@ pi install -l npm:@aliaksei-raketski/pi-statusline
 
 ## Features
 
+- Runtime TypeScript extension loaded directly by Pi; no package build step is required.
 - Custom footer layout with spacer tokens.
 - Single-line and multi-line layouts.
 - Automatic narrow-terminal fallback to one status item per line.

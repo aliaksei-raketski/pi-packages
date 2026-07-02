@@ -1,11 +1,29 @@
-# statusline-protocol
+# @aliaksei-raketski/pi-statusline-protocol
 
-This library was generated with [Nx](https://nx.dev).
+Shared structured statusline protocol helpers for Pi packages.
 
-## Building
+This package is a normal JavaScript library consumed by Pi extensions such as `@aliaksei-raketski/pi-statusline` and `@aliaksei-raketski/pi-fast-mode`. Unlike extension packages that Pi can load from TypeScript source, this package is imported through npm package exports and must publish its compiled `dist` artifacts.
 
-Run `nx build statusline-protocol` to build the library.
+## Exports
 
-## Running unit tests
+- `STATUSLINE_STATUS_SET_EVENT`
+- `STATUSLINE_STATUS_CLEAR_EVENT`
+- `STATUSLINE_STATUS_SNAPSHOT_REQUEST_EVENT`
+- `STATUSLINE_STATUS_SNAPSHOT_EVENT`
+- helpers for publishing and subscribing to structured statusline status updates
 
-Run `nx test statusline-protocol` to execute the unit tests via [Vitest](https://vitest.dev/).
+## Build
+
+From the repository root:
+
+```bash
+pnpm nx run @aliaksei-raketski/pi-statusline-protocol:build
+```
+
+## Test
+
+From the repository root:
+
+```bash
+pnpm nx run @aliaksei-raketski/pi-statusline-protocol:test
+```

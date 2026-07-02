@@ -14,6 +14,8 @@ pi install -l npm:@aliaksei-raketski/pi-angular-developer
 
 - `skills/angular-developer`
 
+This package is distributed as source files and markdown resources; Pi loads the skill directly from the installed package.
+
 ## Key helpers
 
 - `skills/angular-developer/scripts/get-best-practices.mjs`

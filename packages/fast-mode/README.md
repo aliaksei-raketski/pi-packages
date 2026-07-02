@@ -29,6 +29,8 @@ Try locally from the repository root:
 pi -e ./packages/fast-mode
 ```
 
+This package ships the extension as TypeScript source. Pi loads extension entrypoints with its runtime TypeScript loader, so no JavaScript build output is required for this package.
+
 ## Behavior
 
 - Start Pi with fast mode enabled:

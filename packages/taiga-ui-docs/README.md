@@ -35,6 +35,7 @@ node scripts/taiga-ui-docs.mjs --help
 
 The script is intentionally self-contained:
 
+- shipped as source with the skill resources
 - Node 18+ (`node` built-ins + global `fetch` only)
 - no build step
 - no external dependencies
