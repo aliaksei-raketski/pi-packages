@@ -1,3 +1,5 @@
+import type { StatuslineStatus } from '@aliaksei-raketski/pi-statusline-protocol';
+
 export const FAST_COMMAND = 'fast';
 export const FAST_FLAG = 'fast';
 export const FAST_STATUS_KEY = 'fast';
@@ -5,6 +7,7 @@ export const FAST_STATE_CUSTOM_TYPE = 'fast';
 
 export const FAST_ON_TEXT = 'fast on';
 export const FAST_OFF_TEXT = 'fast off';
+export const FAST_UNSUPPORTED_TEXT = 'no fast';
 
 const FAST_SPEED = 'fast';
 const FAST_BETA = 'fast-mode-2026-02-01';
@@ -44,7 +47,23 @@ export type FastModeState = {
   enabled: boolean;
 };
 
-export type FastStateEntryData = {
+export type FastStatusState = 'on' | 'off' | 'unsupported';
+
+export type FastStatusColor = 'accent' | 'muted' | 'warning';
+
+export type FastStatusView = {
+  text: string;
+  color: FastStatusColor;
+  state: FastStatusState;
+  fallbackColor: FastStatusColor;
+};
+
+export type FastStatusPayload = Omit<StatuslineStatus, 'key'> & {
+  state: FastStatusState;
+  fallbackColor: FastStatusColor;
+};
+
+export type FastStatusEntryData = {
   enabled: boolean;
 };
 
@@ -60,35 +79,13 @@ export type CurrentModelStatus = {
   reason?: string;
 };
 
-export type FastStatusView = {
-  text: string;
-  color: 'accent' | 'muted';
+export type FastStateEntryData = {
+  enabled: boolean;
 };
 
-type PayloadRecord = Record<string, unknown>;
-
-export const FEATURES: FastFeature[] = [
-  {
-    provider: CLAUDE_PROVIDER,
-    api: CLAUDE_API,
-    supportedModels: new Set(['claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8']),
-    injectionKey: 'speed',
-    injectionValue: FAST_SPEED,
-    unsupportedModelMessage: 'Fast mode is only available for Claude Opus 4.6, 4.7, and 4.8',
-  },
-  {
-    provider: OPENAI_PROVIDER,
-    api: OPENAI_API,
-    supportedModels: new Set(['gpt-5.4', 'gpt-5.5']),
-    injectionKey: 'service_tier',
-    injectionValue: FAST_SERVICE_TIER,
-    unsupportedModelMessage: 'Fast mode is only available for GPT-5.4 and GPT-5.5',
-    isEligible: (ctx) =>
-      ctx.model && ctx.modelRegistry.isUsingOAuth(ctx.model)
-        ? undefined
-        : 'ChatGPT OAuth auth is required; API-key auth is intentionally not used',
-  },
-];
+function isPayloadRecord(payload: unknown): payload is Record<string, unknown> {
+  return typeof payload === 'object' && payload !== null && !Array.isArray(payload);
+}
 
 export function createFastModeState(enabled = false): FastModeState {
   return { enabled };
@@ -111,6 +108,46 @@ export function restoreFastModeState(
   }
 
   return createFastModeState(enabled);
+}
+
+export function getStatusPayload(
+  state: FastModeState,
+  modelStatus: CurrentModelStatus,
+): FastStatusPayload {
+  if (!state.enabled) {
+    return {
+      text: FAST_OFF_TEXT,
+      state: 'off',
+      fallbackColor: 'muted',
+    };
+  }
+
+  if (!modelStatus.isSupported) {
+    return {
+      text: FAST_UNSUPPORTED_TEXT,
+      state: 'unsupported',
+      fallbackColor: 'warning',
+    };
+  }
+
+  return {
+    text: FAST_ON_TEXT,
+    state: 'on',
+    fallbackColor: 'accent',
+  };
+}
+
+export function getStatusView(
+  state: FastModeState,
+  modelStatus: CurrentModelStatus,
+): FastStatusView {
+  const payload = getStatusPayload(state, modelStatus);
+  return {
+    text: payload.text,
+    state: payload.state,
+    fallbackColor: payload.fallbackColor,
+    color: payload.fallbackColor,
+  };
 }
 
 export function getCurrentModelStatus(ctx: FastContext): CurrentModelStatus {
@@ -139,6 +176,7 @@ export function getCurrentModelStatus(ctx: FastContext): CurrentModelStatus {
   );
   if (!matchingFeature) {
     return {
+      feature: featuresForBackend[0],
       isSupported: false,
       reason:
         featuresForBackend[0]?.unsupportedModelMessage ??
@@ -169,22 +207,12 @@ export function syncFeatureState(ctx: FastContext, state: FastModeState): Curren
   return modelStatus;
 }
 
-export function getStatusView(
-  state: FastModeState,
-  modelStatus: CurrentModelStatus,
-): FastStatusView {
-  return {
-    text: state.enabled ? FAST_ON_TEXT : FAST_OFF_TEXT,
-    color: state.enabled && modelStatus.isSupported ? 'accent' : 'muted',
-  };
-}
-
 export function getFastPayload(
   payload: unknown,
   ctx: FastContext,
   state: FastModeState,
   modelStatus: CurrentModelStatus,
-): PayloadRecord | undefined {
+): Record<string, unknown> | undefined {
   if (!state.enabled) return undefined;
   if (!modelStatus.isSupported || !modelStatus.feature) return undefined;
   if (!isPayloadRecord(payload)) return undefined;
@@ -196,6 +224,29 @@ export function getFastPayload(
     [modelStatus.feature.injectionKey]: modelStatus.feature.injectionValue,
   };
 }
+
+const FAST_FEATURES: readonly FastFeature[] = [
+  {
+    provider: CLAUDE_PROVIDER,
+    api: CLAUDE_API,
+    supportedModels: new Set(['claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8']),
+    injectionKey: 'speed',
+    injectionValue: FAST_SPEED,
+    unsupportedModelMessage: 'Fast mode is only available for Claude Opus 4.6, 4.7, and 4.8',
+  },
+  {
+    provider: OPENAI_PROVIDER,
+    api: OPENAI_API,
+    supportedModels: new Set(['gpt-5.4', 'gpt-5.5']),
+    injectionKey: 'service_tier',
+    injectionValue: FAST_SERVICE_TIER,
+    unsupportedModelMessage: 'Fast mode is only available for GPT-5.4 and GPT-5.5',
+    isEligible: (ctx) =>
+      ctx.model && ctx.modelRegistry.isUsingOAuth(ctx.model)
+        ? undefined
+        : 'ChatGPT OAuth auth is required; API-key auth is intentionally not used',
+  },
+];
 
 function syncClaudeBetaHeader(
   ctx: FastContext,
@@ -223,13 +274,11 @@ function syncClaudeBetaHeader(
   model.headers = headers;
 }
 
-function splitBetaHeader(value: string | undefined): string[] {
+function splitBetaHeader(value: string): string[] {
   return (value ?? '')
     .split(',')
-    .map((value) => value.trim())
+    .map((current) => current.trim())
     .filter(Boolean);
 }
 
-function isPayloadRecord(payload: unknown): payload is PayloadRecord {
-  return typeof payload === 'object' && payload !== null && !Array.isArray(payload);
-}
+export const FEATURES = FAST_FEATURES;

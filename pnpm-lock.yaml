@@ -89,15 +89,27 @@ importers:
 
   packages/fast-mode:
     dependencies:
+      '@aliaksei-raketski/pi-statusline-protocol':
+        specifier: workspace:*
+        version: link:../statusline-protocol
       '@earendil-works/pi-coding-agent':
         specifier: '*'
         version: 0.80.2(ws@8.21.0)(zod@4.4.3)
 
   packages/statusline:
     dependencies:
+      '@aliaksei-raketski/pi-statusline-protocol':
+        specifier: workspace:*
+        version: link:../statusline-protocol
       '@earendil-works/pi-coding-agent':
         specifier: '*'
         version: 0.80.2(ws@8.21.0)(zod@4.4.3)
+
+  packages/statusline-protocol:
+    dependencies:
+      tslib:
+        specifier: ^2.3.0
+        version: 2.8.1
 
   packages/taiga-ui-docs: {}
 

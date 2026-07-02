@@ -1,5 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import {
+  clearStatus,
+  publishStatus,
+  type StatuslineStatus,
+  registerStatusProvider,
+} from '@aliaksei-raketski/pi-statusline-protocol';
+import {
   FAST_COMMAND,
   FAST_FLAG,
   FAST_STATE_CUSTOM_TYPE,
@@ -7,35 +13,41 @@ import {
   createFastModeState,
   createFastStateEntryData,
   getFastPayload,
-  getStatusView,
+  getCurrentModelStatus,
+  getStatusPayload,
   restoreFastModeState,
   syncFeatureState,
   type FastContext,
   type FastModeState,
-  type FastModel,
-  type CurrentModelStatus,
 } from './core.ts';
 
-const sessionStates = new WeakMap<object, FastModeState>();
+const FAST_STATUS_SOURCE = 'fast-mode';
 
-function getSessionState(ctx: ExtensionContext): FastModeState {
+type FastModeRuntime = FastModeState & {
+  clearProvider: (() => void) | undefined;
+};
+
+const sessionStates = new WeakMap<object, FastModeRuntime>();
+
+function getSessionState(ctx: ExtensionContext): FastModeRuntime {
   let state = sessionStates.get(ctx.sessionManager);
   if (!state) {
-    state = createFastModeState();
+    state = { ...createFastModeState(), clearProvider: undefined };
     sessionStates.set(ctx.sessionManager, state);
   }
   return state;
 }
 
-function restoreSessionState(ctx: ExtensionContext, defaultEnabled: boolean): FastModeState {
-  const state = restoreFastModeState(ctx.sessionManager.getBranch(), defaultEnabled);
-  sessionStates.set(ctx.sessionManager, state);
+function restoreSessionState(ctx: ExtensionContext, defaultEnabled: boolean): FastModeRuntime {
+  const restored = restoreFastModeState(ctx.sessionManager.getBranch(), defaultEnabled);
+  const state = getSessionState(ctx);
+  state.enabled = restored.enabled;
   return state;
 }
 
 function toFastContext(ctx: ExtensionContext): FastContext {
   return {
-    model: ctx.model as FastModel | undefined,
+    model: ctx.model as FastContext['model'],
     modelRegistry: {
       isUsingOAuth: (model) =>
         ctx.modelRegistry.isUsingOAuth(model as NonNullable<typeof ctx.model>),
@@ -43,15 +55,26 @@ function toFastContext(ctx: ExtensionContext): FastContext {
   };
 }
 
-function updateStatus(
-  ctx: ExtensionContext,
-  state: FastModeState,
-  modelStatus: CurrentModelStatus,
-): void {
+function createStatusContext(ctx: ExtensionContext) {
+  return {
+    setStatus: (key: string, text: string | undefined) => ctx.ui.setStatus(key, text),
+    theme: ctx.ui.theme,
+  };
+}
+
+function collectStatusPayload(ctx: ExtensionContext, state: FastModeState): StatuslineStatus {
+  const modelStatus = getCurrentModelStatus(toFastContext(ctx));
+  return {
+    key: FAST_STATUS_KEY,
+    ...getStatusPayload(state, modelStatus),
+  };
+}
+
+function updateStatus(pi: ExtensionAPI, ctx: ExtensionContext): void {
   if (!ctx.hasUI) return;
 
-  const status = getStatusView(state, modelStatus);
-  ctx.ui.setStatus(FAST_STATUS_KEY, ctx.ui.theme.fg(status.color, status.text));
+  const state = getSessionState(ctx);
+  publishStatus(pi, createStatusContext(ctx), collectStatusPayload(ctx, state), FAST_STATUS_SOURCE);
 }
 
 function toggleFastMode(pi: ExtensionAPI, ctx: ExtensionContext): void {
@@ -60,7 +83,7 @@ function toggleFastMode(pi: ExtensionAPI, ctx: ExtensionContext): void {
   pi.appendEntry(FAST_STATE_CUSTOM_TYPE, createFastStateEntryData(state));
 
   const modelStatus = syncFeatureState(toFastContext(ctx), state);
-  updateStatus(ctx, state, modelStatus);
+  updateStatus(pi, ctx);
 
   ctx.ui.notify(`Fast mode is now ${state.enabled ? 'on' : 'off'}.`, 'info');
 
@@ -82,33 +105,50 @@ export default function fastMode(pi: ExtensionAPI) {
 
   pi.on('session_start', (_event, ctx) => {
     const state = restoreSessionState(ctx, pi.getFlag(FAST_FLAG) === true);
-    const modelStatus = syncFeatureState(toFastContext(ctx), state);
-    updateStatus(ctx, state, modelStatus);
+    syncFeatureState(toFastContext(ctx), state);
+
+    state.clearProvider?.();
+
+    const provider = registerStatusProvider(
+      pi,
+      () => [collectStatusPayload(ctx, getSessionState(ctx))],
+      FAST_STATUS_SOURCE,
+    );
+    state.clearProvider = provider.dispose;
+
+    updateStatus(pi, ctx);
   });
 
   pi.on('model_select', (_event, ctx) => {
     const state = getSessionState(ctx);
-    const modelStatus = syncFeatureState(toFastContext(ctx), state);
-    updateStatus(ctx, state, modelStatus);
+    syncFeatureState(toFastContext(ctx), state);
+    updateStatus(pi, ctx);
   });
 
   pi.on('session_tree', (_event, ctx) => {
     const state = restoreSessionState(ctx, pi.getFlag(FAST_FLAG) === true);
-    const modelStatus = syncFeatureState(toFastContext(ctx), state);
-    updateStatus(ctx, state, modelStatus);
+    syncFeatureState(toFastContext(ctx), state);
+    updateStatus(pi, ctx);
   });
 
   pi.on('before_provider_request', (event, ctx) => {
     const state = getSessionState(ctx);
     const fastContext = toFastContext(ctx);
     const modelStatus = syncFeatureState(fastContext, state);
-    updateStatus(ctx, state, modelStatus);
+    updateStatus(pi, ctx);
     return getFastPayload(event.payload, fastContext, state, modelStatus);
   });
 
   pi.on('session_shutdown', (_event, ctx) => {
+    const state = sessionStates.get(ctx.sessionManager);
+    state?.clearProvider?.();
+    if (state) {
+      state.clearProvider = undefined;
+    }
+
     if (!ctx.hasUI) return;
-    ctx.ui.setStatus(FAST_STATUS_KEY, undefined);
+
+    clearStatus(pi, createStatusContext(ctx), FAST_STATUS_KEY);
   });
 
   pi.registerCommand(FAST_COMMAND, {
@@ -119,7 +159,6 @@ export default function fastMode(pi: ExtensionAPI) {
         ctx.ui.notify('Usage: /fast', 'warning');
         return;
       }
-
       toggleFastMode(pi, ctx);
     },
   });

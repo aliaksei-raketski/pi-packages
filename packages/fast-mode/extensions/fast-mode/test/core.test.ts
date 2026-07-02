@@ -30,7 +30,12 @@ test('unsupported current model keeps fast enabled but inactive', () => {
 
   expect(modelStatus.isSupported).toBe(false);
   expect(getFastPayload({ model: 'claude-sonnet-4-5' }, ctx, state, modelStatus)).toBe(undefined);
-  expect(getStatusView(state, modelStatus)).toEqual({ text: 'fast on', color: 'muted' });
+  expect(getStatusView(state, modelStatus)).toEqual({
+    text: 'no fast',
+    color: 'warning',
+    state: 'unsupported',
+    fallbackColor: 'warning',
+  });
 });
 
 test('restores fast mode from latest session custom entry', () => {
@@ -57,10 +62,20 @@ test('status is muted when off and accent when enabled for a supported model', (
   const state = createFastModeState(false);
   const modelStatus = getCurrentModelStatus(ctx);
 
-  expect(getStatusView(state, modelStatus)).toEqual({ text: 'fast off', color: 'muted' });
+  expect(getStatusView(state, modelStatus)).toEqual({
+    text: 'fast off',
+    color: 'muted',
+    state: 'off',
+    fallbackColor: 'muted',
+  });
 
   state.enabled = true;
-  expect(getStatusView(state, modelStatus)).toEqual({ text: 'fast on', color: 'accent' });
+  expect(getStatusView(state, modelStatus)).toEqual({
+    text: 'fast on',
+    color: 'accent',
+    state: 'on',
+    fallbackColor: 'accent',
+  });
 });
 
 test('Claude fast mode injects speed and adds beta header', () => {

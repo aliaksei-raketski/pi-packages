@@ -3,11 +3,13 @@ import { basename } from 'node:path';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { resolveColorValue } from '../src/colors.ts';
 import type {
   ExtensionContext,
   ExtensionAPI,
   ReadonlyFooterDataProvider,
 } from '@earendil-works/pi-coding-agent';
+import type { StatuslineStatus } from '@aliaksei-raketski/pi-statusline-protocol';
 import { collectStatusItems } from '../src/status-items.ts';
 import type { GitStatusSnapshot } from '../src/git-status.ts';
 
@@ -92,6 +94,55 @@ test('collectStatusItems exposes extension status keys by token', () => {
   const items = collectStatusItems(ctx, pi, footerData, new Set(['cwd', 'lsp', 'build']));
   expect(items.get('lsp')?.text).toBe('ready');
   expect(items.get('build')?.text).toBe('pass');
+});
+
+test('collectStatusItems uses protocol status values in preference to raw fallback status values', () => {
+  const ctx = createContext('/tmp');
+  const protocolStatus: StatuslineStatus = {
+    key: 'lsp',
+    text: 'protocol-ready',
+  };
+  const footerData = createFooterProvider({
+    getExtensionStatuses: () => new Map([['lsp', 'legacy-ready']]),
+  });
+
+  const items = collectStatusItems(
+    ctx,
+    pi,
+    footerData,
+    new Set(['lsp']),
+    {},
+    new Map([['lsp', protocolStatus]]),
+  );
+
+  expect(items.get('lsp')?.text).toBe('protocol-ready');
+});
+
+test('collectStatusItems merges protocol and fallback statuses in statuses token', () => {
+  const ctx = createContext('/tmp');
+  const protocolStatuses = new Map<string, StatuslineStatus>([
+    ['fast', { key: 'fast', text: 'fast on', state: 'on' }],
+    ['lsp', { key: 'lsp', text: 'protocol-ready', state: 'ok' }],
+  ]);
+
+  const footerData = createFooterProvider({
+    getExtensionStatuses: () =>
+      new Map([
+        ['lsp', 'legacy'],
+        ['build', 'pass'],
+      ]),
+  });
+
+  const items = collectStatusItems(
+    ctx,
+    pi,
+    footerData,
+    new Set(['statuses']),
+    {},
+    protocolStatuses,
+  );
+
+  expect(items.get('statuses')?.text).toBe('fast: fast on • lsp: protocol-ready • build: pass');
 });
 
 test('collectStatusItems formats context as percent/context-window', () => {
@@ -230,4 +281,20 @@ test('collectStatusItems counts untracked files, including nested entries', () =
     },
   );
   expect(items.get('changes')?.text).toBe('?2');
+});
+
+test('protocol statuses support state-aware color resolution', () => {
+  expect(
+    resolveColorValue(
+      {
+        fast: {
+          off: 'muted',
+          on: 'accent',
+          unsupported: 'warning',
+        },
+      },
+      'fast',
+      'unsupported',
+    ),
+  ).toBe('warning');
 });

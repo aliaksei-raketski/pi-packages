@@ -6,9 +6,11 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import { colorize, resolveColorValue } from './colors.ts';
 import { collectStatusItems } from './status-items.ts';
+import { createProtocolStatusRegistry } from './statuses/protocol.ts';
 import { loadStatuslineConfig, type StatuslineConfig } from './config.ts';
 import { GitStatusCache, type GitStatusSource } from './git-status.ts';
 import { renderLayoutLines } from './layout.ts';
+import type { StatuslineStatus } from '@aliaksei-raketski/pi-statusline-protocol';
 
 interface FooterState {
   requestRender: () => void;
@@ -26,6 +28,15 @@ function requestFooterRender(ctx: ExtensionContext): void {
   state?.requestRender();
 }
 
+function shouldCollectGitItems(requestedKeys: Set<string>): boolean {
+  return (
+    requestedKeys.size === 0 ||
+    requestedKeys.has('branch') ||
+    requestedKeys.has('changes') ||
+    requestedKeys.has('pr')
+  );
+}
+
 function renderFooter(
   ctx: ExtensionContext,
   pi: ExtensionAPI,
@@ -34,10 +45,18 @@ function renderFooter(
   config: StatuslineConfig,
   gitStatusSource: GitStatusSource,
   width: number,
+  protocolStatuses: Map<string, StatuslineStatus>,
 ): string[] {
   const separator = colorize(config.separator, config.separatorColor, theme);
   const requestedKeys = new Set(config.layout.flat().filter((token) => token !== 'spacer'));
-  const items = collectStatusItems(ctx, pi, footerData, requestedKeys, gitStatusSource);
+  const items = collectStatusItems(
+    ctx,
+    pi,
+    footerData,
+    requestedKeys,
+    gitStatusSource,
+    protocolStatuses,
+  );
 
   const tokenText = (key: string): string | undefined => {
     const value = items.get(key);
@@ -61,6 +80,9 @@ export default function statusline(pi: ExtensionAPI) {
     if (!ctx.hasUI || ctx.mode !== 'tui') {
       return;
     }
+
+    const protocolRegistry = createProtocolStatusRegistry(pi, () => requestFooterRender(ctx));
+    protocolRegistry.requestSnapshot();
 
     const configResult = loadStatuslineConfig({
       cwd: ctx.cwd,
@@ -102,13 +124,13 @@ export default function statusline(pi: ExtensionAPI) {
           },
         };
 
+        FOOTER_STATE.set(ctx.sessionManager, state);
+
         const offBranchChange = footerData.onBranchChange(() => {
           statusCache?.invalidate();
           void statusCache?.refresh();
           state.requestRender();
         });
-
-        FOOTER_STATE.set(ctx.sessionManager, state);
 
         return {
           render(width: number) {
@@ -120,6 +142,7 @@ export default function statusline(pi: ExtensionAPI) {
               config,
               statusCache?.getGitInfo() ?? {},
               width,
+              protocolRegistry.statuses,
             );
           },
           invalidate() {
@@ -128,6 +151,7 @@ export default function statusline(pi: ExtensionAPI) {
           dispose() {
             offBranchChange();
             statusCache?.dispose();
+            protocolRegistry.dispose();
             state.dispose();
           },
         };
@@ -155,8 +179,4 @@ export default function statusline(pi: ExtensionAPI) {
     }
     ctx.ui.setFooter(undefined);
   });
-}
-
-function shouldCollectGitItems(requestedKeys: Set<string>): boolean {
-  return requestedKeys.has('branch') || requestedKeys.has('changes') || requestedKeys.has('pr');
 }

@@ -21,7 +21,11 @@
     "scripts/**/*.ts",
     "*.ts"
   ],
-  "references": [],
+  "references": [
+    {
+      "path": "../statusline-protocol/tsconfig.lib.json"
+    }
+  ],
   "exclude": [
     "dist",
     "out-tsc",

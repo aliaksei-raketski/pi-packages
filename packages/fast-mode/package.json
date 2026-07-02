@@ -38,5 +38,8 @@
   ],
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
+  },
+  "dependencies": {
+    "@aliaksei-raketski/pi-statusline-protocol": "workspace:*"
   }
 }
