@@ -21,8 +21,7 @@
     "name": "statusline-protocol"
   },
   "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
+    "access": "public"
   },
   "dependencies": {
     "tslib": "^2.3.0"
