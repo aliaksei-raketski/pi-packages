@@ -1,3 +1,13 @@
+## 0.3.8 (2026-07-22)
+
+### 🩹 Fixes
+
+- **nx-developer:** avoid exposing upstream metadata as skill ([b9976d9](https://github.com/aliaksei-raketski/pi-packages/commit/b9976d9))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.7 (2026-07-22)
 
 ### 🚀 Features
