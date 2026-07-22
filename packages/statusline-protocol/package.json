@@ -1,6 +1,6 @@
 {
   "name": "@aliaksei-raketski/pi-statusline-protocol",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "type": "module",
   "description": "Shared structured statusline protocol helpers for Pi packages.",
   "keywords": [

@@ -1,3 +1,14 @@
+## 0.3.7 (2026-07-22)
+
+### 🚀 Features
+
+- **fast-mode:** align with upstream OpenAI models ([512691d](https://github.com/aliaksei-raketski/pi-packages/commit/512691d))
+- **nx-developer:** add vendored Nx skills package ([696e24f](https://github.com/aliaksei-raketski/pi-packages/commit/696e24f))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.6 (2026-07-02)
 
 ### 🩹 Fixes
