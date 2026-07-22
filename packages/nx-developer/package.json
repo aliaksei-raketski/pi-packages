@@ -1,0 +1,47 @@
+{
+  "name": "@aliaksei-raketski/pi-nx-developer",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Pi package that vendors the official Nx Agent Skills with a local Nx documentation helper.",
+  "keywords": [
+    "pi-package",
+    "nx",
+    "agent-skills",
+    "pi",
+    "nx-developer",
+    "pi-skill"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/aliaksei-raketski/pi-packages/tree/main/packages/nx-developer",
+  "bugs": {
+    "url": "https://github.com/aliaksei-raketski/pi-packages/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aliaksei-raketski/pi-packages.git",
+    "directory": "packages/nx-developer"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "files": [
+    "skills/",
+    "scripts/",
+    "overlays/",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md"
+  ],
+  "scripts": {
+    "sync": "node scripts/sync-nx-skills.mjs"
+  }
+}

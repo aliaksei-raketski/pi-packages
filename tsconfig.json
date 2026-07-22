@@ -20,6 +20,9 @@
     },
     {
       "path": "./packages/statusline-protocol"
+    },
+    {
+      "path": "./packages/nx-developer"
     }
   ]
 }
