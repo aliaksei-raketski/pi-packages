@@ -237,10 +237,17 @@ const FAST_FEATURES: readonly FastFeature[] = [
   {
     provider: OPENAI_PROVIDER,
     api: OPENAI_API,
-    supportedModels: new Set(['gpt-5.4', 'gpt-5.5']),
+    supportedModels: new Set([
+      'gpt-5.4',
+      'gpt-5.5',
+      'gpt-5.6-luna',
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+    ]),
     injectionKey: 'service_tier',
     injectionValue: FAST_SERVICE_TIER,
-    unsupportedModelMessage: 'Fast mode is only available for GPT-5.4 and GPT-5.5',
+    unsupportedModelMessage:
+      'Fast mode is only available for GPT-5.4, GPT-5.5, GPT-5.6 Luna, GPT-5.6 Sol, and GPT-5.6 Terra',
     isEligible: (ctx) =>
       ctx.model && ctx.modelRegistry.isUsingOAuth(ctx.model)
         ? undefined

@@ -125,6 +125,43 @@ test('Claude fast beta is removed when fast mode is disabled', () => {
   expect(model.headers?.['anthropic-beta']).toBe('existing');
 });
 
+test.each(['gpt-5.4', 'gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'])(
+  'OpenAI fast mode supports upstream priority tier for %s',
+  (modelId) => {
+    const model: FastModel = {
+      provider: 'openai-codex',
+      api: 'openai-codex-responses',
+      id: modelId,
+    };
+    const ctx = context(model, true);
+    const state = createFastModeState(true);
+    const modelStatus = syncFeatureState(ctx, state);
+
+    expect(modelStatus.isSupported).toBe(true);
+    expect(getFastPayload({ model: modelId }, ctx, state, modelStatus)).toEqual({
+      model: modelId,
+      service_tier: 'priority',
+    });
+  },
+);
+
+test.each(['gpt-5.3-codex-spark', 'gpt-5.4-mini'])(
+  'OpenAI model without an upstream priority tier stays unsupported: %s',
+  (modelId) => {
+    const model: FastModel = {
+      provider: 'openai-codex',
+      api: 'openai-codex-responses',
+      id: modelId,
+    };
+    const ctx = context(model, true);
+    const state = createFastModeState(true);
+    const modelStatus = syncFeatureState(ctx, state);
+
+    expect(modelStatus.isSupported).toBe(false);
+    expect(getFastPayload({ model: modelId }, ctx, state, modelStatus)).toBe(undefined);
+  },
+);
+
 test('OpenAI fast mode requires OAuth', () => {
   const model: FastModel = {
     provider: 'openai-codex',

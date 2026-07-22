@@ -11,7 +11,7 @@ The current model determines what gets injected:
 - **Claude Opus 4.6 / 4.7 / 4.8**
   - Adds `speed: "fast"`
   - Adds required header `anthropic-beta: fast-mode-2026-02-01`
-- **OpenAI Codex GPT-5.4 / GPT-5.5**
+- **OpenAI Codex GPT-5.4 / GPT-5.5 / GPT-5.6 Luna, Sol, and Terra**
   - Adds `service_tier: "priority"`
   - Requires ChatGPT/OAuth auth (API-key models are skipped)
 
