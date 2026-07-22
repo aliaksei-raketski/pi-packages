@@ -10,6 +10,7 @@ const UPSTREAM_REPO = 'https://github.com/nrwl/nx-ai-agents-config';
 const DEFAULT_REF = '9609810013040356b2d93c0688a50d9078cdc35a';
 const PACKAGE_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TARGET_SKILLS_DIR = path.join(PACKAGE_ROOT, 'skills');
+const TARGET_UPSTREAM_FILE = path.join(PACKAGE_ROOT, 'UPSTREAM.md');
 const OVERLAYS_DIR = path.join(PACKAGE_ROOT, 'overlays');
 const EXCLUDED_SKILLS = ['monitor-ci'];
 const OVERLAY_SKILLS = ['nx-developer', 'nx-docs'];
@@ -164,7 +165,7 @@ Local overlay sources:
 ${OVERLAY_SKILLS.map((skill) => `- overlays/${skill}/`).join('\n')}
 `;
 
-  await fs.writeFile(path.join(TARGET_SKILLS_DIR, 'UPSTREAM.md'), content, 'utf8');
+  await fs.writeFile(TARGET_UPSTREAM_FILE, content, 'utf8');
 }
 
 async function validateNoUnsupportedReferences() {

@@ -23,6 +23,8 @@ pi install -l npm:@aliaksei-raketski/pi-nx-developer
 
 `monitor-ci` is intentionally excluded until Nx Cloud automation is replaced by local scripts.
 
+If a workspace already contains project-local generated Nx skills under `.agents/skills`, Pi will prefer those local skills over same-named package skills and report collisions. Remove or disable the project-local duplicates if you want this package's copies to be used in that workspace.
+
 ## Documentation helper
 
 Use the bundled helper from the installed `nx-docs` skill directory:

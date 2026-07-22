@@ -37,6 +37,7 @@
     "skills/",
     "scripts/",
     "overlays/",
+    "UPSTREAM.md",
     "README.md",
     "LICENSE",
     "NOTICE.md"
