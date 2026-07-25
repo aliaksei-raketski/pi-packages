@@ -1,13 +1,15 @@
+import { createContinuationGateController } from '@aliaksei-raketski/pi-continuation-gate-protocol';
 import { execFile, execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 
 import { createCommandArtifacts } from '../src/command-artifacts.js';
 import { DEFAULT_TMUX_BASH_CONFIG } from '../src/config.js';
 import { readExitCode } from '../src/output.js';
+import { TmuxBashRuntime } from '../src/runtime.js';
 import { TmuxClient } from '../src/tmux-client.js';
 
 const execFileAsync = promisify(execFile);
@@ -70,6 +72,93 @@ suite('real tmux integration', () => {
     ]);
     expect(metadata.trim()).toBe('integration');
     await client.killWindow(windowId);
+  });
+
+  it('lists, peeks, kills, and reports completion through the real runtime', async () => {
+    const handlers = new Map<string, Set<(payload: unknown) => void>>();
+    const events = {
+      on(name: string, handler: (payload: unknown) => void) {
+        const listeners = handlers.get(name) ?? new Set();
+        listeners.add(handler);
+        handlers.set(name, listeners);
+        return () => listeners.delete(handler);
+      },
+      emit(name: string, payload: unknown) {
+        for (const handler of handlers.get(name) ?? []) handler(payload);
+      },
+    };
+    const pi = { events, sendMessage: vi.fn() };
+    const controller = createContinuationGateController(pi, { source: 'pi-tmux-bash' });
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        tmuxSessionScope: 'global',
+        globalTmuxSessionName: sessionName,
+        autoCloseWindowsOnCompletion: false,
+        statusbarEnabled: false,
+      },
+      controller,
+    );
+    const context = {
+      cwd: process.cwd(),
+      sessionManager: {
+        getSessionId: () => 'real-runtime-session',
+        getSessionFile: () => '/tmp/real-runtime-session.jsonl',
+      },
+      ui: {
+        notify: vi.fn(),
+        setStatus: vi.fn(),
+        theme: { fg: (_color: string, text: string) => text },
+      },
+    };
+
+    try {
+      await runtime.startSession(context as never);
+      const longRunning = await runtime.executeBash(
+        { command: "printf 'peek-ready\\n'; sleep 10", background: true },
+        undefined,
+        undefined,
+        context as never,
+      );
+      const windowId = longRunning.details?.windowId;
+      if (!windowId) throw new Error('Expected a stable tmux window ID.');
+      await waitFor(async () =>
+        (await readFile(longRunning.details?.outputFile ?? '', 'utf8')).includes('peek-ready'),
+      );
+
+      const listed = await runtime.listResult(context as never);
+      expect(listed.content[0]).toMatchObject({
+        type: 'text',
+        text: expect.stringContaining(windowId),
+      });
+      const peeked = await runtime.peek(windowId, context as never);
+      expect(peeked.content[0]).toMatchObject({
+        type: 'text',
+        text: expect.stringContaining('peek-ready'),
+      });
+      await runtime.kill(windowId, context as never);
+      await expect(new TmuxClient('tmux').hasWindow(windowId)).resolves.toBe(false);
+
+      await runtime.executeBash(
+        {
+          command: "sleep 0.1; printf 'background-complete\\n'",
+          background: true,
+          waitForCompletion: true,
+        },
+        undefined,
+        undefined,
+        context as never,
+      );
+      await waitFor(async () => pi.sendMessage.mock.calls.length === 1);
+      expect(pi.sendMessage.mock.calls[0]?.[0]).toMatchObject({
+        content: expect.stringContaining('background-complete'),
+      });
+      expect(controller.list('real-runtime-session')).toHaveLength(0);
+    } finally {
+      await runtime.shutdown(context as never);
+      controller.dispose();
+    }
   });
 });
 

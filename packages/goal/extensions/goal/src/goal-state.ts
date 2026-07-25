@@ -38,12 +38,13 @@ export interface ParsedGoalCommand {
 
 const GOAL_STATUSES = new Set<GoalStatus>(['active', 'paused', 'budget_limited', 'complete']);
 const TOKEN_FLAG_PATTERN = /(?:^|\s)--tokens(?:=|\s+)(\S+)(?=\s|$)/;
+const TOKEN_OPTION_PATTERN = /(?:^|\s)--tokens(?=$|[=\s])/;
 const TOKEN_VALUE_PATTERN = /^(\d+(?:\.\d+)?)([km])?$/i;
 
 export function parseTokenBudget(input: string): ParsedGoalCommand {
   const match = TOKEN_FLAG_PATTERN.exec(input);
   if (!match) {
-    return input.includes('--tokens')
+    return TOKEN_OPTION_PATTERN.test(input)
       ? {
           objective: input.trim(),
           tokenBudget: null,

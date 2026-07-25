@@ -6,18 +6,26 @@ import type { TmuxBashConfig } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
-export async function resolveGitRoot(cwd: string): Promise<string> {
+export async function resolveGitRoot(cwd: string, signal?: AbortSignal): Promise<string> {
   try {
     const { stdout } = await execFileAsync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {
       encoding: 'utf8',
       timeout: 5_000,
+      signal,
     });
     const root = stdout.trim();
     if (!root) throw new Error('Git returned an empty root.');
     return root;
   } catch {
+    if (signal?.aborted) throw cancelledError();
     throw new Error(`tmux-bash requires a Git worktree; no Git root found for ${cwd}.`);
   }
+}
+
+function cancelledError(): Error {
+  const error = new Error('tmux bash command was cancelled.');
+  error.name = 'AbortError';
+  return error;
 }
 
 export function shortHash(value: string, length = 10): string {

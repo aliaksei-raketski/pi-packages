@@ -32,6 +32,13 @@ describe('goal state', () => {
     (input) => expect(parseTokenBudget(input).error).toMatch(/positive/),
   );
 
+  it('preserves objective words that merely start with the token option name', () => {
+    expect(parseTokenBudget('fix the --tokens-parser behavior')).toEqual({
+      objective: 'fix the --tokens-parser behavior',
+      tokenBudget: null,
+    });
+  });
+
   it('normalizes tool budgets', () => {
     expect(normalizeTokenBudget(undefined)).toEqual({ tokenBudget: null });
     expect(normalizeTokenBudget(10.6)).toEqual({ tokenBudget: 11 });

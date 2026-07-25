@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 
 import { clampPollInterval, clampTimeout } from './config.js';
 import { createCommandArtifacts, createPiSessionEnvironment } from './command-artifacts.js';
-import { formatOutput, readExitCode, readOutput } from './output.js';
+import { formatOutput, readExitCode, readOutput, type OutputTail } from './output.js';
 import type { BashInput } from './schemas.js';
 import { updateTmuxBashStatus } from './status.js';
 import { TmuxClient } from './tmux-client.js';
@@ -95,13 +95,16 @@ export class TmuxBashRuntime {
     const command = input.command.trim();
     if (!command) throw new Error('bash command must not be empty.');
     this.assertReady(ctx);
-    await this.tmux.checkAvailable();
+    throwIfCancelled(signal);
+    await this.tmux.checkAvailable(signal);
+    throwIfCancelled(signal);
     this.ensureWatcher();
 
     const runDir = this.state.runDir;
     if (!runDir) throw new Error('tmux-bash runtime has no artifact directory.');
     const sessionId = ctx.sessionManager.getSessionId();
-    const gitRoot = await resolveGitRoot(ctx.cwd);
+    const gitRoot = await resolveGitRoot(ctx.cwd, signal);
+    throwIfCancelled(signal);
     const runId = randomUUID().replaceAll('-', '');
     const tmuxSession = deriveTmuxSession(this.config, gitRoot);
     const artifacts = await createCommandArtifacts({
@@ -112,6 +115,7 @@ export class TmuxBashRuntime {
       config: this.config,
       env: createPiSessionEnvironment(ctx),
     });
+    throwIfCancelled(signal);
     const run: CommandRun = {
       ...artifacts,
       runId,
@@ -150,26 +154,42 @@ export class TmuxBashRuntime {
           outputFile: run.outputFile,
           displayCommand: run.displayCommand,
         },
+        signal,
       });
+      throwIfCancelled(signal);
       if (run.gateId) this.acquireGate(run);
     } catch (error) {
-      this.releaseGate(run, 'failed', 'current-turn');
+      if (run.windowId) await this.tmux.killWindow(run.windowId).catch(() => undefined);
+      run.killed = true;
+      run.endedAt = Date.now();
+      run.completionClaimed = true;
+      this.releaseGate(run, signal?.aborted ? 'cancelled' : 'failed', 'current-turn');
       this.state.commands.delete(runId);
       this.publishStatus();
+      if (signal?.aborted) throw cancelledError();
       throw error;
     }
 
     if (input.background) {
-      if (input.pollInterval !== undefined) {
-        this.startPoll(run, input.pollInterval, input.pollLines);
+      try {
+        throwIfCancelled(signal);
+        if (input.pollInterval !== undefined) {
+          this.startPoll(run, input.pollInterval, input.pollLines);
+        }
+        this.publishStatus();
+        const completed = await this.completeIfReady(run, false);
+        if (completed) return completed;
+        const running = await this.runningResult(run);
+        throwIfCancelled(signal);
+        run.backgroundReady = true;
+        void this.completeIfReady(run, true);
+        return running;
+      } catch (error) {
+        if (!signal?.aborted) throw error;
+        await this.terminateForeground(run, 'cancelled');
+        this.state.commands.delete(runId);
+        throw cancelledError();
       }
-      this.publishStatus();
-      const completed = await this.completeIfReady(run, false);
-      if (completed) return completed;
-      const running = await this.runningResult(run);
-      run.backgroundReady = true;
-      void this.completeIfReady(run, true);
-      return running;
     }
 
     return this.waitInForeground(run, input, signal, onUpdate);
@@ -672,7 +692,7 @@ export class TmuxBashRuntime {
     this.stopPoll(run.runId);
 
     if (deliverFollowUp && !this.state.disposed) {
-      const formatted = formatOutput(await readOutput(run.outputFile), {
+      const formatted = formatOutput(await readOutput(run.outputFile, this.config.maxOutputBytes), {
         maxLines: this.config.completionContextLines,
         maxBytes: this.config.maxOutputBytes,
         fullOutputPath: run.outputFile,
@@ -716,11 +736,20 @@ export class TmuxBashRuntime {
     return `${run.windowId ?? run.runId} [${flags}] ${run.displayCommand}`;
   }
 
-  private async readRunOutput(run: CommandRun): Promise<string> {
-    const artifact = await readOutput(run.outputFile);
-    if (artifact) {
+  private async readRunOutput(run: CommandRun): Promise<string | OutputTail> {
+    const artifact = await readOutput(run.outputFile, this.config.maxOutputBytes);
+    if (artifact.content) {
       const header = `$ ${run.displayCommand}\n`;
-      return artifact.startsWith(header) ? artifact.slice(header.length) : artifact;
+      if (!artifact.truncated && artifact.content.startsWith(header)) {
+        const headerBytes = Buffer.byteLength(header);
+        return {
+          ...artifact,
+          content: artifact.content.slice(header.length),
+          totalBytes: Math.max(0, artifact.totalBytes - headerBytes),
+          readBytes: Math.max(0, artifact.readBytes - headerBytes),
+        };
+      }
+      return artifact;
     }
     if (!run.windowId || !(await this.isOwnedWindow(run))) return artifact;
     try {
@@ -760,4 +789,14 @@ export class TmuxBashRuntime {
     const ctx = this.state.statusContext;
     if (ctx) updateTmuxBashStatus(this.pi, ctx, this.config, this.state.commands.values());
   }
+}
+
+function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw cancelledError();
+}
+
+function cancelledError(): Error {
+  const error = new Error('tmux bash command was cancelled.');
+  error.name = 'AbortError';
+  return error;
 }

@@ -35,6 +35,7 @@ describe('TmuxClient', () => {
     expect(execute).toHaveBeenCalledWith(
       '/usr/bin/tmux',
       expect.arrayContaining(['set-option', '-w', '-t', '@123', '@pi_tmux_bash_run_id', 'run-1']),
+      undefined,
     );
   });
 

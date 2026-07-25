@@ -12,7 +12,7 @@ export interface TmuxExecResult {
 }
 
 export interface TmuxExecutor {
-  (binary: string, args: string[]): Promise<TmuxExecResult>;
+  (binary: string, args: string[], signal?: AbortSignal): Promise<TmuxExecResult>;
 }
 
 export interface ManagedWindowIdentity {
@@ -34,35 +34,37 @@ export class TmuxClient {
     private readonly executeProcess: TmuxExecutor = executeTmux,
   ) {}
 
-  async checkAvailable(): Promise<void> {
-    const result = await this.executeProcess(this.binary, ['-V']);
+  async checkAvailable(signal?: AbortSignal): Promise<void> {
+    const result = await this.executeProcess(this.binary, ['-V'], signal);
     if (result.code !== 0) throw new Error(`tmux is unavailable: ${result.stderr.trim()}`);
   }
 
-  async ensureSession(sessionName: string): Promise<void> {
-    const exists = await this.executeProcess(this.binary, ['has-session', '-t', sessionName]);
+  async ensureSession(sessionName: string, signal?: AbortSignal): Promise<void> {
+    const exists = await this.executeProcess(
+      this.binary,
+      ['has-session', '-t', sessionName],
+      signal,
+    );
     if (exists.code !== 0) {
-      const created = await this.executeProcess(this.binary, [
-        'new-session',
-        '-d',
-        '-s',
-        sessionName,
-        '-n',
-        'pi-idle',
-      ]);
+      const created = await this.executeProcess(
+        this.binary,
+        ['new-session', '-d', '-s', sessionName, '-n', 'pi-idle'],
+        signal,
+      );
       if (created.code !== 0) {
-        const raced = await this.executeProcess(this.binary, ['has-session', '-t', sessionName]);
+        const raced = await this.executeProcess(
+          this.binary,
+          ['has-session', '-t', sessionName],
+          signal,
+        );
         if (raced.code !== 0) throw tmuxError('create session', created);
       }
     }
-    const remain = await this.executeProcess(this.binary, [
-      'set-window-option',
-      '-g',
-      '-t',
-      sessionName,
-      'remain-on-exit',
-      'on',
-    ]);
+    const remain = await this.executeProcess(
+      this.binary,
+      ['set-window-option', '-g', '-t', sessionName, 'remain-on-exit', 'on'],
+      signal,
+    );
     if (remain.code !== 0) throw tmuxError('configure session', remain);
   }
 
@@ -72,8 +74,12 @@ export class TmuxClient {
     cwd: string;
     scriptFile: string;
     metadata: ManagedWindowMetadata;
+    signal?: AbortSignal;
   }): Promise<string> {
-    await this.ensureSession(input.sessionName);
+    await this.ensureSession(input.sessionName, input.signal);
+    throwIfAborted(input.signal);
+    // Let this short operation return its stable ID even if cancellation arrives mid-call,
+    // so a window created by tmux can always be cleaned up deterministically.
     const result = await this.executeProcess(this.binary, [
       'new-window',
       '-d',
@@ -95,7 +101,8 @@ export class TmuxClient {
     }
 
     try {
-      await this.setMetadata(windowId, input.metadata);
+      throwIfAborted(input.signal);
+      await this.setMetadata(windowId, input.metadata, input.signal);
     } catch (error) {
       await this.killWindow(windowId).catch(() => undefined);
       throw error;
@@ -103,7 +110,11 @@ export class TmuxClient {
     return windowId;
   }
 
-  async setMetadata(windowId: string, metadata: ManagedWindowMetadata): Promise<void> {
+  async setMetadata(
+    windowId: string,
+    metadata: ManagedWindowMetadata,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const entries: Array<[string, string]> = [
       ['@pi_tmux_bash', metadata.version],
       ['@pi_tmux_bash_git_root', metadata.gitRoot],
@@ -114,14 +125,11 @@ export class TmuxClient {
       ['@pi_tmux_bash_command', metadata.displayCommand],
     ];
     for (const [key, value] of entries) {
-      const result = await this.executeProcess(this.binary, [
-        'set-option',
-        '-w',
-        '-t',
-        windowId,
-        key,
-        value,
-      ]);
+      const result = await this.executeProcess(
+        this.binary,
+        ['set-option', '-w', '-t', windowId, key, value],
+        signal,
+      );
       if (result.code !== 0) throw tmuxError(`tag window ${windowId}`, result);
     }
   }
@@ -196,12 +204,17 @@ export class TmuxClient {
   }
 }
 
-export async function executeTmux(binary: string, args: string[]): Promise<TmuxExecResult> {
+export async function executeTmux(
+  binary: string,
+  args: string[],
+  signal?: AbortSignal,
+): Promise<TmuxExecResult> {
   try {
     const result = await execFileAsync(binary, args, {
       encoding: 'utf8',
       timeout: 15_000,
       maxBuffer: 1024 * 1024,
+      signal,
     });
     return { stdout: result.stdout, stderr: result.stderr, code: 0 };
   } catch (error) {
@@ -210,6 +223,7 @@ export async function executeTmux(binary: string, args: string[]): Promise<TmuxE
       stderr?: string;
       code?: number | string;
     };
+    if (signal?.aborted) throw abortError();
     if (failed.code === 'ENOENT') {
       throw new Error(`tmux binary not found: ${binary}. Install tmux or configure tmuxBinary.`);
     }
@@ -223,6 +237,16 @@ export async function executeTmux(binary: string, args: string[]): Promise<TmuxE
 
 export function assertWindowId(windowId: string): void {
   if (!/^@\d+$/.test(windowId)) throw new Error(`Invalid tmux window ID: ${windowId}.`);
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortError();
+}
+
+function abortError(): Error {
+  const error = new Error('tmux bash command was cancelled.');
+  error.name = 'AbortError';
+  return error;
 }
 
 function tmuxError(operation: string, result: TmuxExecResult): Error {

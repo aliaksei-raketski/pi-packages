@@ -24,7 +24,13 @@ export function renderBashResult(
     return new Text(theme.fg('warning', compact(output, options.expanded ? 20 : 4)), 0, 0);
   }
   const details = result.details;
-  if (!details) return new Text(theme.fg('dim', 'No output'), 0, 0);
+  if (!details) {
+    const output = result.content
+      .filter((item) => item.type === 'text' && item.text)
+      .map((item) => item.text)
+      .join('\n');
+    return new Text(theme.fg(output ? 'error' : 'dim', output || 'No output'), 0, 0);
+  }
   const color =
     details.state === 'completed' ? 'success' : details.state === 'running' ? 'warning' : 'error';
   let text = theme.fg(
