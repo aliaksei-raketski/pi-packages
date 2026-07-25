@@ -1,4 +1,7 @@
-import { CONTINUATION_GATE_ACQUIRE_EVENT } from '@aliaksei-raketski/pi-continuation-gate-protocol';
+import {
+  CONTINUATION_GATE_ACQUIRE_EVENT,
+  CONTINUATION_GATE_RELEASE_EVENT,
+} from '@aliaksei-raketski/pi-continuation-gate-protocol';
 import {
   STATUSLINE_STATUS_CLEAR_EVENT,
   STATUSLINE_STATUS_SNAPSHOT_EVENT,
@@ -224,6 +227,34 @@ describe('goal extension', () => {
       acquireGate(harness, 'new-gate');
       return true;
     });
+    await harness.commands.get('goal')?.handler('continue', harness.ctx as never);
+    expect(harness.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('aborts manual gate bypass when the confirmed gate identity is released and reacquired', async () => {
+    await createActiveGoal(harness);
+    acquireGate(harness);
+    harness.confirm.mockImplementationOnce(async () => {
+      harness.events.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+        protocolVersion: 1,
+        sessionId: 'session-1',
+        source: 'producer',
+        gateId: 'tests',
+        outcome: 'abandoned',
+        wake: 'none',
+        releasedAt: Date.now(),
+      });
+      harness.events.emit(CONTINUATION_GATE_ACQUIRE_EVENT, {
+        protocolVersion: 1,
+        sessionId: 'session-1',
+        source: 'producer',
+        gateId: 'tests',
+        reason: 'replacement wait lifecycle',
+        acquiredAt: Date.now() + 1_000,
+      });
+      return true;
+    });
+
     await harness.commands.get('goal')?.handler('continue', harness.ctx as never);
     expect(harness.sendMessage).not.toHaveBeenCalled();
   });

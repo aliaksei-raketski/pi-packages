@@ -12,8 +12,8 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { clampPollInterval, clampTimeout } from './config.js';
-import { createCommandArtifacts } from './command-artifacts.js';
-import { formatOutput, readExitCode, readOutput, tailLines } from './output.js';
+import { createCommandArtifacts, createPiSessionEnvironment } from './command-artifacts.js';
+import { formatOutput, readExitCode, readOutput } from './output.js';
 import type { BashInput } from './schemas.js';
 import { updateTmuxBashStatus } from './status.js';
 import { TmuxClient } from './tmux-client.js';
@@ -110,6 +110,7 @@ export class TmuxBashRuntime {
       command,
       displayCommand: command,
       config: this.config,
+      env: createPiSessionEnvironment(ctx),
     });
     const run: CommandRun = {
       ...artifacts,
@@ -181,7 +182,7 @@ export class TmuxBashRuntime {
   }
 
   async peek(windowId: string, ctx: ExtensionContext, lines?: number) {
-    const run = this.requireRun(windowId, ctx);
+    const run = await this.requireRun(windowId, ctx);
     const output = await this.readRunOutput(run);
     const formatted = formatOutput(output, {
       maxLines: lines ?? this.config.peekContextLines,
@@ -192,8 +193,11 @@ export class TmuxBashRuntime {
   }
 
   async kill(windowId: string, ctx: ExtensionContext) {
-    const run = this.requireRun(windowId, ctx);
-    if (run.windowId && !run.endedAt && !run.killed) await this.tmux.killWindow(run.windowId);
+    const run = await this.requireRun(windowId, ctx);
+    if (run.endedAt || run.killed) {
+      return this.tmuxResult('kill', [run], `Managed command ${windowId} is already finished.`);
+    }
+    if (run.windowId) await this.tmux.killWindow(run.windowId);
     run.killed = true;
     run.endedAt ??= Date.now();
     run.completionClaimed = true;
@@ -204,7 +208,7 @@ export class TmuxBashRuntime {
   }
 
   async await(windowId: string, ctx: ExtensionContext) {
-    const run = this.requireRun(windowId, ctx);
+    const run = await this.requireRun(windowId, ctx);
     if (run.endedAt && !run.killed) {
       const result = await this.completedResult(run);
       return this.tmuxResult(
@@ -231,8 +235,8 @@ export class TmuxBashRuntime {
     );
   }
 
-  unawait(windowId: string, ctx: ExtensionContext) {
-    const run = this.requireRun(windowId, ctx);
+  async unawait(windowId: string, ctx: ExtensionContext) {
+    const run = await this.requireRun(windowId, ctx);
     const released = this.releaseGate(run, 'abandoned', 'current-turn');
     this.publishStatus();
     return this.tmuxResult(
@@ -244,8 +248,8 @@ export class TmuxBashRuntime {
     );
   }
 
-  poll(windowId: string, ctx: ExtensionContext, interval?: number, lines?: number) {
-    const run = this.requireRun(windowId, ctx);
+  async poll(windowId: string, ctx: ExtensionContext, interval?: number, lines?: number) {
+    const run = await this.requireRun(windowId, ctx);
     if (run.endedAt || run.killed) throw new Error(`Managed command ${windowId} is not running.`);
     const poller = this.startPoll(run, interval, lines);
     return this.tmuxResult(
@@ -255,8 +259,8 @@ export class TmuxBashRuntime {
     );
   }
 
-  unpoll(windowId: string, ctx: ExtensionContext) {
-    const run = this.requireRun(windowId, ctx);
+  async unpoll(windowId: string, ctx: ExtensionContext) {
+    const run = await this.requireRun(windowId, ctx);
     const removed = this.stopPoll(run.runId);
     return this.tmuxResult(
       'unpoll',
@@ -273,7 +277,8 @@ export class TmuxBashRuntime {
     return this.tmuxResult('list', runs, text);
   }
 
-  listPollsResult(ctx: ExtensionContext) {
+  async listPollsResult(ctx: ExtensionContext) {
+    await this.reconcile(ctx);
     const runs = this.list(ctx).filter((run) => this.state.pollers.has(run.runId));
     if (runs.length === 0)
       return this.tmuxResult('list-polls', [], 'No active tmux polls in scope.');
@@ -356,7 +361,7 @@ export class TmuxBashRuntime {
   }
 
   private async terminateForeground(run: CommandRun, outcome: 'cancelled' | 'failed') {
-    if (run.windowId) await this.tmux.killWindow(run.windowId);
+    if (run.windowId && (await this.isOwnedWindow(run))) await this.tmux.killWindow(run.windowId);
     run.killed = true;
     run.endedAt = Date.now();
     run.completionClaimed = true;
@@ -490,10 +495,14 @@ export class TmuxBashRuntime {
     onUpdate: AgentToolUpdateCallback<TmuxBashDetails>,
   ) {
     if (run.endedAt) return;
-    const output = tailLines(await this.readRunOutput(run), 20);
+    const formatted = formatOutput(await this.readRunOutput(run), {
+      maxLines: Math.min(20, this.config.foregroundContextLines),
+      maxBytes: this.config.maxOutputBytes,
+      fullOutputPath: run.outputFile,
+    });
     onUpdate({
-      content: [{ type: 'text', text: output || 'Running…' }],
-      details: this.details(run),
+      content: [{ type: 'text', text: formatted.text || 'Running…' }],
+      details: this.details(run, formatted.truncation),
     });
   }
 
@@ -524,19 +533,18 @@ export class TmuxBashRuntime {
     const run = this.state.commands.get(poller.runId);
     if (!run || this.state.disposed) return void this.stopPoll(poller.runId);
     if (await this.completeIfReady(run, true)) return;
-    if (run.windowId && !(await this.tmux.hasWindow(run.windowId))) {
-      run.killed = true;
-      run.endedAt = Date.now();
-      run.completionClaimed = true;
-      this.releaseGate(run, 'failed', 'none');
-      this.stopPoll(run.runId);
-      this.publishStatus();
+    if (!(await this.isOwnedWindow(run))) {
+      await this.failUnownedRun(run, true);
       return;
     }
-    const output = tailLines(await this.readRunOutput(run), poller.lines);
-    if (!output || output === poller.lastOutput) return;
-    poller.lastOutput = output;
-    const content = `${run.windowId ?? run.runId} progress:\n${output}`;
+    const formatted = formatOutput(await this.readRunOutput(run), {
+      maxLines: poller.lines,
+      maxBytes: this.config.maxOutputBytes,
+      fullOutputPath: run.outputFile,
+    });
+    if (!formatted.text || formatted.text === poller.lastOutput) return;
+    poller.lastOutput = formatted.text;
+    const content = `${run.windowId ?? run.runId} progress:\n${formatted.text}`;
     if (this.config.pollDelivery === 'model') {
       this.pi.sendMessage(
         { customType: TMUX_BASH_COMPLETION_MESSAGE, content, display: true },
@@ -628,20 +636,64 @@ export class TmuxBashRuntime {
     for (const run of this.list(ctx)) {
       if (run.endedAt || run.killed) continue;
       if (await this.completeIfReady(run, false)) continue;
-      if (!run.windowId || (await this.tmux.hasWindow(run.windowId))) continue;
-      run.killed = true;
-      run.endedAt = Date.now();
-      run.completionClaimed = true;
-      this.stopPoll(run.runId);
-      this.releaseGate(run, 'failed', 'current-turn');
+      if (await this.isOwnedWindow(run)) continue;
+      await this.failUnownedRun(run, false);
     }
     this.publishStatus();
   }
 
-  private requireRun(windowId: string, ctx: ExtensionContext): CommandRun {
+  private async requireRun(windowId: string, ctx: ExtensionContext): Promise<CommandRun> {
     const run = this.list(ctx).find((candidate) => candidate.windowId === windowId);
     if (!run) throw new Error(`No managed tmux window ${windowId} exists in the configured scope.`);
+    if (!run.endedAt && !run.killed && (await this.completeIfReady(run, false))) return run;
+    if (!run.endedAt && !run.killed && !(await this.isOwnedWindow(run))) {
+      await this.failUnownedRun(run, false);
+      throw new Error(
+        `Tmux window ${windowId} is missing or no longer carries this run's ownership metadata.`,
+      );
+    }
     return run;
+  }
+
+  private async isOwnedWindow(run: CommandRun): Promise<boolean> {
+    if (!run.windowId) return false;
+    return this.tmux.isOwnedWindow(run.windowId, {
+      version: 'v1',
+      gitRoot: run.gitRoot,
+      piSessionId: run.sessionId,
+      runId: run.runId,
+    });
+  }
+
+  private async failUnownedRun(run: CommandRun, deliverFollowUp: boolean): Promise<void> {
+    if (run.endedAt || run.killed) return;
+    run.endedAt = Date.now();
+    run.completionClaimed = true;
+    this.stopPoll(run.runId);
+
+    if (deliverFollowUp && !this.state.disposed) {
+      const formatted = formatOutput(await readOutput(run.outputFile), {
+        maxLines: this.config.completionContextLines,
+        maxBytes: this.config.maxOutputBytes,
+        fullOutputPath: run.outputFile,
+      });
+      const output = formatted.text ? `\n${formatted.text}` : '';
+      this.pi.sendMessage(
+        {
+          customType: TMUX_BASH_COMPLETION_MESSAGE,
+          content: `${run.windowId ?? run.runId} failed: the managed tmux window disappeared or is no longer owned by this Pi run.${output}`,
+          display: true,
+          details: this.details(run, formatted.truncation),
+        },
+        { triggerTurn: true, deliverAs: 'followUp' },
+      );
+      run.completionDelivered = true;
+      this.releaseGate(run, 'failed', 'producer-message');
+    } else {
+      run.completionDelivered = true;
+      this.releaseGate(run, 'failed', 'current-turn');
+    }
+    this.publishStatus();
   }
 
   private isInScope(run: CommandRun, ctx: ExtensionContext): boolean {
@@ -670,7 +722,7 @@ export class TmuxBashRuntime {
       const header = `$ ${run.displayCommand}\n`;
       return artifact.startsWith(header) ? artifact.slice(header.length) : artifact;
     }
-    if (!run.windowId) return artifact;
+    if (!run.windowId || !(await this.isOwnedWindow(run))) return artifact;
     try {
       return await this.tmux.capturePane(run.windowId, this.config.peekContextLines);
     } catch {
@@ -688,7 +740,9 @@ export class TmuxBashRuntime {
 
   private async closeCompletedWindow(run: CommandRun): Promise<void> {
     if (!this.config.autoCloseWindowsOnCompletion || !run.windowId) return;
-    await this.tmux.killWindow(run.windowId).catch(() => undefined);
+    if (await this.isOwnedWindow(run)) {
+      await this.tmux.killWindow(run.windowId).catch(() => undefined);
+    }
   }
 
   private assertReady(ctx: ExtensionContext): void {

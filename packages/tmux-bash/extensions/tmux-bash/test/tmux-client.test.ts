@@ -38,6 +38,33 @@ describe('TmuxClient', () => {
     );
   });
 
+  it('validates all ownership fields instead of trusting a reused stable ID', async () => {
+    const metadata = new Map([
+      ['@pi_tmux_bash', 'v1'],
+      ['@pi_tmux_bash_git_root', '/repo'],
+      ['@pi_tmux_bash_session_id', 'session-1'],
+      ['@pi_tmux_bash_run_id', 'run-1'],
+    ]);
+    const execute = vi.fn<TmuxExecutor>(async (_binary, args) => {
+      if (args[0] === 'display-message') return ok('@123\n');
+      if (args[0] === 'show-options') return ok(`${metadata.get(args.at(-1) ?? '') ?? ''}\n`);
+      return ok();
+    });
+    const client = new TmuxClient('tmux', execute);
+    const expected = {
+      version: 'v1',
+      gitRoot: '/repo',
+      piSessionId: 'session-1',
+      runId: 'run-1',
+    };
+
+    await expect(client.isOwnedWindow('@123', expected)).resolves.toBe(true);
+    metadata.set('@pi_tmux_bash_run_id', 'unrelated-run');
+    await expect(client.isOwnedWindow('@123', expected)).resolves.toBe(false);
+    metadata.delete('@pi_tmux_bash');
+    await expect(client.isOwnedWindow('@123', expected)).resolves.toBe(false);
+  });
+
   it('rejects unstable targets before invoking tmux', async () => {
     const execute = vi.fn<TmuxExecutor>(async () => ok());
     const client = new TmuxClient('tmux', execute);

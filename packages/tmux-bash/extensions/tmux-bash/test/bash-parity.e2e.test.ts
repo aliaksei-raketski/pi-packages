@@ -1,4 +1,4 @@
-import { createBashTool } from '@earendil-works/pi-coding-agent';
+import { createBashTool, createBashToolDefinition } from '@earendil-works/pi-coding-agent';
 import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createCommandArtifacts } from '../src/command-artifacts.js';
+import { createCommandArtifacts, createPiSessionEnvironment } from '../src/command-artifacts.js';
 import { DEFAULT_TMUX_BASH_CONFIG } from '../src/config.js';
 
 const execFileAsync = promisify(execFile);
@@ -33,6 +33,24 @@ describe('built-in bash parity', () => {
     });
   }
 
+  it('matches built-in per-call session, model, and reasoning environment variables', async () => {
+    const command =
+      'printf \'%s\\n\' "$PI_SESSION_ID|$PI_SESSION_FILE|$PI_PROVIDER|$PI_MODEL|$PI_REASONING_LEVEL"';
+    const ctx = {
+      sessionManager: {
+        getSessionId: () => 'session-parity',
+        getSessionFile: () => '/tmp/session-parity.jsonl',
+      },
+      model: { provider: 'provider-parity', id: 'model-parity' },
+      thinkingLevel: 'high',
+    } as never;
+    const builtIn = createBashToolDefinition(process.cwd());
+    const expected = await builtIn.execute('built-in', { command }, undefined, undefined, ctx);
+    const expectedText = expected.content[0]?.type === 'text' ? expected.content[0].text : '';
+
+    expect(await executeWrapper(command, createPiSessionEnvironment(ctx))).toBe(expectedText);
+  });
+
   it('preserves non-zero output and exit status', async () => {
     const command = "printf 'before failure\\n'; exit 23";
     const builtIn = createBashTool(process.cwd());
@@ -46,7 +64,7 @@ describe('built-in bash parity', () => {
   });
 });
 
-async function executeWrapper(command: string): Promise<string> {
+async function executeWrapper(command: string, env?: NodeJS.ProcessEnv): Promise<string> {
   const runDir = await mkdtemp(join(tmpdir(), 'pi-bash-parity-'));
   directories.push(runDir);
   const artifacts = await createCommandArtifacts({
@@ -55,6 +73,7 @@ async function executeWrapper(command: string): Promise<string> {
     command,
     displayCommand: 'parity',
     config: DEFAULT_TMUX_BASH_CONFIG,
+    env,
   });
   let exitCode = 0;
   try {

@@ -95,6 +95,106 @@ describe('TmuxBashRuntime', () => {
     expect(messages).toHaveLength(1);
   });
 
+  it('bounds poll updates and reports an unowned awaited window before releasing its gate', async () => {
+    const events = new EventBus();
+    const ordering: string[] = [];
+    const releases: unknown[] = [];
+    const messages: Array<{ content?: string }> = [];
+    events.on(CONTINUATION_GATE_RELEASE_EVENT, (payload) => {
+      ordering.push('release');
+      releases.push(payload);
+    });
+    const pi = {
+      events,
+      sendMessage: (message: { content?: string }) => {
+        ordering.push('message');
+        messages.push(message);
+      },
+    };
+    const context = fakeContext();
+    const fakeTmux = managedTmux('@91');
+    const controller = createContinuationGateController(pi, { source: 'pi-tmux-bash' });
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        autoCloseWindowsOnCompletion: false,
+        maxOutputBytes: 128,
+        pollDelivery: 'model',
+        statusbarEnabled: false,
+      },
+      controller,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(runtime);
+    await runtime.startSession(context as never);
+    const started = await runtime.executeBash(
+      {
+        command: 'printf huge',
+        background: true,
+        waitForCompletion: true,
+        pollInterval: 60,
+        pollLines: 20,
+      },
+      undefined,
+      undefined,
+      context as never,
+    );
+    const run = runtime.state.commands.get(started.details?.runId ?? '');
+    if (!run) throw new Error('Expected registered command run.');
+    await writeFile(run.outputFile, `$ ${run.displayCommand}\n${'x'.repeat(10_000)}`);
+    const poller = runtime.state.pollers.get(run.runId);
+    if (!poller) throw new Error('Expected active poller.');
+
+    await (runtime as unknown as { pollTick(value: typeof poller): Promise<void> }).pollTick(
+      poller,
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.content).toContain('Output truncated');
+    expect(Buffer.byteLength(messages[0]?.content ?? '')).toBeLessThan(1_000);
+
+    fakeTmux.metadata.set('@pi_tmux_bash_run_id', 'reused-by-another-run');
+    await (runtime as unknown as { pollTick(value: typeof poller): Promise<void> }).pollTick(
+      poller,
+    );
+
+    expect(messages).toHaveLength(2);
+    expect(messages[1]?.content).toMatch(/failed:.*no longer owned/s);
+    expect(Buffer.byteLength(messages[1]?.content ?? '')).toBeLessThan(1_000);
+    expect(ordering.slice(-2)).toEqual(['message', 'release']);
+    expect(releases.at(-1)).toMatchObject({ outcome: 'failed', wake: 'producer-message' });
+    expect(controller.list('session-1')).toHaveLength(0);
+  });
+
+  it('refuses to kill a reused window whose ownership metadata no longer matches', async () => {
+    const events = new EventBus();
+    const pi = { events, sendMessage: vi.fn() };
+    const context = fakeContext();
+    const fakeTmux = managedTmux('@92');
+    const controller = createContinuationGateController(pi, { source: 'pi-tmux-bash' });
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      { ...DEFAULT_TMUX_BASH_CONFIG, statusbarEnabled: false },
+      controller,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(runtime);
+    await runtime.startSession(context as never);
+    await runtime.executeBash(
+      { command: 'sleep 10', background: true },
+      undefined,
+      undefined,
+      context as never,
+    );
+    fakeTmux.metadata.set('@pi_tmux_bash_session_id', 'another-session');
+
+    await expect(runtime.kill('@92', context as never)).rejects.toThrow(/ownership metadata/);
+    expect(fakeTmux.execute).not.toHaveBeenCalledWith(
+      'tmux',
+      expect.arrayContaining(['kill-window']),
+    );
+  });
+
   it('does not gate an explicit background command by default', async () => {
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn() };
@@ -126,11 +226,36 @@ describe('TmuxBashRuntime', () => {
 function fakeContext() {
   return {
     cwd: process.cwd(),
-    sessionManager: { getSessionId: () => 'session-1' },
+    sessionManager: {
+      getSessionId: () => 'session-1',
+      getSessionFile: () => '/tmp/session-1.jsonl',
+    },
     ui: {
       notify: vi.fn(),
       setStatus: vi.fn(),
       theme: { fg: (_color: string, text: string) => text },
     },
   };
+}
+
+function managedTmux(windowId: string) {
+  const metadata = new Map<string, string>();
+  const execute = vi.fn<TmuxExecutor>(async (_binary, args) => {
+    switch (args[0]) {
+      case 'new-window':
+        return { stdout: `${windowId}\n`, stderr: '', code: 0 };
+      case 'set-option':
+        metadata.set(args[4] ?? '', args[5] ?? '');
+        return { stdout: '', stderr: '', code: 0 };
+      case 'display-message':
+        return { stdout: `${windowId}\n`, stderr: '', code: 0 };
+      case 'show-options':
+        return metadata.has(args.at(-1) ?? '')
+          ? { stdout: `${metadata.get(args.at(-1) ?? '')}\n`, stderr: '', code: 0 }
+          : { stdout: '', stderr: 'missing option', code: 1 };
+      default:
+        return { stdout: '', stderr: '', code: 0 };
+    }
+  });
+  return { execute, metadata };
 }

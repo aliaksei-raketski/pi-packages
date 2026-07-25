@@ -15,11 +15,14 @@ export interface TmuxExecutor {
   (binary: string, args: string[]): Promise<TmuxExecResult>;
 }
 
-export interface ManagedWindowMetadata {
+export interface ManagedWindowIdentity {
   version: string;
   gitRoot: string;
   piSessionId: string;
   runId: string;
+}
+
+export interface ManagedWindowMetadata extends ManagedWindowIdentity {
   startedAt: number;
   outputFile: string;
   displayCommand: string;
@@ -156,6 +159,29 @@ export class TmuxClient {
       '#{window_id}',
     ]);
     return result.code === 0 && result.stdout.trim() === windowId;
+  }
+
+  async isOwnedWindow(windowId: string, expected: ManagedWindowIdentity): Promise<boolean> {
+    if (!(await this.hasWindow(windowId))) return false;
+    const options: Array<[keyof ManagedWindowIdentity, string]> = [
+      ['version', '@pi_tmux_bash'],
+      ['gitRoot', '@pi_tmux_bash_git_root'],
+      ['piSessionId', '@pi_tmux_bash_session_id'],
+      ['runId', '@pi_tmux_bash_run_id'],
+    ];
+    for (const [field, option] of options) {
+      const result = await this.executeProcess(this.binary, [
+        'show-options',
+        '-w',
+        '-v',
+        '-t',
+        windowId,
+        option,
+      ]);
+      if (result.code !== 0 || result.stdout.replace(/\r?\n$/, '') !== expected[field])
+        return false;
+    }
+    return true;
   }
 
   attachHint(

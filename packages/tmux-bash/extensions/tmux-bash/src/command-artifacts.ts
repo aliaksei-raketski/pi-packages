@@ -1,3 +1,4 @@
+import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -47,6 +48,32 @@ export async function createCommandArtifacts(input: {
   ]);
   await Promise.all([chmod(artifacts.commandFile, 0o700), chmod(artifacts.scriptFile, 0o700)]);
   return artifacts;
+}
+
+export function createPiSessionEnvironment(
+  ctx: ExtensionContext,
+  baseEnvironment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const environment = { ...baseEnvironment };
+  for (const name of [
+    'PI_SESSION_ID',
+    'PI_SESSION_FILE',
+    'PI_PROVIDER',
+    'PI_MODEL',
+    'PI_REASONING_LEVEL',
+  ]) {
+    delete environment[name];
+  }
+
+  environment.PI_SESSION_ID = ctx.sessionManager.getSessionId();
+  const sessionFile = ctx.sessionManager.getSessionFile();
+  if (sessionFile) environment.PI_SESSION_FILE = sessionFile;
+  if (ctx.model) {
+    environment.PI_PROVIDER = ctx.model.provider;
+    environment.PI_MODEL = ctx.model.id;
+  }
+  if (ctx.thinkingLevel) environment.PI_REASONING_LEVEL = ctx.thinkingLevel;
+  return environment;
 }
 
 export function buildEnvironmentExports(

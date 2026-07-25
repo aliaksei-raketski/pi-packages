@@ -65,8 +65,9 @@ describe('goal runtime', () => {
     expect(capture && continuationCaptureIsCurrent(runtime, capture)).toBe(false);
   });
 
-  it('requires every live gate to have been explicitly confirmed', () => {
+  it('requires every live gate acquisition to have been explicitly confirmed', () => {
     expect(allGatesWereConfirmed([gate('one')], [gate('one')])).toBe(true);
     expect(allGatesWereConfirmed([gate('one'), gate('two')], [gate('one')])).toBe(false);
+    expect(allGatesWereConfirmed([{ ...gate('one'), acquiredAt: 11 }], [gate('one')])).toBe(false);
   });
 });

@@ -47,8 +47,3 @@ export function formatOutput(
     truncation,
   };
 }
-
-export function tailLines(output: string, lineCount: number): string {
-  const lines = output.split('\n');
-  return lines.slice(-Math.max(1, lineCount)).join('\n');
-}
