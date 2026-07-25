@@ -23,6 +23,9 @@
     },
     {
       "path": "./packages/nx-developer"
+    },
+    {
+      "path": "./packages/continuation-gate-protocol"
     }
   ]
 }
