@@ -36,7 +36,7 @@
     "LICENSE"
   ],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": ">=0.82.1"
   },
   "dependencies": {
     "@aliaksei-raketski/pi-statusline-protocol": "workspace:*"
