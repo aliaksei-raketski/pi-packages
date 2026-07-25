@@ -199,6 +199,31 @@ importers:
 
   packages/taiga-ui-docs: {}
 
+  packages/tmux-bash:
+    dependencies:
+      '@aliaksei-raketski/pi-continuation-gate-protocol':
+        specifier: workspace:*
+        version: link:../continuation-gate-protocol
+      '@aliaksei-raketski/pi-statusline-protocol':
+        specifier: workspace:*
+        version: link:../statusline-protocol
+      jsonc-parser:
+        specifier: ^3.3.1
+        version: 3.3.1
+    devDependencies:
+      '@earendil-works/pi-ai':
+        specifier: 0.80.2
+        version: 0.80.2(ws@8.21.0)(zod@4.4.3)
+      '@earendil-works/pi-coding-agent':
+        specifier: 0.80.2
+        version: 0.80.2(ws@8.21.0)(zod@4.4.3)
+      '@earendil-works/pi-tui':
+        specifier: 0.80.2
+        version: 0.80.2
+      typebox:
+        specifier: 1.1.38
+        version: 1.1.38
+
   tools/nx-pi:
     dependencies:
       '@nx/devkit':

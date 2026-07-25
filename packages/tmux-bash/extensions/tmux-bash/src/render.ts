@@ -1,0 +1,73 @@
+import { Text } from '@earendil-works/pi-tui';
+
+import type { BashInput, TmuxInput } from './schemas.js';
+import type { TmuxBashDetails, TmuxToolDetails } from './types.js';
+
+export function renderBashCall(args: BashInput, theme: ThemeLike) {
+  const command = args.command.length > 100 ? `${args.command.slice(0, 97)}...` : args.command;
+  const mode = args.background ? ' bg' : '';
+  const awaited = args.waitForCompletion ? ' awaited' : '';
+  return new Text(
+    `${theme.fg('toolTitle', theme.bold('$ '))}${theme.fg('accent', command)}${theme.fg('dim', `${mode}${awaited}`)}`,
+    0,
+    0,
+  );
+}
+
+export function renderBashResult(
+  result: { content: Array<{ type: string; text?: string }>; details?: TmuxBashDetails },
+  options: { expanded: boolean; isPartial: boolean },
+  theme: ThemeLike,
+) {
+  if (options.isPartial) {
+    const output = result.content.find((item) => item.type === 'text')?.text ?? 'Running...';
+    return new Text(theme.fg('warning', compact(output, options.expanded ? 20 : 4)), 0, 0);
+  }
+  const details = result.details;
+  if (!details) return new Text(theme.fg('dim', 'No output'), 0, 0);
+  const color =
+    details.state === 'completed' ? 'success' : details.state === 'running' ? 'warning' : 'error';
+  let text = theme.fg(
+    color,
+    details.state === 'running'
+      ? `running ${details.windowId ?? ''}`
+      : `${details.state}${details.exitCode === undefined ? '' : ` (${details.exitCode})`}`,
+  );
+  if (details.awaited) text += theme.fg('warning', ' · awaited');
+  const output = result.content.find((item) => item.type === 'text')?.text;
+  if (output) text += `\n${theme.fg('dim', compact(output, options.expanded ? 80 : 8))}`;
+  return new Text(text, 0, 0);
+}
+
+export function renderTmuxCall(args: TmuxInput, theme: ThemeLike) {
+  const target = args.windowId ? ` ${args.windowId}` : '';
+  return new Text(
+    `${theme.fg('toolTitle', theme.bold('tmux '))}${theme.fg('accent', args.action)}${theme.fg('dim', target)}`,
+    0,
+    0,
+  );
+}
+
+export function renderTmuxResult(
+  result: { content: Array<{ type: string; text?: string }>; details?: TmuxToolDetails },
+  options: { expanded: boolean; isPartial: boolean },
+  theme: ThemeLike,
+) {
+  const output = result.content.find((item) => item.type === 'text')?.text ?? '';
+  return new Text(
+    theme.fg(options.isPartial ? 'warning' : 'dim', compact(output, options.expanded ? 100 : 12)),
+    0,
+    0,
+  );
+}
+
+interface ThemeLike {
+  fg(color: string, text: string): string;
+  bold(text: string): string;
+}
+
+function compact(value: string, maxLines: number): string {
+  const lines = value.split('\n');
+  if (lines.length <= maxLines) return value;
+  return `${lines.slice(-maxLines).join('\n')}\n…`;
+}

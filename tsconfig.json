@@ -26,6 +26,9 @@
     },
     {
       "path": "./packages/continuation-gate-protocol"
+    },
+    {
+      "path": "./packages/tmux-bash"
     }
   ]
 }
