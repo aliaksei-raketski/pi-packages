@@ -116,8 +116,8 @@ This package communicates through `@aliaksei-raketski/pi-continuation-gate-proto
 
 1. a finite background command acquires a generic gate;
 2. goal continuation remains idle while the gate exists;
-3. tmux completion is queued as a follow-up;
-4. the gate is released with `wake: "producer-message"`;
+3. tmux prepares a wake handoff and queues completion as a follow-up;
+4. the handoff is committed, then the gate is released with `wake: "producer-message"` and its handoff ID;
 5. goal continuation can resume after the completion turn settles.
 
 Every finite background command whose result is required—including tests, builds, and subagents—should use `waitForCompletion: true`, regardless of its duration or whether other productive work can continue concurrently. Continuation gates do not block the current agent run; they suppress only synthetic idle continuation.

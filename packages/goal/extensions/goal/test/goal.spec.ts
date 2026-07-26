@@ -136,12 +136,13 @@ async function createActiveGoal(harness: Harness): Promise<void> {
 
 function acquireGate(harness: Harness, gateId = 'tests'): void {
   harness.events.emit(CONTINUATION_GATE_ACQUIRE_EVENT, {
-    protocolVersion: 1,
     sessionId: 'session-1',
     source: 'producer',
     gateId,
+    domain: 'autonomous-continuation',
     reason: 'waiting for tests',
     acquiredAt: Date.now(),
+    updatedAt: Date.now(),
   });
 }
 
@@ -236,21 +237,23 @@ describe('goal extension', () => {
     acquireGate(harness);
     harness.confirm.mockImplementationOnce(async () => {
       harness.events.emit(CONTINUATION_GATE_RELEASE_EVENT, {
-        protocolVersion: 1,
+        releaseId: 'release-tests',
         sessionId: 'session-1',
         source: 'producer',
         gateId: 'tests',
+        domain: 'autonomous-continuation',
         outcome: 'abandoned',
         wake: 'none',
         releasedAt: Date.now(),
       });
       harness.events.emit(CONTINUATION_GATE_ACQUIRE_EVENT, {
-        protocolVersion: 1,
         sessionId: 'session-1',
         source: 'producer',
         gateId: 'tests',
+        domain: 'autonomous-continuation',
         reason: 'replacement wait lifecycle',
         acquiredAt: Date.now() + 1_000,
+        updatedAt: Date.now() + 1_000,
       });
       return true;
     });

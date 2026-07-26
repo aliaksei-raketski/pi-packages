@@ -1,0 +1,44 @@
+{
+  "name": "@aliaksei-raketski/pi-continuation-gate-inspector",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Local inspector for continuation gate diagnostics.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "continuation-gate-inspector",
+    "pi-extension"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/aliaksei-raketski/pi-packages/tree/main/packages/continuation-gate-inspector",
+  "bugs": {
+    "url": "https://github.com/aliaksei-raketski/pi-packages/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aliaksei-raketski/pi-packages.git",
+    "directory": "packages/continuation-gate-inspector"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "files": [
+    "README.md",
+    "extensions"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "dependencies": {
+    "@aliaksei-raketski/pi-continuation-gate-protocol": "workspace:*"
+  }
+}

@@ -14,18 +14,25 @@ import {
 import { createGoalState } from '../src/goal-state.ts';
 
 const gate = (gateId: string): ContinuationGate => ({
-  protocolVersion: 1,
   sessionId: 'session-1',
   source: 'producer',
   gateId,
+  domain: 'autonomous-continuation',
   reason: 'waiting for tests',
   acquiredAt: 10,
+  updatedAt: 10,
 });
 
 const registry = {
   list: () => [],
+  listStale: () => [],
+  leaseState: () => 'none' as const,
   isBlocked: () => false,
   requestSnapshot: () => 'request',
+  claimAutoResume: () => undefined,
+  commitAutoResume: () => false,
+  abortAutoResume: () => false,
+  diagnostics: () => [],
   clear: () => undefined,
   dispose: () => undefined,
 } satisfies ContinuationGateRegistry;

@@ -39,7 +39,7 @@ The final turn is still accounted when the model completes the goal during that 
 
 ### Wait diagnostics
 
-`/goal waits` lists current-session continuation gates with source, gate ID, reason, age, and resource details. It is diagnostic only: the goal package never persists, releases, or owns another extension's gates.
+`/goal waits` lists current-session continuation gates with domain, source, gate ID, reason, age, resource details, and lease policy/deadline/staleness. It is diagnostic only: the goal package never persists, releases, renews, or owns another extension's gates.
 
 ### Manual continuation
 
@@ -82,7 +82,7 @@ Passing tests, manifests, green checks, elapsed effort, and plausible summaries 
 
 Automatic continuation runs only after Pi emits `agent_settled`, no messages are pending, and the current session has no continuation gates. An active goal can display `waiting` without being paused: the persisted goal remains `active`, while the status is derived from live gate state.
 
-Gate release alone never wakes the model. The asynchronous producer must queue its own result message before releasing a `producer-message` gate. After Pi processes that result and settles, the goal loop may continue if all gates are clear.
+Gate release alone never wakes the model. A producer must commit its wake handoff only after queueing its result message, then release a `producer-message` gate with that handoff ID. After Pi processes that result and settles, the goal loop may continue if all gates are clear. Diagnose-only stale gates remain blocking.
 
 ```text
 /goal --tokens 50k finish migration and verify tests

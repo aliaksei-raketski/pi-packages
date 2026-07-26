@@ -25,12 +25,13 @@ class EventBus {
 
 const active = createGoalState('ship', null, 1, () => 'goal-1');
 const gate = (gateId: string, sessionId = 'session-1'): ContinuationGate => ({
-  protocolVersion: 1,
   sessionId,
   source: 'producer',
   gateId,
+  domain: 'autonomous-continuation',
   reason: 'background work',
   acquiredAt: 10,
+  updatedAt: 10,
 });
 
 function eligible(activeGates: readonly ContinuationGate[], hasPendingMessages = false): boolean {
@@ -53,12 +54,13 @@ describe('goal and continuation-gate coexistence', () => {
 
     // The producer queues its completion follow-up before release.
     events.emit(CONTINUATION_GATE_RELEASE_EVENT, {
-      protocolVersion: 1,
+      releaseId: 'release-1',
       sessionId: 'session-1',
       source: 'producer',
       gateId: 'tests',
+      domain: 'autonomous-continuation',
       outcome: 'completed',
-      wake: 'producer-message',
+      wake: 'none',
       releasedAt: 20,
     });
     expect(eligible(registry.list('session-1'), true)).toBe(false);
@@ -78,12 +80,13 @@ describe('goal and continuation-gate coexistence', () => {
     expect(eligible(registry.list('session-1'))).toBe(false);
 
     events.emit(CONTINUATION_GATE_RELEASE_EVENT, {
-      protocolVersion: 1,
+      releaseId: 'release-2',
       sessionId: 'session-1',
       source: 'producer',
       gateId: 'one',
+      domain: 'autonomous-continuation',
       outcome: 'completed',
-      wake: 'producer-message',
+      wake: 'none',
       releasedAt: 20,
     });
     expect(eligible(registry.list('session-1'))).toBe(false);

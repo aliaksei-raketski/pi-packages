@@ -88,7 +88,7 @@ export function continuationCaptureIsCurrent(
 }
 
 export function gateIdentity(gate: ContinuationGate): string {
-  return `${gate.sessionId}\u0000${gate.source}\u0000${gate.gateId}\u0000${gate.acquiredAt}`;
+  return `${gate.sessionId}\u0000${gate.source}\u0000${gate.gateId}\u0000${gate.domain}\u0000${gate.acquiredAt}\u0000${gate.updatedAt}`;
 }
 
 export function allGatesWereConfirmed(

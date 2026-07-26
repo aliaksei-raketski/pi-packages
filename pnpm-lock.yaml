@@ -179,6 +179,15 @@ importers:
 
   packages/angular-developer: {}
 
+  packages/continuation-gate-inspector:
+    dependencies:
+      '@aliaksei-raketski/pi-continuation-gate-protocol':
+        specifier: workspace:*
+        version: link:../continuation-gate-protocol
+      '@earendil-works/pi-coding-agent':
+        specifier: '*'
+        version: 0.82.1(ws@8.21.0)(zod@4.4.3)
+
   packages/continuation-gate-protocol:
     dependencies:
       tslib:

@@ -19,7 +19,10 @@ export function formatGate(gate: ContinuationGate, now = Date.now()): string {
     const label = gate.resource.label ? ` (${gate.resource.label})` : '';
     resource = `; resource=${gate.resource.kind}:${gate.resource.id}${label}`;
   }
-  return `${gate.source}/${gate.gateId}: ${gate.reason}; age=${formatElapsed(ageSeconds)}${resource}`;
+  const lease = gate.lease
+    ? `; domain=${gate.domain}; lease=${gate.lease.policy} expires=${new Date(gate.lease.expiresAt).toISOString()}${gate.lease.expiresAt <= now ? ` stale-age=${formatElapsed(Math.floor((now - gate.lease.expiresAt) / 1000))}` : ''}`
+    : `; domain=${gate.domain}; lease=none`;
+  return `${gate.source}/${gate.gateId}: ${gate.reason}; age=${formatElapsed(ageSeconds)}${resource}${lease}`;
 }
 
 export function formatGates(gates: readonly ContinuationGate[], now = Date.now()): string {

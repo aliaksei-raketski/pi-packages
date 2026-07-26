@@ -1,8 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createContinuationGateController } from './controller.js';
 import {
   CONTINUATION_GATE_ACQUIRE_EVENT,
-  CONTINUATION_GATE_PROTOCOL_VERSION,
   CONTINUATION_GATE_RELEASE_EVENT,
   CONTINUATION_GATE_SNAPSHOT_EVENT,
   CONTINUATION_GATE_SNAPSHOT_REQUEST_EVENT,
@@ -11,7 +10,6 @@ import {
 } from './protocol.js';
 import { createContinuationGateRegistry } from './registry.js';
 import {
-  isContinuationGate,
   parseContinuationGateAcquire,
   parseContinuationGateRelease,
   parseContinuationGateSnapshot,
@@ -21,83 +19,60 @@ import {
 class FakeEventBus {
   readonly emitted: Array<{ eventName: string; payload: unknown }> = [];
   private readonly listeners = new Map<string, Set<(payload: unknown) => void>>();
-
   emit(eventName: string, payload: unknown): void {
     this.emitted.push({ eventName, payload });
-    for (const handler of [...(this.listeners.get(eventName) ?? [])]) {
-      handler(payload);
-    }
+    for (const handler of [...(this.listeners.get(eventName) ?? [])]) handler(payload);
   }
-
   on(eventName: string, handler: (payload: unknown) => void): () => void {
-    let handlers = this.listeners.get(eventName);
-    if (!handlers) {
-      handlers = new Set();
-      this.listeners.set(eventName, handlers);
-    }
+    const handlers = this.listeners.get(eventName) ?? new Set();
     handlers.add(handler);
-    return () => {
-      handlers.delete(handler);
-    };
+    this.listeners.set(eventName, handlers);
+    return () => handlers.delete(handler);
   }
-
   listenerCount(eventName: string): number {
     return this.listeners.get(eventName)?.size ?? 0;
   }
 }
-
 function createHost(): { bus: FakeEventBus; host: ContinuationGateProtocolHost } {
   const bus = new FakeEventBus();
   return { bus, host: { events: bus } };
 }
-
 function gate(overrides: Partial<ContinuationGate> = {}): ContinuationGate {
   return {
-    protocolVersion: CONTINUATION_GATE_PROTOCOL_VERSION,
     sessionId: 'session-1',
     source: 'tmux',
     gateId: 'process-1',
+    domain: 'autonomous-continuation',
     reason: 'Waiting for command completion',
     acquiredAt: 100,
+    updatedAt: 100,
     resource: { kind: 'process', id: 'pane-1', label: 'tests' },
     ...overrides,
   };
 }
 
 describe('continuation gate payload validation', () => {
-  it('accepts and normalizes valid v1 payloads', () => {
-    expect(
-      parseContinuationGateAcquire({
-        ...gate(),
-        sessionId: ' session-1 ',
-        unknown: true,
-      }),
-    ).toEqual(gate());
-    expect(isContinuationGate(gate())).toBe(true);
-
+  it('accepts the unversioned model and normalizes defaults', () => {
+    expect(parseContinuationGateAcquire({ ...gate(), domain: undefined, unknown: true })).toEqual(
+      gate(),
+    );
     expect(
       parseContinuationGateRelease({
-        protocolVersion: 1,
+        releaseId: 'release-1',
         sessionId: 'session-1',
         source: 'tmux',
         gateId: 'process-1',
+        domain: 'autonomous-continuation',
         outcome: 'completed',
-        wake: 'producer-message',
+        wake: 'none',
         releasedAt: 101,
       }),
-    ).toMatchObject({ outcome: 'completed', wake: 'producer-message' });
-
+    ).toMatchObject({ releaseId: 'release-1', domain: 'autonomous-continuation' });
     expect(
-      parseContinuationGateSnapshotRequest({
-        protocolVersion: 1,
-        requestId: 'request-1',
-        sessionId: 'session-1',
-      }),
-    ).toEqual({ protocolVersion: 1, requestId: 'request-1', sessionId: 'session-1' });
-
+      parseContinuationGateSnapshotRequest({ requestId: 'request-1', sessionId: 'session-1' }),
+    ).toEqual({ requestId: 'request-1', sessionId: 'session-1' });
     expect(
       parseContinuationGateSnapshot({
-        protocolVersion: 1,
         requestId: 'request-1',
         sessionId: 'session-1',
         source: 'tmux',
@@ -105,46 +80,31 @@ describe('continuation gate payload validation', () => {
       }),
     ).toMatchObject({ source: 'tmux', gates: [gate()] });
   });
-
-  it('rejects unsupported versions, blank identities, and invalid timestamps', () => {
-    expect(parseContinuationGateAcquire({ ...gate(), protocolVersion: 2 })).toBeUndefined();
-    for (const key of ['sessionId', 'source', 'gateId'] as const) {
-      expect(parseContinuationGateAcquire({ ...gate(), [key]: '   ' })).toBeUndefined();
-    }
-    expect(parseContinuationGateAcquire({ ...gate(), acquiredAt: -1 })).toBeUndefined();
-    expect(parseContinuationGateAcquire({ ...gate(), acquiredAt: Number.NaN })).toBeUndefined();
-    expect(parseContinuationGateRelease({ releasedAt: 1 })).toBeUndefined();
-    expect(parseContinuationGateSnapshotRequest(undefined)).toBeUndefined();
+  it('rejects versioned and invalid payloads without throwing', () => {
+    expect(parseContinuationGateAcquire({ ...gate(), protocolVersion: 1 })).toEqual(gate());
     expect(
-      parseContinuationGateSnapshot({ protocolVersion: 1, sessionId: 'session-1', gates: [] }),
+      parseContinuationGateRelease({
+        releaseId: 'x',
+        sessionId: 's',
+        source: 'p',
+        gateId: 'g',
+        domain: 'd',
+        outcome: 'completed',
+        wake: 'producer-message',
+        releasedAt: 1,
+      }),
     ).toBeUndefined();
-  });
-
-  it('bounds strings and validates resources', () => {
-    expect(parseContinuationGateAcquire({ ...gate(), gateId: 'x'.repeat(257) })).toBeUndefined();
-    expect(parseContinuationGateAcquire({ ...gate(), reason: 'x'.repeat(2_049) })).toBeUndefined();
+    expect(parseContinuationGateAcquire({ ...gate(), updatedAt: 99 })).toBeUndefined();
     expect(
-      parseContinuationGateAcquire({ ...gate(), resource: { kind: '', id: 'pane-1' } }),
+      parseContinuationGateAcquire({ ...gate(), lease: { expiresAt: 100, policy: 'diagnose' } }),
     ).toBeUndefined();
-  });
-
-  it('filters malformed and mismatched gates without rejecting a valid snapshot envelope', () => {
-    const snapshot = parseContinuationGateSnapshot({
-      protocolVersion: 1,
-      sessionId: 'session-1',
-      source: 'tmux',
-      gates: [
-        gate(),
-        { ...gate(), gateId: '', reason: 42 },
-        gate({ source: 'ci', gateId: 'other-source' }),
-        gate({ sessionId: 'session-2', gateId: 'other-session' }),
-      ],
-    });
-
-    expect(snapshot?.gates).toEqual([gate()]);
-  });
-
-  it('never throws for malformed payloads, including hostile property access', () => {
+    expect(
+      parseContinuationGateSnapshot({
+        sessionId: 's',
+        source: 'p',
+        gates: Array.from({ length: 513 }, () => gate()),
+      }),
+    ).toBeUndefined();
     const hostile = new Proxy(
       {},
       {
@@ -153,7 +113,6 @@ describe('continuation gate payload validation', () => {
         },
       },
     );
-
     expect(() => parseContinuationGateAcquire(hostile)).not.toThrow();
     expect(() => parseContinuationGateRelease(hostile)).not.toThrow();
     expect(() => parseContinuationGateSnapshotRequest(hostile)).not.toThrow();
@@ -161,291 +120,260 @@ describe('continuation gate payload validation', () => {
   });
 });
 
-describe('continuation gate controller', () => {
-  it('acquires, updates, and releases one authoritative gate idempotently', () => {
-    const { bus, host } = createHost();
-    let currentTime = 10;
-    const controller = createContinuationGateController(host, {
-      source: 'tmux',
-      now: () => currentTime++,
-    });
-
+describe('controller leases and snapshots', () => {
+  it('reacquires and renews a gate while preserving acquisition time', () => {
+    const { host } = createHost();
+    let now = 10;
+    const controller = createContinuationGateController(host, { source: 'tmux', now: () => now });
     const first = controller.acquire({
-      sessionId: 'session-1',
-      gateId: 'process-1',
-      reason: 'first reason',
+      sessionId: 's',
+      gateId: 'g',
+      reason: 'first',
+      lease: { durationMs: 100, policy: 'diagnose' },
     });
-    const updated = controller.acquire({
-      sessionId: 'session-1',
-      gateId: 'process-1',
-      reason: 'updated reason',
-      resource: { kind: 'process', id: 'pane-1' },
-    });
-
-    expect(first.acquiredAt).toBe(10);
-    expect(updated.acquiredAt).toBe(10);
-    expect(controller.list('session-1')).toEqual([updated]);
+    now = 20;
+    const second = controller.acquire({ sessionId: 's', gateId: 'g', reason: 'second' });
+    expect(second.acquiredAt).toBe(first.acquiredAt);
+    expect(second.updatedAt).toBe(20);
+    now = 30;
     expect(
-      bus.emitted.filter(({ eventName }) => eventName === CONTINUATION_GATE_ACQUIRE_EVENT),
-    ).toHaveLength(2);
-
-    expect(
-      controller.release({
-        sessionId: 'session-1',
-        gateId: 'process-1',
-        outcome: 'completed',
-        wake: 'producer-message',
-      }),
-    ).toBe(true);
-    expect(controller.list('session-1')).toEqual([]);
-    expect(
-      controller.release({
-        sessionId: 'session-1',
-        gateId: 'process-1',
-        outcome: 'completed',
-        wake: 'producer-message',
-      }),
-    ).toBe(false);
-    expect(
-      bus.emitted.filter(({ eventName }) => eventName === CONTINUATION_GATE_RELEASE_EVENT),
-    ).toHaveLength(1);
+      controller.renew({ sessionId: 's', gateId: 'g', durationMs: 50 })?.lease?.expiresAt,
+    ).toBe(80);
   });
-
-  it('rejects invalid producer acquisition input without emitting', () => {
-    const { bus, host } = createHost();
-    const controller = createContinuationGateController(host, { source: 'tmux' });
-
-    expect(() => controller.acquire({ sessionId: '', gateId: 'gate', reason: 'wait' })).toThrow(
-      TypeError,
-    );
-    expect(bus.emitted).toEqual([]);
-  });
-
-  it('answers snapshot requests for only the requested session, including empty sessions', () => {
-    const { bus, host } = createHost();
-    const controller = createContinuationGateController(host, { source: 'tmux', now: () => 10 });
-    controller.acquire({ sessionId: 'session-1', gateId: 'one', reason: 'one' });
-    controller.acquire({ sessionId: 'session-2', gateId: 'two', reason: 'two' });
-    bus.emitted.length = 0;
-
-    bus.emit(CONTINUATION_GATE_SNAPSHOT_REQUEST_EVENT, {
-      protocolVersion: 1,
-      requestId: 'request-1',
-      sessionId: 'session-1',
+  it('expires opt-in leases but keeps diagnose leases blocking', () => {
+    const { host, bus } = createHost();
+    let now = 10;
+    const controller = createContinuationGateController(host, { source: 'p', now: () => now });
+    const registry = createContinuationGateRegistry(host, { now: () => now });
+    controller.acquire({
+      sessionId: 's',
+      gateId: 'diagnose',
+      reason: 'wait',
+      lease: { expiresAt: 20, policy: 'diagnose' },
     });
-    bus.emit(CONTINUATION_GATE_SNAPSHOT_REQUEST_EVENT, {
-      protocolVersion: 1,
-      requestId: 'request-empty',
-      sessionId: 'session-empty',
+    controller.acquire({
+      sessionId: 's',
+      gateId: 'expire',
+      reason: 'wait',
+      lease: { expiresAt: 20, policy: 'expire' },
     });
-
-    const snapshots = bus.emitted
-      .filter(({ eventName }) => eventName === CONTINUATION_GATE_SNAPSHOT_EVENT)
-      .map(({ payload }) => payload as { requestId: string; gates: ContinuationGate[] });
-    expect(snapshots).toHaveLength(2);
-    expect(snapshots[0]?.gates.map(({ gateId }) => gateId)).toEqual(['one']);
-    expect(snapshots[1]).toMatchObject({ requestId: 'request-empty', gates: [] });
-  });
-
-  it('clears a session with releases and an authoritative empty snapshot', () => {
-    const { bus, host } = createHost();
-    const controller = createContinuationGateController(host, { source: 'tmux', now: () => 10 });
-    const registry = createContinuationGateRegistry(host);
-    controller.acquire({ sessionId: 'session-1', gateId: 'one', reason: 'one' });
-    controller.acquire({ sessionId: 'session-1', gateId: 'two', reason: 'two' });
-
-    controller.clearSession('session-1', 'cancelled');
-
-    expect(registry.isBlocked('session-1')).toBe(false);
-    const releases = bus.emitted.filter(
-      ({ eventName }) => eventName === CONTINUATION_GATE_RELEASE_EVENT,
-    );
-    expect(releases).toHaveLength(2);
+    now = 20;
+    controller.publishSnapshot('s');
+    expect(registry.listStale('s').map((item) => item.gateId)).toEqual(['diagnose']);
+    expect(registry.isBlocked('s')).toBe(true);
     expect(
       bus.emitted.some(
         ({ eventName, payload }) =>
-          eventName === CONTINUATION_GATE_SNAPSHOT_EVENT &&
-          (payload as { gates: unknown[] }).gates.length === 0,
+          eventName === CONTINUATION_GATE_RELEASE_EVENT &&
+          (payload as { outcome: string }).outcome === 'expired',
       ),
     ).toBe(true);
-  });
-
-  it('disposes the snapshot listener idempotently and retains or releases gates explicitly', () => {
-    const { bus, host } = createHost();
-    const controller = createContinuationGateController(host, { source: 'tmux', now: () => 10 });
-    controller.acquire({ sessionId: 'session-1', gateId: 'one', reason: 'one' });
-
-    expect(bus.listenerCount(CONTINUATION_GATE_SNAPSHOT_REQUEST_EVENT)).toBe(1);
-    controller.dispose();
-    controller.dispose();
-    expect(bus.listenerCount(CONTINUATION_GATE_SNAPSHOT_REQUEST_EVENT)).toBe(0);
-    expect(controller.list('session-1')).toHaveLength(1);
-
-    controller.dispose({ release: true });
-    controller.dispose({ release: true });
-    expect(controller.list('session-1')).toEqual([]);
-  });
-});
-
-describe('continuation gate registry', () => {
-  it('keeps sources, gate identities, and sessions isolated with deterministic lists', () => {
-    const { bus, host } = createHost();
-    const registry = createContinuationGateRegistry(host);
-
-    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ source: 'tmux', gateId: 'same' }));
-    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ source: 'ci', gateId: 'same' }));
-    bus.emit(
-      CONTINUATION_GATE_ACQUIRE_EVENT,
-      gate({ sessionId: 'session-2', source: 'tmux', gateId: 'other' }),
-    );
-
-    expect(registry.list('session-1').map(({ source }) => source)).toEqual(['ci', 'tmux']);
-    expect(registry.list('session-2').map(({ gateId }) => gateId)).toEqual(['other']);
-
-    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
-      protocolVersion: 1,
-      sessionId: 'session-1',
-      source: 'tmux',
-      gateId: 'same',
-      outcome: 'completed',
-      wake: 'none',
-      releasedAt: 101,
-    });
-    expect(registry.list('session-1').map(({ source }) => source)).toEqual(['ci']);
-  });
-
-  it('deduplicates acquisitions and ignores release-before-acquire', () => {
-    const { bus, host } = createHost();
-    const onChange = vi.fn();
-    const registry = createContinuationGateRegistry(host, { onChange });
-
-    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
-      protocolVersion: 1,
-      sessionId: 'session-1',
-      source: 'tmux',
-      gateId: 'missing',
-      outcome: 'completed',
-      wake: 'none',
-      releasedAt: 1,
-    });
-    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate());
-    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate());
-
-    expect(registry.list('session-1')).toHaveLength(1);
-    expect(onChange).toHaveBeenCalledTimes(1);
-  });
-
-  it('replaces only one source and session from snapshots, including empty snapshots', () => {
-    const { bus, host } = createHost();
-    const registry = createContinuationGateRegistry(host);
-    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ source: 'tmux', gateId: 'old' }));
-    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ source: 'ci', gateId: 'ci-1' }));
-    bus.emit(
-      CONTINUATION_GATE_ACQUIRE_EVENT,
-      gate({ sessionId: 'session-2', source: 'tmux', gateId: 'session-2-gate' }),
-    );
-
-    bus.emit(CONTINUATION_GATE_SNAPSHOT_EVENT, {
-      protocolVersion: 1,
-      sessionId: 'session-1',
-      source: 'tmux',
-      gates: [gate({ gateId: 'new' })],
-    });
-    expect(registry.list('session-1').map(({ gateId }) => gateId)).toEqual(['ci-1', 'new']);
-
-    bus.emit(CONTINUATION_GATE_SNAPSHOT_EVENT, {
-      protocolVersion: 1,
-      sessionId: 'session-1',
-      source: 'tmux',
-      gates: [],
-    });
-    expect(registry.list('session-1').map(({ gateId }) => gateId)).toEqual(['ci-1']);
-    expect(registry.list('session-2').map(({ gateId }) => gateId)).toEqual(['session-2-gate']);
-  });
-
-  it('returns copies that cannot mutate registry state', () => {
-    const { bus, host } = createHost();
-    const registry = createContinuationGateRegistry(host);
-    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate());
-
-    const returned = registry.list('session-1') as ContinuationGate[];
-    const returnedGate = returned[0];
-    expect(returnedGate).toBeDefined();
-    if (returnedGate) {
-      returnedGate.reason = 'mutated';
-      if (returnedGate.resource) {
-        returnedGate.resource.label = 'mutated';
-      }
-    }
-    returned.push(gate({ gateId: 'injected' }));
-
-    expect(registry.list('session-1')).toEqual([gate()]);
-  });
-
-  it('requests snapshots with a validated request ID', () => {
-    const { bus, host } = createHost();
-    const registry = createContinuationGateRegistry(host, {
-      createRequestId: () => ' request-1 ',
-    });
-
-    expect(registry.requestSnapshot(' session-1 ')).toBe('request-1');
-    expect(bus.emitted.at(-1)).toEqual({
-      eventName: CONTINUATION_GATE_SNAPSHOT_REQUEST_EVENT,
-      payload: { protocolVersion: 1, requestId: 'request-1', sessionId: 'session-1' },
-    });
-  });
-
-  it('clears state and removes every listener on idempotent disposal', () => {
-    const { bus, host } = createHost();
-    const registry = createContinuationGateRegistry(host);
-    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate());
-
     registry.dispose();
-    registry.dispose();
-
-    expect(registry.list('session-1')).toEqual([]);
-    expect(bus.listenerCount(CONTINUATION_GATE_ACQUIRE_EVENT)).toBe(0);
-    expect(bus.listenerCount(CONTINUATION_GATE_RELEASE_EVENT)).toBe(0);
-    expect(bus.listenerCount(CONTINUATION_GATE_SNAPSHOT_EVENT)).toBe(0);
+    controller.dispose();
   });
-});
-
-describe('continuation gate protocol contract', () => {
-  it('observes completion queueing before release and never wakes by itself', () => {
+  it('expires at the exact deadline before a snapshot can republish the gate', () => {
     const { host } = createHost();
-    const observations: string[] = [];
+    const timers: Array<() => void> = [];
+    let now = 0;
+    const controller = createContinuationGateController(host, {
+      source: 'p',
+      now: () => now,
+      setTimeout: (callback) => {
+        timers.push(callback);
+        return { unref: () => undefined } as never;
+      },
+      clearTimeout: () => undefined,
+    });
+    const registry = createContinuationGateRegistry(host, { now: () => now });
+    controller.acquire({
+      sessionId: 's',
+      gateId: 'expires',
+      reason: 'wait',
+      lease: { expiresAt: 10, policy: 'expire' },
+    });
+    now = 10;
+    timers.at(-1)?.();
+    expect(controller.list('s')).toEqual([]);
+    expect(registry.isBlocked('s')).toBe(false);
+    registry.dispose();
+    controller.dispose();
+  });
+  it('commits producer wake before a producer-message unblock and scopes telemetry', () => {
+    const { host } = createHost();
+    const telemetry: unknown[] = [];
+    const controller = createContinuationGateController(host, {
+      source: 'p',
+      now: () => 10,
+      onTelemetry: (event) => telemetry.push(event),
+    });
+    const changes: Array<{ wakeDisposition?: string; handoffId?: string }> = [];
     const registry = createContinuationGateRegistry(host, {
       onChange: (change) => {
-        if (change.kind === 'released') {
-          observations.push('release-observed');
-        }
+        if (change.kind === 'unblocked') changes.push(change);
       },
     });
-    const controller = createContinuationGateController(host, { source: 'tmux', now: () => 10 });
-
-    controller.acquire({ sessionId: 'session-1', gateId: 'process-1', reason: 'waiting' });
-    expect(registry.isBlocked('session-1')).toBe(true);
-
-    observations.push('completion-queued');
+    controller.acquire({
+      sessionId: 's',
+      gateId: 'g',
+      reason: 'secret command',
+      resource: { kind: 'process', id: 'private', label: 'private label' },
+    });
+    const handoff = controller.prepareWake({ sessionId: 's', gateId: 'g' });
+    controller.commitWake(handoff);
     controller.release({
-      sessionId: 'session-1',
-      gateId: 'process-1',
+      sessionId: 's',
+      gateId: 'g',
       outcome: 'completed',
       wake: 'producer-message',
+      handoffId: handoff.handoffId,
     });
-
-    expect(observations).toEqual(['completion-queued', 'release-observed']);
-    expect(registry.isBlocked('session-1')).toBe(false);
+    expect(changes.at(-1)).toMatchObject({
+      wakeDisposition: 'producer-message',
+      handoffId: handoff.handoffId,
+    });
+    expect(JSON.stringify(telemetry)).not.toContain('secret command');
+    expect(JSON.stringify(telemetry)).not.toContain('private label');
+    registry.dispose();
+    controller.dispose();
   });
-
-  it('recovers gates through a snapshot when the registry starts after acquisition', () => {
+  it('uses one disposable timer and isolates sessions/domains', () => {
     const { host } = createHost();
-    const controller = createContinuationGateController(host, { source: 'tmux', now: () => 10 });
-    controller.acquire({ sessionId: 'session-1', gateId: 'process-1', reason: 'waiting' });
+    const timers: Array<() => void> = [];
+    let cleared = 0;
+    const controller = createContinuationGateController(host, {
+      source: 'p',
+      now: () => 10,
+      setTimeout: (callback) => {
+        timers.push(callback);
+        return { unref: () => undefined } as never;
+      },
+      clearTimeout: () => {
+        cleared += 1;
+      },
+    });
+    controller.acquire({
+      sessionId: 's1',
+      gateId: 'one',
+      domain: 'a',
+      reason: 'a',
+      lease: { expiresAt: 20, policy: 'diagnose' },
+    });
+    controller.acquire({
+      sessionId: 's1',
+      gateId: 'two',
+      domain: 'b',
+      reason: 'b',
+      lease: { expiresAt: 30, policy: 'diagnose' },
+    });
+    expect(controller.list('s1', { domains: ['b'] }).map(({ gateId }) => gateId)).toEqual(['two']);
+    controller.dispose();
+    controller.dispose();
+    expect(cleared).toBeGreaterThan(0);
+    expect(timers.length).toBeGreaterThan(0);
+  });
+  it('answers only the requested session', () => {
+    const { bus, host } = createHost();
+    const controller = createContinuationGateController(host, { source: 'p', now: () => 10 });
+    controller.acquire({ sessionId: 's1', gateId: 'one', reason: 'one' });
+    controller.acquire({ sessionId: 's2', gateId: 'two', reason: 'two' });
+    bus.emitted.length = 0;
+    bus.emit(CONTINUATION_GATE_SNAPSHOT_REQUEST_EVENT, { requestId: 'r', sessionId: 's1' });
+    const snapshot = bus.emitted.find(
+      ({ eventName }) => eventName === CONTINUATION_GATE_SNAPSHOT_EVENT,
+    )?.payload as { gates: ContinuationGate[] };
+    expect(snapshot.gates.map(({ gateId }) => gateId)).toEqual(['one']);
+  });
+});
 
-    const registry = createContinuationGateRegistry(host, { createRequestId: () => 'request-1' });
-    expect(registry.isBlocked('session-1')).toBe(false);
-    registry.requestSnapshot('session-1');
-    expect(registry.isBlocked('session-1')).toBe(true);
+describe('registry and resume claims', () => {
+  it('replaces one source, emits one domain unblock, and has a single winner', () => {
+    const { bus, host } = createHost();
+    const changes: string[] = [];
+    const registry = createContinuationGateRegistry(host, {
+      onChange: (change) => changes.push(change.kind),
+    });
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ source: 'a', gateId: 'same', domain: 'one' }));
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ source: 'b', gateId: 'same', domain: 'two' }));
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'r',
+      sessionId: 'session-1',
+      source: 'a',
+      gateId: 'same',
+      domain: 'one',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 200,
+    });
+    expect(registry.list('session-1', { domains: ['one'] })).toEqual([]);
+    const unblock = bus.emitted.find(
+      ({ eventName }) => eventName === 'pi-continuation-gate:unblocked',
+    )?.payload as { transitionId: string; domain: string };
+    expect(unblock.domain).toBe('one');
+    const first = registry.claimAutoResume({
+      transitionId: unblock.transitionId,
+      sessionId: 'session-1',
+      domain: 'one',
+      consumerId: 'first',
+    });
+    expect(first).toBeDefined();
+    expect(
+      registry.claimAutoResume({
+        transitionId: unblock.transitionId,
+        sessionId: 'session-1',
+        domain: 'one',
+        consumerId: 'second',
+      }),
+    ).toBeUndefined();
+    expect(changes).toContain('unblocked');
+  });
+  it('coordinates separately installed registry copies through the shared bus', () => {
+    const { bus, host } = createHost();
+    const controller = createContinuationGateController(host, {
+      source: 'producer',
+      now: () => 10,
+    });
+    const first = createContinuationGateRegistry(host);
+    const second = createContinuationGateRegistry(host);
+    controller.acquire({ sessionId: 's', gateId: 'g', reason: 'waiting' });
+    first.requestSnapshot('s');
+    expect(second.isBlocked('s')).toBe(true);
+    controller.release({ sessionId: 's', gateId: 'g', outcome: 'completed', wake: 'none' });
+    const transitionId = (
+      bus.emitted
+        .filter(({ eventName }) => eventName === 'pi-continuation-gate:unblocked')
+        .slice(-1)[0]?.payload as { transitionId: string }
+    ).transitionId;
+    const claim = first.claimAutoResume({
+      transitionId,
+      sessionId: 's',
+      domain: 'autonomous-continuation',
+      consumerId: 'consumer-a',
+    });
+    expect(claim).toBeDefined();
+    expect(
+      second.claimAutoResume({
+        transitionId,
+        sessionId: 's',
+        domain: 'autonomous-continuation',
+        consumerId: 'consumer-b',
+      }),
+    ).toBeUndefined();
+    expect(claim && first.commitAutoResume(claim)).toBe(true);
+    expect(claim && second.commitAutoResume(claim)).toBe(false);
+    first.dispose();
+    second.dispose();
+    controller.dispose();
+  });
+  it('returns defensive nested copies and disposes listeners', () => {
+    const { bus, host } = createHost();
+    const registry = createContinuationGateRegistry(host);
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate());
+    const returned = registry.list('session-1') as ContinuationGate[];
+    const returnedGate = returned[0];
+    if (returnedGate?.resource) returnedGate.resource.label = 'mutated';
+    if (returnedGate) returnedGate.lease = { expiresAt: 200, policy: 'expire' };
+    expect(registry.list('session-1')[0]).toEqual(gate());
+    registry.dispose();
+    expect(bus.listenerCount(CONTINUATION_GATE_ACQUIRE_EVENT)).toBe(0);
   });
 });

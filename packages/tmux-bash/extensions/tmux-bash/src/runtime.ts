@@ -516,7 +516,13 @@ export class TmuxBashRuntime {
 
     if (deliver && run.mode === 'background' && !this.state.disposed) {
       const output = result.content[0]?.type === 'text' ? result.content[0].text : '';
+      let wakeHandoff: ReturnType<typeof this.state.gateController.prepareWake> | undefined;
       try {
+        if (run.gateId)
+          wakeHandoff = this.state.gateController.prepareWake({
+            sessionId: run.sessionId,
+            gateId: run.gateId,
+          });
         this.pi.sendMessage(
           {
             customType: TMUX_BASH_COMPLETION_MESSAGE,
@@ -527,7 +533,11 @@ export class TmuxBashRuntime {
           },
           { triggerTurn: true, deliverAs: 'followUp' },
         );
+        if (wakeHandoff && !this.state.gateController.commitWake(wakeHandoff)) {
+          throw new Error('Continuation wake handoff could not be committed.');
+        }
       } catch (error) {
+        if (wakeHandoff) this.state.gateController.abortWake(wakeHandoff);
         run.completionClaimed = false;
         run.completionDelivered = false;
         run.completionDeliveryFailures += 1;
@@ -563,7 +573,13 @@ export class TmuxBashRuntime {
       }
       run.completionClaimed = true;
       run.completionDelivered = true;
-      this.releaseGate(run, exitCode === 0 ? 'completed' : 'failed', 'producer-message');
+      if (wakeHandoff)
+        this.releaseGate(
+          run,
+          exitCode === 0 ? 'completed' : 'failed',
+          'producer-message',
+          wakeHandoff.handoffId,
+        );
     } else {
       run.completionClaimed = true;
       run.completionDelivered = true;
@@ -698,6 +714,7 @@ export class TmuxBashRuntime {
     run: CommandRun,
     outcome: 'completed' | 'failed' | 'cancelled' | 'killed' | 'abandoned',
     wake: 'producer-message' | 'current-turn' | 'none',
+    handoffId?: string,
   ): boolean {
     if (!run.gateId) return false;
     const released = this.state.gateController.release({
@@ -705,8 +722,9 @@ export class TmuxBashRuntime {
       gateId: run.gateId,
       outcome,
       wake,
+      ...(handoffId ? { handoffId } : {}),
     });
-    run.gateId = undefined;
+    if (released) run.gateId = undefined;
     return released;
   }
 
@@ -806,17 +824,31 @@ export class TmuxBashRuntime {
         fullOutputPath: run.outputFile,
       });
       const output = formatted.text ? `\n${formatted.text}` : '';
-      this.pi.sendMessage(
-        {
-          customType: TMUX_BASH_COMPLETION_MESSAGE,
-          content: `${run.windowId ?? run.runId} failed: the managed tmux window disappeared or is no longer owned by this Pi run.${output}`,
-          display: true,
-          details: this.details(run, formatted.truncation),
-        },
-        { triggerTurn: true, deliverAs: 'followUp' },
-      );
-      run.completionDelivered = true;
-      this.releaseGate(run, 'failed', 'producer-message');
+      let wakeHandoff: ReturnType<typeof this.state.gateController.prepareWake> | undefined;
+      try {
+        if (run.gateId)
+          wakeHandoff = this.state.gateController.prepareWake({
+            sessionId: run.sessionId,
+            gateId: run.gateId,
+          });
+        this.pi.sendMessage(
+          {
+            customType: TMUX_BASH_COMPLETION_MESSAGE,
+            content: `${run.windowId ?? run.runId} failed: the managed tmux window disappeared or is no longer owned by this Pi run.${output}`,
+            display: true,
+            details: this.details(run, formatted.truncation),
+          },
+          { triggerTurn: true, deliverAs: 'followUp' },
+        );
+        if (wakeHandoff && !this.state.gateController.commitWake(wakeHandoff))
+          throw new Error('Continuation wake handoff could not be committed.');
+        run.completionDelivered = true;
+        if (wakeHandoff) this.releaseGate(run, 'failed', 'producer-message', wakeHandoff.handoffId);
+      } catch {
+        if (wakeHandoff) this.state.gateController.abortWake(wakeHandoff);
+        run.completionDelivered = false;
+        this.releaseGate(run, 'failed', 'none');
+      }
     } else {
       run.completionDelivered = true;
       this.releaseGate(run, 'failed', 'current-turn');

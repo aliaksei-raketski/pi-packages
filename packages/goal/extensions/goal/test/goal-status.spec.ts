@@ -10,12 +10,13 @@ const active = {
 };
 
 const gate: ContinuationGate = {
-  protocolVersion: 1,
   sessionId: 'session-1',
   source: 'tmux',
   gateId: 'tests',
+  domain: 'autonomous-continuation',
   reason: 'test process is running',
   acquiredAt: 1_000,
+  updatedAt: 1_000,
   resource: { kind: 'process', id: 'pane-1', label: 'unit tests' },
 };
 
