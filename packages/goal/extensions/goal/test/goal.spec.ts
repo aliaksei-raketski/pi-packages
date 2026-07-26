@@ -242,13 +242,14 @@ describe('goal extension', () => {
           gates: [],
           ledger: null,
           noProgressStreak: 2,
-          timestamp: 1,
+          timestamp: 1_001,
         },
       },
       { expanded: true },
       (harness.ctx.ui as { theme: unknown }).theme,
     );
     const rendered = component?.render(200).join('\n') ?? '';
+    expect(rendered).toContain('Usage: 0/100 tokens; 1s/1m active wall; 0s turn time');
     expect(rendered).toContain('Budgets: tokens=100, wall=60s');
     expect(rendered).toContain('Evidence: revision 0');
     expect(rendered).toContain('No-progress streak: 2');
@@ -592,6 +593,34 @@ describe('goal extension', () => {
     }
   });
 
+  it('keeps the wall deadline active when tree navigation is canceled', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      await emit(harness, 'session_start', { reason: 'startup' });
+      await harness.commands.get('goal')?.handler('--time 10s timed goal', harness.ctx as never);
+      harness.sendMessage.mockClear();
+
+      await vi.advanceTimersByTimeAsync(4_000);
+      await emit(harness, 'session_before_tree');
+      const checkpoint = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+        goal: { status: string; activeSince: number | null };
+      };
+      expect(checkpoint.goal).toMatchObject({ status: 'active', activeSince: Date.now() });
+
+      await vi.advanceTimersByTimeAsync(6_000);
+      const limited = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+        goal: { status: string; budgetLimitReason: string };
+      };
+      expect(limited.goal).toMatchObject({
+        status: 'budget_limited',
+        budgetLimitReason: 'wall_time',
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ['restore-idle', 0],
     ['resume', 1],
@@ -605,6 +634,62 @@ describe('goal extension', () => {
     await emit(harness, 'session_start', { reason: 'startup' });
     await Promise.resolve();
     expect(harness.sendMessage).toHaveBeenCalledTimes(turns);
+  });
+
+  it('enforces an exhausted wall budget before restart continuation', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(10_000);
+      const restored = {
+        ...createGoalState('exhausted restart', null, 1_000, () => 'restored-goal', 10),
+        activeWallTimeSeconds: 10,
+      };
+      harness.branch.push({
+        type: 'custom',
+        customType: 'pi-goal',
+        data: { goal: restored, statusBarEnabled: true, restartPolicy: 'resume' },
+      });
+
+      await emit(harness, 'session_start', { reason: 'startup' });
+      await Promise.resolve();
+
+      expect(harness.sendMessage).toHaveBeenCalledOnce();
+      expect(harness.sendMessage.mock.calls[0]?.[0]).toMatchObject({
+        details: { kind: 'budget_limited', goal: { status: 'budget_limited' } },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('enforces an exhausted wall budget before /goal resume delivery', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(10_000);
+      const paused = {
+        ...createGoalState('exhausted resume', null, 1_000, () => 'paused-goal', 10),
+        status: 'paused' as const,
+        activeWallTimeSeconds: 10,
+        activeSince: null,
+        pauseReason: 'user' as const,
+      };
+      harness.branch.push({
+        type: 'custom',
+        customType: 'pi-goal',
+        data: { goal: paused, statusBarEnabled: true },
+      });
+      await emit(harness, 'session_start', { reason: 'resume' });
+      harness.sendMessage.mockClear();
+
+      await harness.commands.get('goal')?.handler('resume', harness.ctx as never);
+
+      expect(harness.sendMessage).toHaveBeenCalledOnce();
+      expect(harness.sendMessage.mock.calls[0]?.[0]).toMatchObject({
+        details: { kind: 'budget_limited', goal: { status: 'budget_limited' } },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('waits for a gated restart and wins one auto-resume claim after wake none', async () => {

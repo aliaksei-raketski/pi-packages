@@ -34,7 +34,7 @@ export function registerGoalRenderer(pi: ExtensionAPI): void {
     const lines = [`Status: ${label}`];
     if (details?.goal) {
       lines.push(`Objective: ${details.goal.objective}`);
-      lines.push(`Usage: ${formatGoalUsage(details.goal)}`);
+      lines.push(`Usage: ${formatGoalUsage(details.goal, details.timestamp)}`);
       lines.push(
         `Budgets: tokens=${details.goal.tokenBudget ?? 'none'}, wall=${details.goal.wallTimeBudgetSeconds ?? 'none'}s`,
       );

@@ -129,6 +129,7 @@ export interface GoalCommandController {
     status: GoalStatus,
     options?: { pauseReason?: GoalPauseReason },
   ): GoalState;
+  enforceBudgetLimit(ctx: ExtensionContext): boolean;
   emitGoalEvent(
     kind: GoalEventKind,
     state: GoalState,
@@ -239,6 +240,7 @@ async function handleGoalCommand(
     }
     runtime.progress = resetGoalProgress(runtime.progress, runtime.now());
     const next = controller.transition(ctx, 'active');
+    if (controller.enforceBudgetLimit(ctx)) return;
     controller.emitGoalEvent(
       'resumed',
       next,
@@ -326,6 +328,7 @@ async function continueGoal(
     );
     return;
   }
+  if (controller.enforceBudgetLimit(ctx)) return;
   invalidateContinuation(runtime);
   controller.emitGoalEvent(
     'continuation',

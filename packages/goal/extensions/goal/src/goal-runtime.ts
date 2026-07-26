@@ -206,7 +206,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     queueMicrotask(() => {
       if (!continuationCaptureIsCurrent(runtime, capture)) return;
       runtime.continuationQueued = false;
-      if (!eligible(ctx, false) || !runtime.goal) return;
+      if (!eligible(ctx, false) || !runtime.goal || enforceBudgetLimit(ctx)) return;
       runtime.continuationQueued = true;
       if (origin === 'restart') runtime.restartContinuationPending = false;
       try {
@@ -243,16 +243,18 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     );
   };
 
+  function enforceBudgetLimit(ctx: ExtensionContext): boolean {
+    if (runtime.goal?.status !== 'active' || !evaluateBudgetLimit(runtime.goal, runtime.now()))
+      return false;
+    transition(ctx, 'budget_limited');
+    maybeDeliverBudgetSummary(ctx);
+    return true;
+  }
+
   function handleDeadline(): void {
     const ctx = runtime.statusContext;
     if (!ctx || runtime.goal?.status !== 'active') return;
-    const reason = evaluateBudgetLimit(runtime.goal, runtime.now());
-    if (!reason) {
-      scheduleGoalDeadline(runtime, handleDeadline);
-      return;
-    }
-    transition(ctx, 'budget_limited');
-    maybeDeliverBudgetSummary(ctx);
+    if (!enforceBudgetLimit(ctx)) scheduleGoalDeadline(runtime, handleDeadline);
   }
 
   function handleGateChange(change: ContinuationGateRegistryChange): void {
@@ -299,6 +301,12 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
         runtime.continuationQueued = false;
         return;
       }
+      if (enforceBudgetLimit(ctx)) {
+        runtime.gateRegistry.abortAutoResume(claim);
+        runtime.activeResumeClaim = undefined;
+        runtime.continuationQueued = false;
+        return;
+      }
       if (!runtime.gateRegistry.commitAutoResume(claim)) {
         runtime.activeResumeClaim = undefined;
         runtime.continuationQueued = false;
@@ -334,6 +342,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     replaceGoal,
     clearGoal,
     transition,
+    enforceBudgetLimit,
     emitGoalEvent,
     disposeStatusProvider,
   });
@@ -359,8 +368,10 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
       runtime.goal = restarted.goal;
       restartContinuation = restarted.queueContinuation;
       persist(ctx);
+      const budgetLimited = enforceBudgetLimit(ctx);
+      if (budgetLimited) restartContinuation = false;
       ctx.ui.notify(
-        `${restarted.notification}\n${truncateObjective(runtime.goal.objective)}`,
+        `${budgetLimited ? 'Goal restored at its budget limit.' : restarted.notification}\n${truncateObjective(runtime.goal.objective)}`,
         'info',
       );
     } else {
@@ -387,9 +398,8 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
 
   pi.on('session_before_tree', () => {
     if (runtime.goal?.status !== 'active') return;
-    runtime.goal = checkpointActiveClock(runtime.goal, runtime.now());
+    runtime.goal = checkpointAndRestartActiveClock(runtime.goal, runtime.now());
     appendGoalRuntimeState(pi, runtime);
-    cancelGoalDeadline(runtime);
   });
 
   pi.on('session_tree', (_event, ctx) => {

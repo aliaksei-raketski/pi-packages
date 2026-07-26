@@ -117,6 +117,56 @@ describe('goal evidence ledger', () => {
     ).toThrow(/last evidence/);
   });
 
+  it('requires fresh evidence when requirement text changes', () => {
+    let ledger = initialized();
+    ledger = mutateGoalEvidence(
+      ledger,
+      'goal-1',
+      {
+        action: 'add_evidence',
+        expectedRevision: 1,
+        requirementId: 'one',
+        evidence: {
+          id: 'original',
+          kind: 'test',
+          reference: 'original.spec.ts',
+          claim: 'the original requirement passed',
+        },
+      },
+      3,
+    );
+    ledger = mutateGoalEvidence(
+      ledger,
+      'goal-1',
+      {
+        action: 'set_requirement_status',
+        expectedRevision: 2,
+        requirementId: 'one',
+        status: 'verified',
+      },
+      4,
+    );
+
+    ledger = mutateGoalEvidence(
+      ledger,
+      'goal-1',
+      {
+        action: 'upsert_requirement',
+        expectedRevision: 3,
+        requirementId: 'one',
+        requirement: 'Verify the replacement artifact directly',
+      },
+      5,
+    );
+
+    expect(ledger.requirements[0]).toMatchObject({
+      requirement: 'Verify the replacement artifact directly',
+      status: 'pending',
+      evidence: [],
+    });
+    expect(completionEvidenceErrors(ledger, 'goal-1')).toEqual(['one is pending, not verified.']);
+  });
+
   it('enforces verified evidence and blocked blocker invariants', () => {
     const ledger = initialized();
     expect(() =>

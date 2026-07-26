@@ -200,7 +200,16 @@ export function mutateGoalEvidence(
     } else {
       const currentRequirement = requirements[index];
       if (!currentRequirement) throw new Error(`Unknown requirement id: ${id}.`);
-      requirements[index] = { ...currentRequirement, requirement, updatedAt: now };
+      requirements[index] =
+        currentRequirement.requirement === requirement
+          ? { ...currentRequirement, updatedAt: now }
+          : {
+              id,
+              requirement,
+              status: 'pending',
+              evidence: [],
+              updatedAt: now,
+            };
     }
   } else if (mutation.action === 'add_evidence') {
     const requirement = findRequirement(requirements, mutation.requirementId);
