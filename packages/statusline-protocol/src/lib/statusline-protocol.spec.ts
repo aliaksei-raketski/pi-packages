@@ -74,11 +74,41 @@ describe('statuslineProtocol', () => {
     });
   });
 
+  it('does not clear a fallback now owned by another source', () => {
+    const setStatus = vi.fn();
+    const host: StatuslineProtocolHost = {
+      events: {
+        emit: vi.fn(),
+        on: () => () => undefined,
+      },
+    };
+    const ui: StatuslineUICtx = {
+      setStatus,
+      theme: { fg: (_color, text) => text },
+    };
+
+    publishStatus(host, ui, { key: 'shared', text: 'first' }, 'first-source');
+    publishStatus(host, ui, { key: 'shared', text: 'second' }, 'second-source');
+    clearStatus(host, ui, 'shared', 'first-source');
+
+    expect(setStatus).not.toHaveBeenCalledWith('shared', undefined);
+    clearStatus(host, ui, 'shared', 'second-source');
+    expect(setStatus).toHaveBeenCalledWith('shared', undefined);
+
+    publishStatus(host, ui, { key: 'shared', text: 'first' }, 'first-source');
+    publishStatus(host, ui, { key: 'shared', text: 'second' }, 'second-source');
+    clearStatus(host, ui, 'shared', 'second-source');
+    expect(setStatus).toHaveBeenLastCalledWith('shared', 'first');
+  });
+
   it('parses set event payload from plain and structured values', () => {
     expect(parseStatusEvent({ key: 'fast', text: 'fast on', state: 'on' })).toMatchObject({
       key: 'fast',
       text: 'fast on',
       state: 'on',
+    });
+    expect(parseStatusEvent({ key: 'ansi', text: '\u001b[31mred\u001b[0m' })).toMatchObject({
+      text: 'red',
     });
     expect(parseStatusEvent(undefined)).toBeUndefined();
   });

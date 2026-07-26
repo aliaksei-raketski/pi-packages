@@ -11,7 +11,6 @@ export interface InhibitorCandidate {
 export interface PlatformInfo {
   platform?: NodeJS.Platform | string;
   env?: NodeJS.ProcessEnv;
-  pathSeparator?: string;
   executableSuffixes?: readonly string[];
 }
 
@@ -19,8 +18,8 @@ export const WINDOWS_SLEEP_FLAGS = 0x80000001;
 export const WINDOWS_DISPLAY_FLAGS = 0x80000003;
 export const WINDOWS_CLEAR_FLAGS = 0x80000000;
 
-/** The script deliberately owns the request for the lifetime of stdin. */
-export const POWERSHELL_INHIBITOR_SCRIPT = `
+/** The script deliberately owns and refreshes the request for the lifetime of stdin. */
+const POWERSHELL_INHIBITOR_SCRIPT = `
 $ErrorActionPreference = 'Stop'
 $flags = [uint32]{{FLAGS}}
 Add-Type @"
@@ -31,10 +30,18 @@ public static class PiCaffeinatePower {
   public static extern uint SetThreadExecutionState(uint esFlags);
 }
 "@
+function Set-PiCaffeinateState([uint32]$value) {
+  if ([PiCaffeinatePower]::SetThreadExecutionState($value) -eq 0) {
+    throw 'SetThreadExecutionState failed'
+  }
+}
+$stdin = [Console]::OpenStandardInput()
+$buffer = New-Object byte[] 1
 try {
-  [PiCaffeinatePower]::SetThreadExecutionState($flags) | Out-Null
-  while ($null -ne [Console]::In.ReadLine()) {
-    [PiCaffeinatePower]::SetThreadExecutionState($flags) | Out-Null
+  Set-PiCaffeinateState $flags
+  $readTask = $stdin.ReadAsync($buffer, 0, 1)
+  while (-not $readTask.Wait(30000)) {
+    Set-PiCaffeinateState $flags
   }
 } finally {
   [PiCaffeinatePower]::SetThreadExecutionState([uint32]0x80000000) | Out-Null
@@ -48,11 +55,11 @@ export function powerShellScript(mode: CaffeinateMode): string {
   );
 }
 
-export function isWsl(env: NodeJS.ProcessEnv = process.env): boolean {
+function isWsl(env: NodeJS.ProcessEnv = process.env): boolean {
   return Boolean(env.WSL_INTEROP || env.WSL_DISTRO_NAME || /microsoft/i.test(env.OS ?? ''));
 }
 
-export function getPowerShellCommands(info: PlatformInfo = {}): string[] {
+function getPowerShellCommands(info: PlatformInfo = {}): string[] {
   const suffixes =
     info.executableSuffixes ?? (info.platform === 'win32' || isWsl(info.env) ? ['.exe'] : ['']);
   const names = ['powershell', 'pwsh'];
@@ -80,47 +87,45 @@ export function buildInhibitorCandidates(
     ];
   }
 
-  if (platform === 'win32' || (platform === 'linux' && isWsl(info.env))) {
-    return getPowerShellCommands(info).map((command, index) => ({
+  const powerShellCandidates = () =>
+    getPowerShellCommands(info).map((command, index) => ({
       id: `powershell-${index}`,
       command,
       args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', powerShellScript(mode)],
       kind: 'powershell' as const,
       mode,
     }));
+  const linuxCandidates = () => [
+    {
+      id: 'systemd-inhibit',
+      command: 'systemd-inhibit',
+      args: [
+        `--what=${mode === 'sleep' ? 'sleep' : 'idle:sleep'}`,
+        '--who=pi-caffeinate',
+        '--mode=block',
+        '--why=Keep the computer awake while Pi is active',
+        'sleep',
+        'infinity',
+      ],
+      kind: 'systemd' as const,
+      mode,
+    },
+    {
+      id: 'caffeinate-fallback',
+      command: 'caffeinate',
+      args: mode === 'sleep' ? ['-ims'] : ['-dimsu'],
+      kind: 'caffeinate' as const,
+      mode,
+    },
+  ];
+
+  if (platform === 'win32') return powerShellCandidates();
+
+  if (platform === 'linux' && isWsl(info.env)) {
+    return [...powerShellCandidates(), ...linuxCandidates()];
   }
 
-  if (platform === 'linux') {
-    return [
-      {
-        id: 'systemd-inhibit',
-        command: 'systemd-inhibit',
-        args: [
-          `--what=${mode === 'sleep' ? 'sleep' : 'idle:sleep'}`,
-          '--who=pi-caffeinate',
-          '--mode=block',
-          '--why=Keep the computer awake while Pi is active',
-          'sleep',
-          'infinity',
-        ],
-        kind: 'systemd' as const,
-        mode,
-      },
-      {
-        id: 'caffeinate-fallback',
-        command: 'caffeinate',
-        args: mode === 'sleep' ? ['-ims'] : ['-dimsu'],
-        kind: 'caffeinate' as const,
-        mode,
-      },
-    ];
-  }
+  if (platform === 'linux') return linuxCandidates();
 
   return [];
-}
-
-export function candidatePathNames(command: string, info: PlatformInfo = {}): string[] {
-  const separator = info.pathSeparator ?? (info.platform === 'win32' ? ';' : ':');
-  const suffixes = info.executableSuffixes ?? (info.platform === 'win32' ? ['.exe', ''] : ['']);
-  return command.split(separator).flatMap((entry) => suffixes.map((suffix) => `${entry}${suffix}`));
 }

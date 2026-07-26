@@ -41,13 +41,20 @@ interface ManagedChild extends RunningInhibitor {
 
 function unixSupervisor(command: string, args: string[]): { command: string; args: string[] } {
   const script = [
-    'command="$1"; shift',
+    'parent="$1"; shift; command="$1"; shift',
     '"$command" "$@" & child=$!',
-    '(while [ "$PPID" -gt 1 ] && kill -0 "$PPID" 2>/dev/null; do sleep 1; done; kill "$child" 2>/dev/null || true) & watcher=$!',
-    'trap "kill $child $watcher 2>/dev/null || true; exit 0" INT TERM HUP EXIT',
-    'wait "$child"; status=$?; kill "$watcher" 2>/dev/null || true; trap - INT TERM HUP EXIT; exit "$status"',
+    'supervisor=$$',
+    '(while kill -0 "$parent" 2>/dev/null; do sleep 1; done; kill -TERM "$supervisor" 2>/dev/null || true) & watcher=$!',
+    'cleanup() { trap - INT TERM HUP EXIT; kill "$watcher" 2>/dev/null || true; kill -TERM "$child" 2>/dev/null || true; (sleep 1; kill -KILL "$child" 2>/dev/null || true) & killer=$!; wait "$child" 2>/dev/null || true; kill "$killer" 2>/dev/null || true; wait "$killer" 2>/dev/null || true; }',
+    'trap "cleanup; exit 0" INT TERM HUP',
+    'trap "cleanup" EXIT',
+    'wait "$child"; status=$?',
+    'kill "$watcher" 2>/dev/null || true; trap - EXIT; wait "$watcher" 2>/dev/null || true; exit "$status"',
   ].join('; ');
-  return { command: 'sh', args: ['-c', script, 'pi-caffeinate', command, ...args] };
+  return {
+    command: 'sh',
+    args: ['-c', script, 'pi-caffeinate', String(process.pid), command, ...args],
+  };
 }
 
 const defaultRunner: ProcessRunner = {
@@ -95,6 +102,8 @@ export async function startInhibitor(
         rejectReady = reject;
       });
       let killTimer: ReturnType<typeof setTimeout> | undefined;
+      let stopPromise: Promise<void> | undefined;
+      let closed = false;
 
       const onData = (chunk: unknown) => {
         stderr = appendTail(stderr, chunk);
@@ -111,13 +120,19 @@ export async function startInhibitor(
           options.onUnexpectedExit?.(candidate, stderr, earlyExit?.error);
         }
       };
+      const onClose = () => {
+        closed = true;
+        onExit();
+      };
       const onError = (error: unknown) => {
         const normalized = error instanceof Error ? error : new Error(String(error));
         if (!settled) {
           settled = true;
           earlyExit = { error: normalized };
+          reportedExit = true;
           rejectReady(normalized);
-        } else if (!stopped) {
+        } else if (!stopped && !reportedExit) {
+          reportedExit = true;
           options.onUnexpectedExit?.(candidate, stderr, normalized);
         }
       };
@@ -128,7 +143,57 @@ export async function startInhibitor(
       child.stderr?.resume?.();
       child.on('error', onError);
       child.on('exit', onExit);
-      child.on('close', onExit);
+      child.on('close', onClose);
+
+      const stopChild = async (): Promise<void> => {
+        if (stopped) return;
+        stopped = true;
+        detach(child, 'error', onError);
+        detach(child, 'exit', onExit);
+        detach(child, 'close', onClose);
+        if (closed) return;
+        await new Promise<void>((resolve) => {
+          let done = false;
+          const finish = () => {
+            if (done) return;
+            done = true;
+            detach(child, 'close', finish);
+            if (killTimer) {
+              clearTimer(killTimer);
+              killTimer = undefined;
+            }
+            resolve();
+          };
+          child.on('close', finish);
+          killTimer = setTimer(() => {
+            killTimer = undefined;
+            try {
+              if (!child.kill('SIGKILL')) finish();
+            } catch {
+              finish();
+            }
+          }, options.killTimeoutMs ?? DEFAULT_KILL_TIMEOUT);
+          (killTimer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
+
+          if (candidate.kind === 'powershell' && child.stdin) {
+            try {
+              child.stdin.end();
+            } catch {
+              try {
+                if (!child.kill('SIGTERM')) finish();
+              } catch {
+                finish();
+              }
+            }
+          } else {
+            try {
+              if (!child.kill('SIGTERM')) finish();
+            } catch {
+              finish();
+            }
+          }
+        });
+      };
 
       const managed: ManagedChild = {
         candidate,
@@ -136,52 +201,7 @@ export async function startInhibitor(
         get stderr() {
           return stderr;
         },
-        stop: async () => {
-          if (stopped) return;
-          stopped = true;
-          if (killTimer) {
-            clearTimer(killTimer);
-            killTimer = undefined;
-          }
-          detach(child, 'error', onError);
-          detach(child, 'exit', onExit);
-          detach(child, 'close', onExit);
-          await new Promise<void>((resolve) => {
-            let done = false;
-            const finish = () => {
-              if (done) return;
-              done = true;
-              if (killTimer) {
-                clearTimer(killTimer);
-                killTimer = undefined;
-              }
-              resolve();
-            };
-            child.on('close', finish);
-            if (candidate.kind === 'powershell') {
-              try {
-                child.stdin?.end(finish);
-              } catch {
-                finish();
-              }
-            } else {
-              try {
-                child.kill('SIGTERM');
-              } catch {
-                finish();
-              }
-            }
-            killTimer = setTimer(() => {
-              try {
-                child.kill('SIGKILL');
-              } catch {
-                // The process may have exited between the signal and fallback.
-              }
-              finish();
-            }, options.killTimeoutMs ?? DEFAULT_KILL_TIMEOUT);
-            (killTimer as ReturnType<typeof setTimeout> & { unref?: () => void }).unref?.();
-          });
-        },
+        stop: () => (stopPromise ??= stopChild()),
       };
 
       // A synchronous spawn error is reported through error; a child that exits immediately is
@@ -211,8 +231,4 @@ export async function startInhibitor(
   }
 
   return undefined;
-}
-
-export function createNodeProcessRunner(): ProcessRunner {
-  return defaultRunner;
 }

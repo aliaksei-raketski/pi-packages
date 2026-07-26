@@ -39,10 +39,10 @@ User settings are stored at `getAgentDir()/pi-caffeinate.json` (normally `~/.pi/
 }
 ```
 
-Invalid files are protected and replaced in memory with defaults. Valid saves preserve unknown fields and use a queued atomic rename. Project-local settings are never read.
+Invalid or unreadable files are protected and replaced in memory with defaults. Settings commands will not overwrite a protected file; fix or remove it and reload Pi first. Valid saves preserve unknown fields and use a queued atomic rename. Project-local settings are never read.
 
 ## Statusline
 
-When `@aliaksei-raketski/pi-statusline` is installed, the default layout includes a `☕ caffeinate` item. It reports `awake`, `awake · N waiting`, or `caffeinate unavailable` with active, waiting, and error colors. Quiet mode suppresses only routine notifications; structured status remains visible.
+When `@aliaksei-raketski/pi-statusline` is installed, the default layout includes a `☕ caffeinate` item. It reports `awake`, `awake · N waiting`, or `caffeinate unavailable` with active, waiting, and error colors. Quiet mode suppresses routine inhibitor start/release notifications only; warnings, command feedback, and structured status remain visible.
 
 Caffeinate observes the continuation-gate protocol but never acquires gates or resumes work. Agent settling does not release the inhibitor while a gate remains. Shutdown always releases processes owned by the current Pi session.

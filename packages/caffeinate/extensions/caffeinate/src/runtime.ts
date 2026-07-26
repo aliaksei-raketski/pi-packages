@@ -18,10 +18,12 @@ export interface CaffeinateRuntimeState {
   lastError?: string;
 }
 
+export type RuntimeChange = 'state' | 'started' | 'stopped' | 'unavailable';
+
 export interface RuntimeDriver {
   start(settings: CaffeinateSettings, generation: number): Promise<RunningInhibitor | undefined>;
   stop(inhibitor: RunningInhibitor): Promise<void>;
-  onChange?(): void;
+  onChange?(change: RuntimeChange): void;
 }
 
 export interface RuntimeOptions {
@@ -93,17 +95,21 @@ export class CaffeinateRuntime {
     this.state.unavailable = false;
     this.cancelRelease();
     void this.release();
-    this.options.driver.onChange?.();
+    this.options.driver.onChange?.('state');
   }
 
   markUnavailable(error?: string): void {
     this.state.unavailable = true;
     this.state.lastError = error;
     this.state.inhibitor = undefined;
-    this.options.driver.onChange?.();
+    this.options.driver.onChange?.('unavailable');
   }
 
   reconcile(): void {
+    if (this.state.shuttingDown) {
+      this.cancelRelease();
+      return;
+    }
     if (shouldHold(this.state)) {
       this.cancelRelease();
       if (!this.state.inhibitor && !this.state.unavailable) {
@@ -138,7 +144,7 @@ export class CaffeinateRuntime {
     this.state.inhibitor = inhibitor;
     this.state.unavailable = false;
     this.state.lastError = undefined;
-    this.options.driver.onChange?.();
+    this.options.driver.onChange?.('started');
   }
 
   async restart(): Promise<void> {
@@ -154,10 +160,13 @@ export class CaffeinateRuntime {
   async release(): Promise<void> {
     const inhibitor = this.state.inhibitor;
     this.state.inhibitor = undefined;
-    if (!inhibitor) return;
+    if (!inhibitor) {
+      if (this.stopPromise) await this.stopPromise;
+      return;
+    }
     this.stopPromise ??= this.options.driver.stop(inhibitor).finally(() => {
       this.stopPromise = undefined;
-      this.options.driver.onChange?.();
+      this.options.driver.onChange?.('stopped');
     });
     await this.stopPromise;
   }
@@ -166,7 +175,10 @@ export class CaffeinateRuntime {
     this.state.shuttingDown = true;
     ++this.state.generation;
     this.cancelRelease();
+    const pendingStart = this.startPromise;
+    if (pendingStart) await pendingStart;
     await this.release();
+    if (this.stopPromise) await this.stopPromise;
   }
 
   private scheduleRelease(): void {

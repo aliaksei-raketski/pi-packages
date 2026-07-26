@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import type { CaffeinateMode } from './inhibitors.ts';
 
@@ -12,6 +12,7 @@ export interface CaffeinateSettings {
 export interface LoadedSettings {
   settings: CaffeinateSettings;
   unknownFields: Record<string, unknown>;
+  canSave: boolean;
   warning?: string;
 }
 
@@ -21,6 +22,12 @@ export interface SettingsFileSystem {
   writeFile(path: string, data: string, encoding: 'utf8'): Promise<void>;
   rename(from: string, to: string): Promise<void>;
   unlink(path: string): Promise<void>;
+}
+
+export interface SettingsPathOperations {
+  dirname(path: string): string;
+  isAbsolute(path: string): boolean;
+  join(...paths: string[]): string;
 }
 
 export const DEFAULT_CAFFEINATE_SETTINGS: CaffeinateSettings = {
@@ -52,6 +59,7 @@ export function parseSettings(raw: unknown): LoadedSettings {
     return {
       settings: { ...DEFAULT_CAFFEINATE_SETTINGS },
       unknownFields: {},
+      canSave: false,
       warning: 'pi-caffeinate settings must be a JSON object; using defaults.',
     };
   }
@@ -65,6 +73,7 @@ export function parseSettings(raw: unknown): LoadedSettings {
     return {
       settings: { ...DEFAULT_CAFFEINATE_SETTINGS },
       unknownFields: {},
+      canSave: false,
       warning: `Invalid pi-caffeinate setting(s): ${invalid.join(', ')}; using defaults.`,
     };
   }
@@ -80,6 +89,7 @@ export function parseSettings(raw: unknown): LoadedSettings {
   return {
     settings: { enabled, mode, quiet },
     unknownFields,
+    canSave: true,
   };
 }
 
@@ -95,19 +105,35 @@ export async function loadSettings(
       return {
         settings: { ...DEFAULT_CAFFEINATE_SETTINGS },
         unknownFields: {},
+        canSave: false,
         warning: `Could not parse ${path}; using defaults (${error instanceof Error ? error.message : String(error)}).`,
       };
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { settings: { ...DEFAULT_CAFFEINATE_SETTINGS }, unknownFields: {} };
+      return {
+        settings: { ...DEFAULT_CAFFEINATE_SETTINGS },
+        unknownFields: {},
+        canSave: true,
+      };
     }
     return {
       settings: { ...DEFAULT_CAFFEINATE_SETTINGS },
       unknownFields: {},
+      canSave: false,
       warning: `Could not read ${path}; using defaults (${error instanceof Error ? error.message : String(error)}).`,
     };
   }
+}
+
+export function resolveTemporaryPath(
+  path: string,
+  tempName: string,
+  pathOperations: SettingsPathOperations = { dirname, isAbsolute, join },
+): string {
+  return pathOperations.isAbsolute(tempName)
+    ? tempName
+    : pathOperations.join(pathOperations.dirname(path), tempName);
 }
 
 export async function saveSettings(
@@ -116,8 +142,9 @@ export async function saveSettings(
   path = getSettingsPath(),
   fileSystem: SettingsFileSystem = nodeFileSystem,
   tempName = `${path}.${process.pid}.${Date.now().toString(36)}.tmp`,
+  pathOperations?: SettingsPathOperations,
 ): Promise<void> {
-  const temporaryPath = tempName.includes('/') ? tempName : join(dirname(path), tempName);
+  const temporaryPath = resolveTemporaryPath(path, tempName, pathOperations);
   await fileSystem.mkdir(dirname(path), { recursive: true });
   try {
     await fileSystem.writeFile(
@@ -137,7 +164,7 @@ export async function saveSettings(
 }
 
 export class SettingsStore {
-  private queue: Promise<void> = Promise.resolve();
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
     readonly path = getSettingsPath(),
@@ -145,14 +172,19 @@ export class SettingsStore {
   ) {}
 
   load(): Promise<LoadedSettings> {
-    return loadSettings(this.path, this.fileSystem);
+    return this.enqueue(() => loadSettings(this.path, this.fileSystem));
   }
 
   save(settings: CaffeinateSettings, unknownFields: Record<string, unknown>): Promise<void> {
-    const operation = this.queue.then(() =>
-      saveSettings(settings, unknownFields, this.path, this.fileSystem),
+    return this.enqueue(() => saveSettings(settings, unknownFields, this.path, this.fileSystem));
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(operation);
+    this.queue = result.then(
+      () => undefined,
+      () => undefined,
     );
-    this.queue = operation.catch(() => undefined);
-    return operation;
+    return result;
   }
 }

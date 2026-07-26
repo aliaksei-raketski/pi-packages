@@ -41,8 +41,3 @@ export function collectCaffeinateStatus(
     fallbackColor: 'accent',
   };
 }
-
-export function formatCaffeinateStatus(input: CaffeinateStatusInput): string {
-  const status = collectCaffeinateStatus(input);
-  return status ? `${status.text} (${status.state ?? 'default'})` : 'idle';
-}

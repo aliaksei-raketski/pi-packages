@@ -7,15 +7,13 @@ import {
   clearStatus,
   publishStatus,
   registerStatusProvider,
-  type StatuslineProtocolHost,
-  type StatuslineUICtx,
 } from '@aliaksei-raketski/pi-statusline-protocol';
 import {
   getAgentDir,
   type ExtensionAPI,
   type ExtensionContext,
 } from '@earendil-works/pi-coding-agent';
-import { buildInhibitorCandidates, type CaffeinateMode } from './inhibitors.ts';
+import { buildInhibitorCandidates } from './inhibitors.ts';
 import { startInhibitor, type RunningInhibitor } from './inhibitor-process.ts';
 import {
   parseCaffeinateCommand,
@@ -23,20 +21,27 @@ import {
   caffeinateHelp,
   type CaffeinateCommand,
 } from './commands.ts';
-import { CaffeinateRuntime, shouldHold } from './runtime.ts';
-import {
-  DEFAULT_CAFFEINATE_SETTINGS,
-  getSettingsPath,
-  SettingsStore,
-  type CaffeinateSettings,
-} from './settings.ts';
+import { CaffeinateRuntime, shouldHold, type RuntimeChange } from './runtime.ts';
+import { getSettingsPath, SettingsStore, type CaffeinateSettings } from './settings.ts';
 import {
   CAFFEINATE_STATUS_KEY,
   CAFFEINATE_STATUS_SOURCE,
   collectCaffeinateStatus,
 } from './status.ts';
 
-const SETTINGS_PATH = getSettingsPath(getAgentDir());
+interface SettingsAccess {
+  load(): ReturnType<SettingsStore['load']>;
+  save(
+    settings: CaffeinateSettings,
+    unknownFields: Record<string, unknown>,
+  ): ReturnType<SettingsStore['save']>;
+}
+
+interface CaffeinateDependencies {
+  settingsPath?: string;
+  settingsStore?: SettingsAccess;
+  startInhibitor?: typeof startInhibitor;
+}
 
 type SessionRuntime = {
   generation: number;
@@ -44,9 +49,11 @@ type SessionRuntime = {
   ctx: ExtensionContext;
   settings: CaffeinateSettings;
   unknownFields: Record<string, unknown>;
+  canSaveSettings: boolean;
+  settingsQueue: Promise<void>;
   controller: CaffeinateRuntime;
   clearProvider?: () => void;
-  statusPublished?: boolean;
+  statusPublished: boolean;
 };
 
 function statusContext(ctx: ExtensionContext) {
@@ -57,24 +64,37 @@ function statusContext(ctx: ExtensionContext) {
 }
 
 function clearOwnedStatus(pi: ExtensionAPI, ctx: ExtensionContext): void {
-  const clear = clearStatus as unknown as (
-    host: StatuslineProtocolHost,
-    ui: StatuslineUICtx,
-    key: string,
-    source: string,
-  ) => void;
-  clear(pi, statusContext(ctx), CAFFEINATE_STATUS_KEY, CAFFEINATE_STATUS_SOURCE);
+  clearStatus(pi, statusContext(ctx), CAFFEINATE_STATUS_KEY, CAFFEINATE_STATUS_SOURCE);
 }
 
 function isCurrent(current: SessionRuntime | undefined, session: SessionRuntime): boolean {
   return current === session && !session.controller.state.shuttingDown;
 }
 
+function contextSessionId(ctx: ExtensionContext): string | undefined {
+  try {
+    return ctx.sessionManager.getSessionId();
+  } catch {
+    return undefined;
+  }
+}
+
+function bindContext(session: SessionRuntime, ctx: ExtensionContext): boolean {
+  if (contextSessionId(ctx) !== session.sessionId || session.controller.state.shuttingDown) {
+    return false;
+  }
+  session.ctx = ctx;
+  return true;
+}
+
 function notify(ctx: ExtensionContext, message: string, level: 'info' | 'warning' = 'info'): void {
   ctx.ui.notify(message, level);
 }
 
-export function caffeinate(pi: ExtensionAPI): void {
+export function caffeinate(pi: ExtensionAPI, dependencies: CaffeinateDependencies = {}): void {
+  const settingsPath = dependencies.settingsPath ?? getSettingsPath(getAgentDir());
+  const settingsStore = dependencies.settingsStore ?? new SettingsStore(settingsPath);
+  const launchInhibitor = dependencies.startInhibitor ?? startInhibitor;
   let current: SessionRuntime | undefined;
   let startupGeneration = 0;
   const createGateRegistry = (): ContinuationGateRegistry =>
@@ -87,7 +107,6 @@ export function caffeinate(pi: ExtensionAPI): void {
       },
     });
   let gateRegistry = createGateRegistry();
-  const settingsStore = new SettingsStore(SETTINGS_PATH);
 
   const getStatus = (session: SessionRuntime) => {
     const state = session.controller.state;
@@ -107,15 +126,15 @@ export function caffeinate(pi: ExtensionAPI): void {
     if (!isCurrent(current, session)) return;
     const status = getStatus(session);
     if (!status) {
-      session.statusPublished = false;
-      if (session.ctx.hasUI) {
+      if (session.statusPublished && session.ctx.hasUI) {
         clearOwnedStatus(pi, session.ctx);
       }
+      session.statusPublished = false;
       return;
     }
-    session.statusPublished = true;
     if (session.ctx.hasUI) {
       publishStatus(pi, statusContext(session.ctx), status, CAFFEINATE_STATUS_SOURCE);
+      session.statusPublished = true;
     }
   };
 
@@ -137,53 +156,73 @@ export function caffeinate(pi: ExtensionAPI): void {
     session.clearProvider?.();
     session.clearProvider = undefined;
     gateRegistry.dispose();
-    if (session.ctx.hasUI) {
+    if (session.statusPublished && session.ctx.hasUI) {
       clearOwnedStatus(pi, session.ctx);
+      session.statusPublished = false;
     }
     if (current === session) current = undefined;
   };
 
   const persistSettings = async (
     session: SessionRuntime,
-    next: CaffeinateSettings,
+    update: (settings: CaffeinateSettings) => CaffeinateSettings,
     feedback: string,
   ): Promise<void> => {
-    const previous = { ...session.settings };
-    const previousUnknown = { ...session.unknownFields };
-    session.settings = { ...next };
-    session.controller.setSettings(next);
-    try {
-      await settingsStore.save(next, session.unknownFields);
-      if (isCurrent(current, session)) {
-        refresh(session);
-        notify(session.ctx, feedback);
-      }
-    } catch (error) {
-      session.settings = previous;
-      session.unknownFields = previousUnknown;
-      session.controller.setSettings(previous);
-      if (isCurrent(current, session))
-        notify(
-          session.ctx,
-          `Could not save ${SETTINGS_PATH}: ${error instanceof Error ? error.message : String(error)}`,
-          'warning',
-        );
+    if (!session.canSaveSettings) {
+      notify(
+        session.ctx,
+        `Cannot save ${settingsPath} because it is invalid or unreadable. Fix or remove it, then reload Pi.`,
+        'warning',
+      );
+      return;
     }
+
+    const operation = session.settingsQueue.then(async () => {
+      if (!isCurrent(current, session)) return;
+      const previous = { ...session.settings };
+      const previousUnknown = { ...session.unknownFields };
+      const next = update(previous);
+      session.settings = { ...next };
+      session.controller.setSettings(next);
+      try {
+        await settingsStore.save(next, session.unknownFields);
+        if (isCurrent(current, session)) {
+          refresh(session);
+          notify(session.ctx, feedback);
+        }
+      } catch (error) {
+        session.settings = previous;
+        session.unknownFields = previousUnknown;
+        session.controller.setSettings(previous);
+        if (isCurrent(current, session)) {
+          notify(
+            session.ctx,
+            `Could not save ${settingsPath}: ${error instanceof Error ? error.message : String(error)}`,
+            'warning',
+          );
+        }
+      }
+    });
+    session.settingsQueue = operation.catch(() => undefined);
+    await operation;
   };
 
   const showStatus = (session: SessionRuntime): void => {
     const state = session.controller.state;
     const gates = gateRegistry.list(session.sessionId);
     const candidate = state.inhibitor?.candidate;
+    let inhibitorStatus = 'idle';
+    if (candidate) inhibitorStatus = `active (${candidate.id})`;
+    else if (state.unavailable) inhibitorStatus = 'unavailable';
     notify(
       session.ctx,
       [
         `Caffeinate: ${state.settings.enabled ? 'enabled' : 'disabled'} (${state.settings.mode})`,
-        `Inhibitor: ${candidate ? `active (${candidate.id})` : state.unavailable ? 'unavailable' : 'idle'}`,
+        `Inhibitor: ${inhibitorStatus}`,
         `Pi: ${state.snapshot.piIdle ? 'idle' : 'active'}${state.snapshot.pendingMessages ? ', queued messages' : ''}`,
         `Continuation gates: ${gates.length}`,
         `Quiet: ${state.settings.quiet ? 'on' : 'off'}`,
-        `Settings: ${SETTINGS_PATH}`,
+        `Settings: ${settingsPath}`,
         state.lastError ? `Last error: ${state.lastError}` : '',
       ]
         .filter(Boolean)
@@ -193,7 +232,7 @@ export function caffeinate(pi: ExtensionAPI): void {
 
   const runCommand = async (command: CaffeinateCommand, ctx: ExtensionContext): Promise<void> => {
     const session = current;
-    if (!session || session.ctx !== ctx) {
+    if (!session || !bindContext(session, ctx)) {
       notify(ctx, 'Caffeinate is not ready for this session.', 'warning');
       return;
     }
@@ -219,14 +258,16 @@ export function caffeinate(pi: ExtensionAPI): void {
           'quiet off',
           'help',
         ]);
-        if (choice) await runCommand(parseCaffeinateCommand(choice) ?? { kind: 'help' }, ctx);
+        if (choice && isCurrent(current, session) && bindContext(session, ctx)) {
+          await runCommand(parseCaffeinateCommand(choice) ?? { kind: 'help' }, ctx);
+        }
         return;
       }
       case 'status':
         showStatus(session);
         return;
       case 'help':
-        notify(ctx, caffeinateHelp(SETTINGS_PATH));
+        notify(ctx, caffeinateHelp(settingsPath));
         return;
       case 'start':
         session.controller.clearManualStop();
@@ -241,30 +282,32 @@ export function caffeinate(pi: ExtensionAPI): void {
       case 'enable':
         await persistSettings(
           session,
-          { ...session.settings, enabled: true },
+          (settings) => ({ ...settings, enabled: true }),
           'Caffeinate enabled.',
         );
         return;
       case 'disable':
         await persistSettings(
           session,
-          { ...session.settings, enabled: false },
+          (settings) => ({ ...settings, enabled: false }),
           'Caffeinate disabled.',
         );
         return;
       case 'mode':
         await persistSettings(
           session,
-          { ...session.settings, mode: command.mode },
+          (settings) => ({ ...settings, mode: command.mode }),
           `Caffeinate mode is now ${command.mode}.`,
         );
         return;
       case 'quiet':
         await persistSettings(
           session,
-          { ...session.settings, quiet: command.enabled },
+          (settings) => ({ ...settings, quiet: command.enabled }),
           `Caffeinate quiet mode is now ${command.enabled ? 'on' : 'off'}.`,
         );
+        return;
+      default:
         return;
     }
   };
@@ -283,28 +326,51 @@ export function caffeinate(pi: ExtensionAPI): void {
       ctx,
       settings: loaded.settings,
       unknownFields: loaded.unknownFields,
+      canSaveSettings: loaded.canSave,
+      settingsQueue: Promise.resolve(),
       controller: undefined as unknown as CaffeinateRuntime,
+      statusPublished: false,
     };
     const driver = {
-      start: async (settings: CaffeinateSettings): Promise<RunningInhibitor | undefined> => {
+      start: async (
+        settings: CaffeinateSettings,
+        runtimeGeneration: number,
+      ): Promise<RunningInhibitor | undefined> => {
         let errorText = '';
-        const result = await startInhibitor(
+        const result = await launchInhibitor(
           buildInhibitorCandidates({ platform: process.platform, env: process.env }, settings.mode),
           {
-            onUnexpectedExit: (_candidate, stderr, error) => {
+            onUnexpectedExit: (candidate, stderr, error) => {
               errorText = stderr || error?.message || 'inhibitor exited unexpectedly';
-              if (session.controller.state.inhibitor) {
+              const state = session.controller.state;
+              if (
+                state.generation === runtimeGeneration &&
+                state.inhibitor?.candidate.id === candidate.id
+              ) {
                 session.controller.markUnavailable(errorText);
               }
             },
           },
         );
-        if (!result)
+        if (!result) {
           session.controller.state.lastError = errorText || 'No supported inhibitor was available.';
+        }
         return result;
       },
       stop: (inhibitor: RunningInhibitor) => inhibitor.stop(),
-      onChange: () => updateStatus(session),
+      onChange: (change: RuntimeChange) => {
+        if (!session.controller.state.settings.quiet && session.ctx.hasUI) {
+          if (change === 'started') {
+            notify(
+              session.ctx,
+              `Caffeinate started (${session.controller.state.inhibitor?.candidate.id ?? 'inhibitor'}).`,
+            );
+          } else if (change === 'stopped') {
+            notify(session.ctx, 'Caffeinate released the sleep inhibitor.');
+          }
+        }
+        updateStatus(session);
+      },
     };
     session.controller = new CaffeinateRuntime({ initialSettings: loaded.settings, driver });
     current = session;
@@ -323,17 +389,20 @@ export function caffeinate(pi: ExtensionAPI): void {
   });
 
   pi.on('agent_start', (_event, ctx) => {
-    if (!current || current.ctx !== ctx) return;
-    current.controller.clearManualStop();
-    refresh(current);
+    const session = current;
+    if (!session || !bindContext(session, ctx)) return;
+    session.controller.clearManualStop();
+    refresh(session);
   });
   pi.on('agent_settled', (_event, ctx) => {
-    if (!current || current.ctx !== ctx) return;
-    refresh(current);
+    const session = current;
+    if (!session || !bindContext(session, ctx)) return;
+    refresh(session);
   });
   pi.on('session_shutdown', async (_event, ctx) => {
     ++startupGeneration;
-    if (current?.ctx === ctx) await stopCurrent();
+    const session = current;
+    if (session && bindContext(session, ctx)) await stopCurrent();
   });
 
   pi.registerCommand('caffeinate', {
@@ -349,11 +418,3 @@ export function caffeinate(pi: ExtensionAPI): void {
     },
   });
 }
-
-export {
-  DEFAULT_CAFFEINATE_SETTINGS,
-  CAFFEINATE_STATUS_KEY,
-  CAFFEINATE_STATUS_SOURCE,
-  getSettingsPath,
-  type CaffeinateMode,
-};

@@ -6,7 +6,7 @@ export type CaffeinateCommand =
   | { kind: 'mode'; mode: CaffeinateMode }
   | { kind: 'quiet'; enabled: boolean };
 
-export const CAFFEINATE_COMMANDS = [
+const CAFFEINATE_COMMANDS = [
   'status',
   'start',
   'stop',
@@ -45,10 +45,9 @@ export function parseCaffeinateCommand(args: string): CaffeinateCommand | undefi
 
 export function getCaffeinateCompletions(prefix: string): Array<{ value: string; label: string }> {
   const normalized = prefix.trimStart();
-  return CAFFEINATE_COMMANDS.filter((value) => value.startsWith(normalized)).map((value) => ({
-    value,
-    label: value,
-  }));
+  return CAFFEINATE_COMMANDS.flatMap((value) =>
+    value.startsWith(normalized) ? [{ value, label: value }] : [],
+  );
 }
 
 export function caffeinateHelp(settingsPath: string): string {

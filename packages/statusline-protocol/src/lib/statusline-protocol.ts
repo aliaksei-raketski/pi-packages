@@ -43,8 +43,22 @@ export interface StatuslineProtocolHost {
   events: StatuslineEventBus & StatuslineEmitChannel;
 }
 
-const ESC = String.fromCharCode(27);
-const BACKSPACE = String.fromCharCode(8);
+const FALLBACK_OWNERS = Symbol.for('pi-statusline-protocol:fallback-owners');
+
+interface FallbackPublication {
+  source: string | undefined;
+  text: string;
+  sequence: number;
+}
+
+interface FallbackRegistry {
+  sequence: number;
+  statuses: Map<string, Map<string | undefined, FallbackPublication>>;
+}
+
+type StatuslineProtocolGlobal = typeof globalThis & {
+  [FALLBACK_OWNERS]?: WeakMap<object, FallbackRegistry>;
+};
 
 export interface StatuslineSnapshotProvider {
   (): Iterable<StatuslineStatus>;
@@ -55,18 +69,67 @@ export interface StatuslineProviderHandle {
 }
 
 function stripAnsi(value: string): string {
-  return value
-    .replace(new RegExp(`${ESC}\\[[0-9;]*[A-Za-z]`, 'g'), '')
-    .replace(new RegExp(`${ESC}\\]`, 'g'), '')
-    .replace(new RegExp(`${ESC}\\[`, 'g'), '')
-    .replace(new RegExp(`${ESC}${BACKSPACE}`, 'g'), '')
-    .replace(new RegExp(`${ESC}\\(K`, 'g'), '')
-    .replace(new RegExp(`${ESC}\\)B`, 'g'), '')
-    .trimEnd();
+  let output = '';
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 27) {
+      output += value[index];
+      continue;
+    }
+
+    const next = value[index + 1];
+    if (next === '[') {
+      let end = index + 2;
+      while (end < value.length) {
+        const code = value.charCodeAt(end);
+        if ((code >= 48 && code <= 57) || code === 59) end += 1;
+        else break;
+      }
+      const finalCode = value.charCodeAt(end);
+      const isLetter =
+        (finalCode >= 65 && finalCode <= 90) || (finalCode >= 97 && finalCode <= 122);
+      index = isLetter ? end : index + 1;
+      continue;
+    }
+    if (
+      next === ']' ||
+      next?.charCodeAt(0) === 8 ||
+      (next === '(' && value[index + 2] === 'K') ||
+      (next === ')' && value[index + 2] === 'B')
+    ) {
+      index += next === '(' || next === ')' ? 2 : 1;
+      continue;
+    }
+    output += value[index];
+  }
+  return output.trimEnd();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function fallbackRegistry(host: StatuslineProtocolHost): FallbackRegistry {
+  const sharedGlobal = globalThis as StatuslineProtocolGlobal;
+  const registries = (sharedGlobal[FALLBACK_OWNERS] ??= new WeakMap());
+  const existing = registries.get(host);
+  if (existing) return existing;
+  const registry: FallbackRegistry = { sequence: 0, statuses: new Map() };
+  registries.set(host, registry);
+  return registry;
+}
+
+function latestFallback(
+  publications: Map<string | undefined, FallbackPublication>,
+): FallbackPublication | undefined {
+  let latest: FallbackPublication | undefined;
+  for (const publication of publications.values()) {
+    if (!latest || publication.sequence > latest.sequence) latest = publication;
+  }
+  return latest;
+}
+
+function normalizeSource(source?: unknown): string | undefined {
+  return typeof source === 'string' && source.length > 0 ? source : undefined;
 }
 
 export function isStatuslineStatus(value: unknown): value is StatuslineStatus {
@@ -105,10 +168,9 @@ export function parseStatusEvent(payload: unknown): StatuslineStatusEvent | unde
   }
 
   const normalized = normalizeStatus(payload);
-  const source = payload.source;
   return {
     ...normalized,
-    source: typeof source === 'string' && source.length > 0 ? source : undefined,
+    source: normalizeSource(payload.source),
   };
 }
 
@@ -127,10 +189,9 @@ export function parseClearEvent(payload: unknown): StatuslineStatusClearEvent | 
     return undefined;
   }
 
-  const source = payload.source;
   return {
     key,
-    source: typeof source === 'string' && source.length > 0 ? source : undefined,
+    source: normalizeSource(payload.source),
   };
 }
 
@@ -138,9 +199,6 @@ export function parseSnapshotEvent(payload: unknown): StatuslineStatusSnapshot |
   if (!payload) {
     return undefined;
   }
-
-  const sourceFromPayload = (rawSource: unknown): string | undefined =>
-    typeof rawSource === 'string' && rawSource.length > 0 ? rawSource : undefined;
 
   if (Array.isArray(payload)) {
     const statuses = payload
@@ -157,7 +215,7 @@ export function parseSnapshotEvent(payload: unknown): StatuslineStatusSnapshot |
     return undefined;
   }
 
-  const source = sourceFromPayload(payload.source);
+  const source = normalizeSource(payload.source);
   const statuses = payload.statuses
     .map((entry) => (isStatuslineStatus(entry) ? normalizeStatus(entry) : undefined))
     .filter((entry): entry is StatuslineStatus => entry !== undefined);
@@ -169,7 +227,7 @@ function buildEventPayload(status: StatuslineStatus, source?: string): Statuslin
   const normalized = normalizeStatus(status);
   return {
     ...normalized,
-    source: typeof source === 'string' && source.length > 0 ? source : undefined,
+    source: normalizeSource(source),
   };
 }
 
@@ -186,7 +244,7 @@ function buildSnapshotPayload(
   }
 
   return {
-    source: typeof source === 'string' && source.length > 0 ? source : undefined,
+    source: normalizeSource(source),
     statuses: normalized,
   };
 }
@@ -215,6 +273,16 @@ export function publishStatus(
     fallbackColor === undefined ? normalized.text : ctx.theme.fg(fallbackColor, normalized.text);
 
   ctx.setStatus(normalized.key, fallbackText);
+  const registry = fallbackRegistry(host);
+  registry.sequence += 1;
+  const publications = registry.statuses.get(normalized.key) ?? new Map();
+  const normalizedSource = normalizeSource(source);
+  publications.set(normalizedSource, {
+    source: normalizedSource,
+    text: fallbackText,
+    sequence: registry.sequence,
+  });
+  registry.statuses.set(normalized.key, publications);
   host.events.emit(STATUSLINE_STATUS_SET_EVENT, buildEventPayload(normalized, source));
 }
 
@@ -229,8 +297,23 @@ export function clearStatus(
     return;
   }
 
-  ctx.setStatus(cleaned, undefined);
-  const payload: StatuslineStatusClearEvent = { key: cleaned, source };
+  const registry = fallbackRegistry(host);
+  const publications = registry.statuses.get(cleaned);
+  const normalizedSource = normalizeSource(source);
+  if (normalizedSource === undefined) {
+    ctx.setStatus(cleaned, undefined);
+    registry.statuses.delete(cleaned);
+  } else if (!publications) {
+    ctx.setStatus(cleaned, undefined);
+  } else {
+    const current = latestFallback(publications);
+    publications.delete(normalizedSource);
+    if (current?.source === normalizedSource) {
+      ctx.setStatus(cleaned, latestFallback(publications)?.text);
+    }
+    if (publications.size === 0) registry.statuses.delete(cleaned);
+  }
+  const payload: StatuslineStatusClearEvent = { key: cleaned, source: normalizedSource };
   host.events.emit(STATUSLINE_STATUS_CLEAR_EVENT, payload);
 }
 
