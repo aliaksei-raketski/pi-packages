@@ -1,3 +1,19 @@
+## 0.3.12 (2026-07-26)
+
+### 🚀 Features
+
+- **continuation-gates:** add lease, resume, telemetry, and inspector support ([023e411](https://github.com/aliaksei-raketski/pi-packages/commit/023e411))
+- **tooling:** adopt TypeScript 7 with TypeScript 6 API compatibility ([c889103](https://github.com/aliaksei-raketski/pi-packages/commit/c889103))
+
+### 🩹 Fixes
+
+- address repository review findings ([7ccc889](https://github.com/aliaksei-raketski/pi-packages/commit/7ccc889))
+- **docs:** list continuation gate inspector package ([28ca7e0](https://github.com/aliaksei-raketski/pi-packages/commit/28ca7e0))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.11 (2026-07-26)
 
 ### 🩹 Fixes

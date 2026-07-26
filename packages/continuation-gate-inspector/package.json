@@ -1,6 +1,6 @@
 {
   "name": "@aliaksei-raketski/pi-continuation-gate-inspector",
-  "version": "0.0.1",
+  "version": "0.3.12",
   "type": "module",
   "description": "Local inspector for continuation gate diagnostics.",
   "keywords": [

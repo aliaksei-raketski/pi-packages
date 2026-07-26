@@ -1,6 +1,6 @@
 {
   "name": "@aliaksei-raketski/pi-nx-developer",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "type": "module",
   "description": "Pi package that vendors the official Nx Agent Skills with a local Nx documentation helper.",
   "keywords": [
