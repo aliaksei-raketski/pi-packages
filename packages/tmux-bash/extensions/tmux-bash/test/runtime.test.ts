@@ -76,6 +76,7 @@ describe('TmuxBashRuntime', () => {
       context as never,
     );
     expect(started.details?.windowId).toBe('@77');
+    expect(started.terminate).toBe(true);
     expect(ordering).toContain('acquire');
     expect(controller.list('session-1')).toHaveLength(1);
 
@@ -367,12 +368,13 @@ describe('TmuxBashRuntime', () => {
     );
     activeRuntimes.push(runtime);
     await runtime.startSession(context as never);
-    await runtime.executeBash(
+    const result = await runtime.executeBash(
       { command: 'sleep 10', background: true },
       undefined,
       undefined,
       context as never,
     );
+    expect(result.terminate).not.toBe(true);
     expect(controller.list('session-1')).toHaveLength(0);
   });
 
@@ -403,6 +405,7 @@ describe('TmuxBashRuntime', () => {
       text: expect.stringContaining('continuing in background'),
     });
     expect(result.details).toMatchObject({ background: true, awaited: true, state: 'running' });
+    expect(result.terminate).toBe(true);
     expect(controller.list('session-1')).toHaveLength(1);
   });
 
@@ -559,8 +562,10 @@ describe('TmuxBashRuntime', () => {
       context as never,
     );
 
-    await runtime.await('@96', context as never);
-    await runtime.await('@96', context as never);
+    const firstAwait = await runtime.await('@96', context as never);
+    const secondAwait = await runtime.await('@96', context as never);
+    expect(firstAwait.terminate).toBe(true);
+    expect(secondAwait.terminate).toBe(true);
     expect(controller.list('session-1')).toHaveLength(1);
     await runtime.unawait('@96', context as never);
     await runtime.unawait('@96', context as never);

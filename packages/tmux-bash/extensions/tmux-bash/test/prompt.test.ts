@@ -35,8 +35,12 @@ describe('tmux-bash model guidance', () => {
       );
       expect(guidelines).toContain('regardless of how long it may run');
       expect(guidelines).toContain('waitForCompletion: false only for processes intentionally');
-      expect(guidelines).toContain('use tmux action await');
-      expect(guidelines).toContain('do not repeatedly call goal tools or emit waiting updates');
+      expect(guidelines).toContain('as the only tool call in its assistant response');
+      expect(guidelines).toContain('stop immediately: do not call get_goal, tmux await, tmux poll');
+      expect(guidelines).toContain('call tmux action await once');
+      expect(guidelines).toContain(
+        'do not repeatedly call goal tools, poll, or emit waiting updates',
+      );
       expect(description).toContain(`configured default is ${String(configuredDefault)}`);
       expect(description).toContain('true for every finite command whose result is required');
       expect(description).toContain('false only for processes intentionally expected');

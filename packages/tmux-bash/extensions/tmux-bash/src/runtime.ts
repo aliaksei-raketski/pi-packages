@@ -271,6 +271,7 @@ export class TmuxBashRuntime {
       'await',
       [run],
       `Awaiting ${windowId}. Synthetic continuation is suspended until completion or unawait.`,
+      true,
     );
   }
 
@@ -629,6 +630,7 @@ export class TmuxBashRuntime {
     return {
       content: [{ type: 'text', text: message }],
       details: this.details(run, formatted.truncation),
+      ...(run.gateId ? { terminate: true } : {}),
     };
   }
 
@@ -756,9 +758,11 @@ export class TmuxBashRuntime {
     action: TmuxToolDetails['action'],
     runs: CommandRun[],
     text: string,
+    terminate = false,
   ): AgentToolResult<TmuxToolDetails> {
     return {
       content: [{ type: 'text', text: sanitizeTerminalText(text) }],
+      ...(terminate ? { terminate: true } : {}),
       details: {
         action,
         runs: runs.map((run) => ({
