@@ -41,7 +41,7 @@ If no user config exists, statusline will create `~/.pi/statusline.json` with th
 {
   "layout": [
     ["branch", "changes", "pr", "spacer", "project"],
-    ["context", "cache", "cost", "spacer", "model", "thinking"],
+    ["context", "cache", "cost", "spacer", "model", "thinking", "caffeinate"],
     ["title"],
     ["cwd"]
   ],
@@ -54,6 +54,7 @@ If no user config exists, statusline will create `~/.pi/statusline.json` with th
     "title": "✎",
     "model": "◉",
     "thinking": "◐",
+    "caffeinate": "☕",
     "context": "◔",
     "tokens": "◈",
     "cache": "↻",
@@ -87,7 +88,13 @@ If no user config exists, statusline will create `~/.pi/statusline.json` with th
     },
     "tokens": "muted",
     "cache": "muted",
-    "cost": "muted"
+    "cost": "muted",
+    "caffeinate": {
+      "active": "accent",
+      "waiting": "warning",
+      "error": "error",
+      "default": "muted"
+    }
   }
 }
 ```
@@ -137,6 +144,8 @@ The `layout` array uses the following token names:
 - `cost` — accumulated usage cost shown as `$<value>`.
 
 `statuses` is rendered when `statuses` is explicitly in `layout`.
+
+Caffeinate is included in the fresh default layout as the direct `caffeinate` token. Existing custom layouts are unchanged; add `caffeinate` directly or use the aggregate `statuses` token to display it.
 
 You can also include any status key directly (for example `my_extension`); if another extension sets it via `ctx.ui.setStatus("my_extension", "...")`, it will be rendered in that slot.
 

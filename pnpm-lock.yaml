@@ -179,6 +179,19 @@ importers:
 
   packages/angular-developer: {}
 
+  packages/caffeinate:
+    dependencies:
+      '@aliaksei-raketski/pi-continuation-gate-protocol':
+        specifier: workspace:*
+        version: link:../continuation-gate-protocol
+      '@aliaksei-raketski/pi-statusline-protocol':
+        specifier: workspace:*
+        version: link:../statusline-protocol
+    devDependencies:
+      '@earendil-works/pi-coding-agent':
+        specifier: ^0.82.1
+        version: 0.82.1(ws@8.21.0)(zod@4.4.3)
+
   packages/continuation-gate-inspector:
     dependencies:
       '@aliaksei-raketski/pi-continuation-gate-protocol':

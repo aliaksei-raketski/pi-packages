@@ -1,0 +1,52 @@
+{
+  "name": "@aliaksei-raketski/pi-caffeinate",
+  "version": "0.3.12",
+  "type": "module",
+  "description": "Pi extension that keeps the computer awake while Pi is active or continuation gates are pending.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "caffeinate",
+    "pi-extension"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/aliaksei-raketski/pi-packages/tree/main/packages/caffeinate",
+  "bugs": {
+    "url": "https://github.com/aliaksei-raketski/pi-packages/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aliaksei-raketski/pi-packages.git",
+    "directory": "packages/caffeinate"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "files": [
+    "README.md",
+    "LICENSE",
+    "extensions",
+    "!extensions/**/test/**",
+    "!extensions/**/*.spec.ts",
+    "!extensions/**/*.test.ts"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.82.1"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.82.1"
+  },
+  "dependencies": {
+    "@aliaksei-raketski/pi-continuation-gate-protocol": "workspace:*",
+    "@aliaksei-raketski/pi-statusline-protocol": "workspace:*"
+  }
+}

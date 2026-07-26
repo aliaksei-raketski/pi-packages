@@ -35,6 +35,9 @@
     },
     {
       "path": "./packages/continuation-gate-inspector"
+    },
+    {
+      "path": "./packages/caffeinate"
     }
   ]
 }

@@ -93,6 +93,12 @@ export const THEME_DEFAULT_COLORS = {
   tokens: 'dim',
   cache: 'dim',
   cost: 'muted',
+  caffeinate: {
+    active: 'accent',
+    waiting: 'warning',
+    error: 'error',
+    default: 'muted',
+  },
 };
 
 export function isThemeColor(value: string): value is ThemeColor {

@@ -46,7 +46,7 @@ export interface ConfigLoadContext {
 export const DEFAULT_STATUSLINE_CONFIG: StatuslineConfig = {
   layout: [
     ['branch', 'changes', 'pr', 'spacer', 'project'],
-    ['context', 'cache', 'cost', 'spacer', 'model', 'thinking'],
+    ['context', 'cache', 'cost', 'spacer', 'model', 'thinking', 'caffeinate'],
     ['title'],
     ['cwd'],
   ],
@@ -59,6 +59,7 @@ export const DEFAULT_STATUSLINE_CONFIG: StatuslineConfig = {
     title: '✎',
     model: '◉',
     thinking: '◐',
+    caffeinate: '☕',
     context: '◔',
     tokens: '◈',
     cache: '↻',
@@ -94,6 +95,12 @@ export const DEFAULT_STATUSLINE_CONFIG: StatuslineConfig = {
     tokens: 'muted',
     cache: 'muted',
     cost: 'muted',
+    caffeinate: {
+      active: 'accent',
+      waiting: 'warning',
+      error: 'error',
+      default: 'muted',
+    },
   },
 };
 
