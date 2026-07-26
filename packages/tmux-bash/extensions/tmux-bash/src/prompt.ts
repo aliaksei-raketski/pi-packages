@@ -8,7 +8,9 @@ export function createBashPromptGuidelines(config: TmuxBashConfig): string[] {
 
   return [
     'Use bash background mode for servers, watchers, REPLs, and long-running jobs.',
-    'For every background bash call, set waitForCompletion explicitly: true for finite asynchronous work when no productive step remains until its result; false for persistent servers, watchers, and REPLs.',
+    'Set bash waitForCompletion: true for every finite background command whose result is required, including tests, builds, and subagents, regardless of how long it may run or whether other productive work can continue.',
+    'Set bash waitForCompletion: false only for processes intentionally expected to remain alive indefinitely, such as servers, watchers, and REPLs; never set it false merely because a command is slow or long-running.',
+    'If required finite work was started without a continuation gate, use tmux action await on its stable window before becoming idle; do not repeatedly call goal tools or emit waiting updates.',
     `If omitted for an explicit background command, waitForCompletion defaults to ${configuredDefault} in this installation.`,
     'Background bash completion is reported automatically while this Pi process remains running.',
     'Use stable @-prefixed window IDs with tmux actions; tmux window indexes are not stable.',

@@ -19,7 +19,8 @@ export function createBashInputSchema(config: TmuxBashConfig): TSchema {
         Type.Boolean({
           description:
             `Gate autonomous continuation until this command completes. For explicit background commands, the configured default is ${configuredDefault}. ` +
-            'Set true for finite asynchronous work that must finish before continuing; set false for persistent servers, watchers, and REPLs.',
+            'Set true for every finite command whose result is required, including tests, builds, and subagents, regardless of duration or concurrent productive work. ' +
+            'Set false only for processes intentionally expected to remain alive indefinitely, such as servers, watchers, and REPLs; never set false merely because a command is slow or long-running.',
         }),
       ),
     },

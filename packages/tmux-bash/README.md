@@ -120,9 +120,11 @@ This package communicates through `@aliaksei-raketski/pi-continuation-gate-proto
 4. the gate is released with `wake: "producer-message"`;
 5. goal continuation can resume after the completion turn settles.
 
-Persistent servers and watchers should use `waitForCompletion: false` so autonomous work is not blocked.
+Every finite background command whose result is required—including tests, builds, and subagents—should use `waitForCompletion: true`, regardless of its duration or whether other productive work can continue concurrently. Continuation gates do not block the current agent run; they suppress only synthetic idle continuation.
 
-The extension exposes the configured `defaultWaitForBackgroundCompletion` value in both its model prompt guidance and the `waitForCompletion` tool-schema description. Models are instructed to set the option explicitly for every background command: `true` for finite blocking work and `false` for persistent servers, watchers, and REPLs.
+Use `waitForCompletion: false` only for processes intentionally expected to remain alive indefinitely, such as servers, watchers, and REPLs. If required finite work was started without a gate, acquire one with the `tmux` tool's `await` action before becoming idle.
+
+The extension exposes the configured `defaultWaitForBackgroundCompletion` value in both its model prompt guidance and the `waitForCompletion` tool-schema description. The same guidance explicitly distinguishes required finite work from persistent processes and warns that slow or long-running does not mean persistent.
 
 ## Statusline integration
 
