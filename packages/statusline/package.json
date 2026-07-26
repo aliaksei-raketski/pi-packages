@@ -1,6 +1,6 @@
 {
   "name": "@aliaksei-raketski/pi-statusline",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "type": "module",
   "description": "Pi extension for a highly customizable, ANSI-aware statusline footer.",
   "keywords": [

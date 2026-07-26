@@ -1,3 +1,21 @@
+## 0.3.9 (2026-07-26)
+
+### 🚀 Features
+
+- add continuation gate protocol ([2ff8305](https://github.com/aliaksei-raketski/pi-packages/commit/2ff8305))
+- **goal:** add persistent autonomous goals ([cb36143](https://github.com/aliaksei-raketski/pi-packages/commit/cb36143))
+- **tmux-bash:** add tmux-backed bash extension ([a68bb54](https://github.com/aliaksei-raketski/pi-packages/commit/a68bb54))
+
+### 🩹 Fixes
+
+- resolve continuation gate review findings ([0b24a1d](https://github.com/aliaksei-raketski/pi-packages/commit/0b24a1d))
+- address goal and tmux review findings ([ef321f3](https://github.com/aliaksei-raketski/pi-packages/commit/ef321f3))
+- **tmux-bash:** address review findings ([cd472fa](https://github.com/aliaksei-raketski/pi-packages/commit/cd472fa))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.8 (2026-07-22)
 
 ### 🩹 Fixes
