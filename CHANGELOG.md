@@ -1,3 +1,13 @@
+## 0.3.10 (2026-07-26)
+
+### 🩹 Fixes
+
+- **tmux-bash:** expose background wait defaults ([0d06ff3](https://github.com/aliaksei-raketski/pi-packages/commit/0d06ff3))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.9 (2026-07-26)
 
 ### 🚀 Features
