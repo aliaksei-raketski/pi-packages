@@ -41,8 +41,9 @@ it work.” Convert rough intent into auditable completion criteria.
    commands or evidence.
 3. Ask at most three clarifying questions only when an answer materially
    changes the completion contract. Otherwise state safe assumptions.
-4. Draft one pasteable `/goal` command. Include `--tokens <budget>` only when
-   the user requests a token budget.
+4. Draft one pasteable `/goal` command. Include `--tokens <budget>` and/or
+   `--time <duration>` only when the user requests those budgets. Wall-clock
+   durations use `s`, `m`, `h`, or `d` suffixes.
 5. Follow it with a short checklist showing how the result covers all six
    parts.
 6. For high-risk or ambiguous work, offer a safer narrow objective and a
@@ -61,11 +62,16 @@ it work.” Convert rough intent into auditable completion criteria.
 
 <!-- markdownlint-enable MD013 -->
 
-With a user-requested token budget:
+With user-requested budgets:
 
 ```text
 /goal --tokens 50k <same six-part completion contract>
+/goal --time 30m <same six-part completion contract>
+/goal --tokens 50k --time 1.5h <same six-part completion contract>
 ```
+
+Time budgets measure real elapsed time only while the goal is active. Gate
+waits count; paused, terminal, budget-limited, and process-offline time do not.
 
 ## Writing standards
 
@@ -76,6 +82,10 @@ With a user-requested token budget:
 - Require inspection of real artifacts before completion. Passing tests,
   manifests, and green checks are proxy evidence unless they directly cover
   every objective requirement.
+- Plan an evidence-ledger checklist: initialize stable requirement IDs, inspect
+  the current revision, add concise evidence references and claims, and mark a
+  requirement verified only after direct inspection. Completion is rejected
+  until every ledger requirement is verified with evidence.
 - Separate direct evidence, proxy evidence, blocked claims, and remaining
   uncertainty.
 - Name regressions and forbidden approaches when they matter.

@@ -10,7 +10,7 @@ const state = {
 
 describe('goal prompts', () => {
   it('keeps the deterministic completion contract', () => {
-    const prompt = continuationPrompt(state);
+    const prompt = continuationPrompt(state, { now: 10 });
     for (const phrase of [
       '<untrusted_objective>',
       'Tokens remaining: 38000',
@@ -19,7 +19,10 @@ describe('goal prompts', () => {
       'proxy evidence',
       "update_goal({ status: 'complete' })",
       'Do not repeat completed work',
-      'Do not claim completion because the budget is nearly exhausted',
+      'Do not claim completion because a budget is nearly exhausted',
+      'Active wall time:',
+      'Evidence ledger:',
+      'every ledger requirement is verified with evidence',
     ]) {
       expect(prompt).toContain(phrase);
     }

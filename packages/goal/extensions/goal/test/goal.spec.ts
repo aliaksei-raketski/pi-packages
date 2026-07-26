@@ -1,6 +1,8 @@
 import {
   CONTINUATION_GATE_ACQUIRE_EVENT,
   CONTINUATION_GATE_RELEASE_EVENT,
+  CONTINUATION_GATE_WAKE_COMMITTED_EVENT,
+  CONTINUATION_GATE_WAKE_PENDING_EVENT,
 } from '@aliaksei-raketski/pi-continuation-gate-protocol';
 import {
   STATUSLINE_STATUS_CLEAR_EVENT,
@@ -134,6 +136,50 @@ async function createActiveGoal(harness: Harness): Promise<void> {
   harness.sendMessage.mockClear();
 }
 
+async function verifySingleRequirement(harness: Harness): Promise<void> {
+  const updateEvidence = harness.tools.get('update_goal_evidence');
+  await updateEvidence?.execute(
+    'call-1',
+    {
+      action: 'initialize_requirements',
+      expectedRevision: 0,
+      requirements: [{ id: 'ship', requirement: 'Ship with direct evidence' }],
+    },
+    undefined,
+    undefined,
+    harness.ctx,
+  );
+  await updateEvidence?.execute(
+    'call-2',
+    {
+      action: 'add_evidence',
+      expectedRevision: 1,
+      requirementId: 'ship',
+      evidence: {
+        id: 'test',
+        kind: 'test',
+        reference: 'goal.spec.ts',
+        claim: 'integration behavior was inspected',
+      },
+    },
+    undefined,
+    undefined,
+    harness.ctx,
+  );
+  await updateEvidence?.execute(
+    'call-3',
+    {
+      action: 'set_requirement_status',
+      expectedRevision: 2,
+      requirementId: 'ship',
+      status: 'verified',
+    },
+    undefined,
+    undefined,
+    harness.ctx,
+  );
+}
+
 function acquireGate(harness: Harness, gateId = 'tests'): void {
   harness.events.emit(CONTINUATION_GATE_ACQUIRE_EVENT, {
     sessionId: 'session-1',
@@ -159,11 +205,14 @@ describe('goal extension', () => {
     expect([...harness.tools]).toEqual([
       ['create_goal', expect.any(Object)],
       ['get_goal', expect.any(Object)],
+      ['update_goal_evidence', expect.any(Object)],
       ['update_goal', expect.any(Object)],
     ]);
     for (const event of [
       'session_start',
+      'session_before_tree',
       'session_tree',
+      'before_agent_start',
       'turn_start',
       'turn_end',
       'agent_settled',
@@ -171,6 +220,38 @@ describe('goal extension', () => {
     ]) {
       expect(harness.handlers.has(event)).toBe(true);
     }
+  });
+
+  it('renders wall budgets, evidence summary, and progress diagnostics in details', () => {
+    const registerRenderer = harness.pi.registerMessageRenderer as ReturnType<typeof vi.fn>;
+    const renderer = registerRenderer.mock.calls[0]?.[1] as
+      | ((
+          message: unknown,
+          options: { expanded: boolean },
+          theme: unknown,
+        ) => {
+          render(width: number): string[];
+        })
+      | undefined;
+    const state = createGoalState('render details', 100, 1, () => 'render-goal', 60);
+    const component = renderer?.(
+      {
+        details: {
+          kind: 'active',
+          goal: state,
+          gates: [],
+          ledger: null,
+          noProgressStreak: 2,
+          timestamp: 1,
+        },
+      },
+      { expanded: true },
+      (harness.ctx.ui as { theme: unknown }).theme,
+    );
+    const rendered = component?.render(200).join('\n') ?? '';
+    expect(rendered).toContain('Budgets: tokens=100, wall=60s');
+    expect(rendered).toContain('Evidence: revision 0');
+    expect(rendered).toContain('No-progress streak: 2');
   });
 
   it('queues at most one continuation after Pi settles', async () => {
@@ -262,6 +343,34 @@ describe('goal extension', () => {
     expect(harness.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('does not duplicate a committed producer-message wake handoff', async () => {
+    await createActiveGoal(harness);
+    acquireGate(harness);
+    const handoff = {
+      handoffId: 'handoff-tests',
+      sessionId: 'session-1',
+      source: 'producer',
+      gateId: 'tests',
+      domain: 'autonomous-continuation',
+      createdAt: Date.now(),
+    };
+    harness.events.emit(CONTINUATION_GATE_WAKE_PENDING_EVENT, handoff);
+    harness.events.emit(CONTINUATION_GATE_WAKE_COMMITTED_EVENT, handoff);
+    harness.events.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'release-producer',
+      sessionId: 'session-1',
+      source: 'producer',
+      gateId: 'tests',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'producer-message',
+      handoffId: handoff.handoffId,
+      releasedAt: Date.now(),
+    });
+    await Promise.resolve();
+    expect(harness.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('suppresses settled continuation while messages are pending', async () => {
     await createActiveGoal(harness);
     (harness.ctx.hasPendingMessages as ReturnType<typeof vi.fn>).mockReturnValue(true);
@@ -309,9 +418,10 @@ describe('goal extension', () => {
   it('preserves unrelated active tools and hides active-only tools after completion', async () => {
     await createActiveGoal(harness);
     expect(harness.activeTools).toEqual(
-      new Set(['read', 'create_goal', 'get_goal', 'update_goal']),
+      new Set(['read', 'create_goal', 'get_goal', 'update_goal', 'update_goal_evidence']),
     );
 
+    await verifySingleRequirement(harness);
     const update = harness.tools.get('update_goal');
     await update?.execute('call', { status: 'complete' }, undefined, undefined, harness.ctx);
     expect(harness.activeTools).toEqual(new Set(['read', 'create_goal']));
@@ -319,6 +429,7 @@ describe('goal extension', () => {
 
   it('accounts final-turn usage after update_goal completes the goal', async () => {
     await createActiveGoal(harness);
+    await verifySingleRequirement(harness);
     await emit(harness, 'turn_start');
     await harness.tools
       .get('update_goal')
@@ -360,8 +471,40 @@ describe('goal extension', () => {
     });
     await emit(harness, 'session_tree');
     expect(harness.activeTools).toEqual(
-      new Set(['read', 'create_goal', 'get_goal', 'update_goal']),
+      new Set(['read', 'create_goal', 'get_goal', 'update_goal', 'update_goal_evidence']),
     );
+  });
+
+  it('restores branch-local evidence and settings on session_tree', async () => {
+    await createActiveGoal(harness);
+    const updateEvidence = harness.tools.get('update_goal_evidence');
+    await updateEvidence?.execute(
+      'call',
+      {
+        action: 'initialize_requirements',
+        expectedRevision: 0,
+        requirements: [{ id: 'branch', requirement: 'Branch-local requirement' }],
+      },
+      undefined,
+      undefined,
+      harness.ctx,
+    );
+    await harness.commands.get('goal')?.handler('restart restore-idle', harness.ctx as never);
+    const branchState = harness.appendEntry.mock.calls.at(-1)?.[1];
+    await harness.commands.get('goal')?.handler('evidence reset', harness.ctx as never);
+    harness.branch.splice(0, harness.branch.length, {
+      type: 'custom',
+      customType: 'pi-goal',
+      data: branchState,
+    });
+    await emit(harness, 'session_tree');
+    const result = (await harness.tools
+      .get('get_goal')
+      ?.execute('call', {}, undefined, undefined, harness.ctx)) as {
+      details: { ledger: { requirements: Array<{ id: string }> }; restartPolicy: string };
+    };
+    expect(result.details.ledger.requirements).toEqual([expect.objectContaining({ id: 'branch' })]);
+    expect(result.details.restartPolicy).toBe('restore-idle');
   });
 
   it('pauses an active restored goal on reload', async () => {
@@ -373,8 +516,250 @@ describe('goal extension', () => {
     });
     await emit(harness, 'session_start', { reason: 'reload' });
     const lastData = harness.appendEntry.mock.calls.at(-1)?.[1] as {
-      goal: { status: string };
+      goal: { status: string; pauseReason: string };
     };
-    expect(lastData.goal.status).toBe('paused');
+    expect(lastData.goal).toMatchObject({ status: 'paused', pauseReason: 'reload' });
+  });
+
+  it('rejects completion until the ledger is fully verified', async () => {
+    await createActiveGoal(harness);
+    await expect(
+      harness.tools
+        .get('update_goal')
+        ?.execute('call', { status: 'complete' }, undefined, undefined, harness.ctx),
+    ).rejects.toThrow(/no requirements/);
+    await verifySingleRequirement(harness);
+    await expect(
+      harness.tools
+        .get('update_goal')
+        ?.execute('call', { status: 'complete' }, undefined, undefined, harness.ctx),
+    ).resolves.toBeDefined();
+  });
+
+  it('supports combined command budgets and exposes them through get_goal', async () => {
+    await emit(harness, 'session_start', { reason: 'startup' });
+    await harness.commands
+      .get('goal')
+      ?.handler('--time 30m --tokens 50k combined objective', harness.ctx as never);
+    const result = (await harness.tools
+      .get('get_goal')
+      ?.execute('call', {}, undefined, undefined, harness.ctx)) as {
+      details: { goal: { tokenBudget: number; wallTimeBudgetSeconds: number } };
+    };
+    expect(result.details.goal).toMatchObject({
+      tokenBudget: 50_000,
+      wallTimeBudgetSeconds: 1_800,
+    });
+  });
+
+  it('keeps a gated wall-budget summary pending until the gate clears', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      await emit(harness, 'session_start', { reason: 'startup' });
+      await harness.commands.get('goal')?.handler('--time 10s timed goal', harness.ctx as never);
+      harness.sendMessage.mockClear();
+      acquireGate(harness);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const limited = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+        goal: { status: string; budgetLimitReason: string };
+        pendingBudgetSummary: boolean;
+      };
+      expect(limited.goal).toMatchObject({
+        status: 'budget_limited',
+        budgetLimitReason: 'wall_time',
+      });
+      expect(limited.pendingBudgetSummary).toBe(true);
+      expect(harness.sendMessage).not.toHaveBeenCalled();
+
+      harness.events.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+        releaseId: 'release-timer',
+        sessionId: 'session-1',
+        source: 'producer',
+        gateId: 'tests',
+        domain: 'autonomous-continuation',
+        outcome: 'completed',
+        wake: 'none',
+        releasedAt: Date.now(),
+      });
+      expect(harness.sendMessage).toHaveBeenCalledOnce();
+      const delivered = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+        pendingBudgetSummary: boolean;
+      };
+      expect(delivered.pendingBudgetSummary).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['restore-idle', 0],
+    ['resume', 1],
+  ] as const)('applies restart policy %s with guarded startup turns', async (policy, turns) => {
+    const restored = createGoalState('restored', null, 1, () => 'restored-goal');
+    harness.branch.push({
+      type: 'custom',
+      customType: 'pi-goal',
+      data: { goal: restored, statusBarEnabled: true, restartPolicy: policy },
+    });
+    await emit(harness, 'session_start', { reason: 'startup' });
+    await Promise.resolve();
+    expect(harness.sendMessage).toHaveBeenCalledTimes(turns);
+  });
+
+  it('waits for a gated restart and wins one auto-resume claim after wake none', async () => {
+    acquireGate(harness);
+    const restored = createGoalState('restored', null, 1, () => 'restored-goal');
+    harness.branch.push({
+      type: 'custom',
+      customType: 'pi-goal',
+      data: { goal: restored, statusBarEnabled: true, restartPolicy: 'resume' },
+    });
+    await emit(harness, 'session_start', { reason: 'startup' });
+    await Promise.resolve();
+    expect(harness.sendMessage).not.toHaveBeenCalled();
+
+    harness.events.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'release-restart',
+      sessionId: 'session-1',
+      source: 'producer',
+      gateId: 'tests',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: Date.now(),
+    });
+    await Promise.resolve();
+    expect(harness.sendMessage).toHaveBeenCalledOnce();
+  });
+
+  it('does not run restart resume while pending messages exist', async () => {
+    const restored = createGoalState('restored', null, 1, () => 'restored-goal');
+    harness.branch.push({
+      type: 'custom',
+      customType: 'pi-goal',
+      data: { goal: restored, statusBarEnabled: true, restartPolicy: 'resume' },
+    });
+    (harness.ctx.hasPendingMessages as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    await emit(harness, 'session_start', { reason: 'startup' });
+    await Promise.resolve();
+    expect(harness.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not observe repeated synthetic turns while no-progress is disabled', async () => {
+    await createActiveGoal(harness);
+    for (let index = 0; index < 4; index += 1) {
+      await emit(harness, 'agent_settled');
+      await Promise.resolve();
+      await emit(harness, 'turn_start');
+      await emit(harness, 'turn_end', {
+        message: {
+          content: [{ type: 'text', text: 'Repeated disabled-mode result.' }],
+          usage: { totalTokens: 1 },
+        },
+        toolResults: [],
+      });
+    }
+    const lastData = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+      goal: { status: string };
+      progress: unknown;
+    };
+    expect(lastData.goal.status).toBe('active');
+    expect(lastData.progress).toBeNull();
+  });
+
+  it('does not count explicit manual continuation toward no-progress', async () => {
+    await createActiveGoal(harness);
+    await harness.commands.get('goal')?.handler('no-progress on', harness.ctx as never);
+    for (let index = 0; index < 4; index += 1) {
+      await harness.commands.get('goal')?.handler('continue', harness.ctx as never);
+      await emit(harness, 'turn_start');
+      await emit(harness, 'turn_end', {
+        message: {
+          content: [{ type: 'text', text: 'Repeated manual result.' }],
+          usage: { totalTokens: 1 },
+        },
+        toolResults: [],
+      });
+    }
+    const lastData = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+      goal: { status: string };
+      progress: unknown;
+    };
+    expect(lastData.goal.status).toBe('active');
+    expect(lastData.progress).toBeNull();
+  });
+
+  it('pauses only repeated synthetic continuations when no-progress is enabled', async () => {
+    await createActiveGoal(harness);
+    await harness.commands.get('goal')?.handler('no-progress on', harness.ctx as never);
+    for (let index = 0; index < 4; index += 1) {
+      await emit(harness, 'agent_settled');
+      await Promise.resolve();
+      await emit(harness, 'turn_start');
+      await emit(harness, 'turn_end', {
+        message: {
+          content: [{ type: 'text', text: 'Repeated the same inspection with no new evidence.' }],
+          usage: { totalTokens: 1 },
+        },
+        toolResults: [],
+      });
+    }
+    const lastData = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+      goal: { status: string; pauseReason: string };
+      progress: { stagnationStreak: number };
+    };
+    expect(lastData.goal).toMatchObject({ status: 'paused', pauseReason: 'no_progress' });
+    expect(lastData.progress.stagnationStreak).toBe(3);
+    expect(
+      (harness.ctx.ui as { notify: ReturnType<typeof vi.fn> }).notify,
+    ).toHaveBeenLastCalledWith(expect.stringContaining('repeated synthetic'), 'warning');
+  });
+
+  it('delivers a busy budget limit as a model-visible next-turn instruction once', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      await emit(harness, 'session_start', { reason: 'startup' });
+      await harness.commands.get('goal')?.handler('--time 1s timed goal', harness.ctx as never);
+      harness.sendMessage.mockClear();
+      (harness.ctx.isIdle as ReturnType<typeof vi.fn>).mockReturnValue(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(harness.sendMessage).not.toHaveBeenCalled();
+      const beforeStart = harness.handlers.get('before_agent_start')?.[0];
+      const injected = await beforeStart?.({}, harness.ctx as never);
+      expect(injected).toMatchObject({
+        message: {
+          customType: 'pi-goal-event',
+          content: expect.stringContaining('budget_limited'),
+        },
+      });
+      const lastData = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+        pendingBudgetSummary: boolean;
+      };
+      expect(lastData.pendingBudgetSummary).toBe(false);
+      expect(await beforeStart?.({}, harness.ctx as never)).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('checkpoints the active wall clock on shutdown without sending a turn', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      await createActiveGoal(harness);
+      harness.sendMessage.mockClear();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await emit(harness, 'session_shutdown', { reason: 'quit' });
+      const lastData = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+        goal: { activeWallTimeSeconds: number; activeSince: number | null };
+      };
+      expect(lastData.goal.activeWallTimeSeconds).toBe(5);
+      expect(lastData.goal.activeSince).toBeNull();
+      expect(harness.sendMessage).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

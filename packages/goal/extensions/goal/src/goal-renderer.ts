@@ -1,6 +1,7 @@
 import type { ContinuationGate } from '@aliaksei-raketski/pi-continuation-gate-protocol';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
+import { formatGoalEvidenceSummary, type GoalEvidenceLedger } from './goal-evidence.ts';
 import {
   formatGoalUsage,
   goalEventLabel,
@@ -13,6 +14,8 @@ export interface GoalEventDetails {
   kind: GoalEventKind;
   goal: GoalState;
   gates: readonly ContinuationGate[];
+  ledger: GoalEvidenceLedger | null;
+  noProgressStreak: number;
   timestamp: number;
 }
 
@@ -33,8 +36,10 @@ export function registerGoalRenderer(pi: ExtensionAPI): void {
       lines.push(`Objective: ${details.goal.objective}`);
       lines.push(`Usage: ${formatGoalUsage(details.goal)}`);
       lines.push(
-        `Budget: ${details.goal.tokenBudget === null ? 'none' : details.goal.tokenBudget}`,
+        `Budgets: tokens=${details.goal.tokenBudget ?? 'none'}, wall=${details.goal.wallTimeBudgetSeconds ?? 'none'}s`,
       );
+      lines.push(`Evidence: ${formatGoalEvidenceSummary(details.ledger)}`);
+      lines.push(`No-progress streak: ${details.noProgressStreak}`);
     }
     if (details?.gates.length) {
       lines.push(

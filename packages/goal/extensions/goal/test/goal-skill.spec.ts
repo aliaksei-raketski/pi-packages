@@ -30,6 +30,9 @@ describe('goal-writer skill contract', () => {
   it('requires pasteable evidence-based current package syntax', () => {
     expect(skill).toContain('one pasteable `/goal` command');
     expect(skill).toContain('/goal --tokens 50k');
+    expect(skill).toContain('/goal --time 30m');
+    expect(skill).toContain('/goal --tokens 50k --time 1.5h');
+    expect(skill).toContain('evidence-ledger checklist');
     expect(skill).toContain('proxy evidence');
     expect(skill).not.toContain('pi-goal-writer');
   });

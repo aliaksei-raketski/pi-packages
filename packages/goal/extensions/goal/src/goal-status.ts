@@ -1,4 +1,5 @@
 import type { StatuslineStatus } from '@aliaksei-raketski/pi-statusline-protocol';
+import { activeWallTimeAt, remainingWallTime } from './goal-clock.ts';
 import { formatElapsed, formatTokens, type GoalState } from './goal-state.ts';
 
 export const GOAL_STATUS_KEY = 'goal';
@@ -7,22 +8,19 @@ export const GOAL_STATUS_SOURCE = 'pi-goal';
 export function collectGoalStatus(
   goal: GoalState | null,
   activeGateCount: number,
+  now = Date.now(),
 ): StatuslineStatus | undefined {
   if (!goal) return undefined;
+  const usage = compactUsage(goal, now);
 
   if (goal.status === 'active' && activeGateCount > 0) {
     return {
       key: GOAL_STATUS_KEY,
-      text: `goal waiting (${activeGateCount})`,
+      text: `goal waiting (${activeGateCount}) ${usage}`,
       state: 'waiting',
       fallbackColor: 'warning',
     };
   }
-
-  const usage =
-    goal.tokenBudget === null
-      ? formatElapsed(goal.timeUsedSeconds)
-      : `${formatTokens(goal.tokensUsed)}/${formatTokens(goal.tokenBudget)}`;
 
   switch (goal.status) {
     case 'active':
@@ -35,7 +33,7 @@ export function collectGoalStatus(
     case 'paused':
       return {
         key: GOAL_STATUS_KEY,
-        text: 'goal paused',
+        text: goal.pauseReason === 'no_progress' ? 'goal paused (no progress)' : 'goal paused',
         state: 'paused',
         fallbackColor: 'muted',
       };
@@ -56,6 +54,19 @@ export function collectGoalStatus(
     default:
       return assertNever(goal.status);
   }
+}
+
+function compactUsage(goal: GoalState, now: number): string {
+  const tokens =
+    goal.tokenBudget === null
+      ? formatTokens(goal.tokensUsed)
+      : `${formatTokens(goal.tokensUsed)}/${formatTokens(goal.tokenBudget)}`;
+  const wallRemaining = remainingWallTime(goal, now);
+  const wall =
+    goal.wallTimeBudgetSeconds === null
+      ? formatElapsed(activeWallTimeAt(goal, now))
+      : `${formatElapsed(wallRemaining ?? 0)} left`;
+  return `${tokens} · ${wall}`;
 }
 
 function assertNever(value: never): never {

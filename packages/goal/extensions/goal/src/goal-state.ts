@@ -1,99 +1,124 @@
+import {
+  activeWallTimeAt,
+  checkpointAndRestartActiveClock,
+  evaluateBudgetLimit,
+  transitionGoal,
+} from './goal-clock.ts';
+import { parseGoalEvidenceLedger, type GoalEvidenceLedger } from './goal-evidence.ts';
+import { parseGoalProgressState, type GoalProgressState } from './goal-progress.ts';
+import type {
+  GoalBudgetLimitReason,
+  GoalEventKind,
+  GoalPauseReason,
+  GoalPersistedState,
+  GoalRestartPolicy,
+  GoalState,
+  GoalStatus,
+} from './goal-types.ts';
+
+export type {
+  GoalBudgetLimitReason,
+  GoalEventKind,
+  GoalPauseReason,
+  GoalPersistedState,
+  GoalRestartPolicy,
+  GoalState,
+  GoalStatus,
+} from './goal-types.ts';
+
 export const GOAL_STATE_CUSTOM_TYPE = 'pi-goal';
 export const GOAL_EVENT_CUSTOM_TYPE = 'pi-goal-event';
-
-export type GoalStatus = 'active' | 'paused' | 'budget_limited' | 'complete';
-
-export interface GoalState {
-  version: 1;
-  id: string;
-  objective: string;
-  status: GoalStatus;
-  tokenBudget: number | null;
-  tokensUsed: number;
-  timeUsedSeconds: number;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface GoalPersistedState {
-  version: 1;
-  goal: GoalState | null;
-  statusBarEnabled: boolean;
-}
-
-export type GoalEventKind =
-  | 'active'
-  | 'continuation'
-  | 'paused'
-  | 'resumed'
-  | 'cleared'
-  | 'budget_limited'
-  | 'complete';
+export const MAX_WALL_TIME_BUDGET_SECONDS = 365 * 24 * 60 * 60;
+export const MAX_GOAL_OBJECTIVE_LENGTH = 20_000;
 
 export interface ParsedGoalCommand {
   objective: string;
   tokenBudget: number | null;
+  wallTimeBudgetSeconds: number | null;
   error?: string;
 }
 
 const GOAL_STATUSES = new Set<GoalStatus>(['active', 'paused', 'budget_limited', 'complete']);
-const TOKEN_FLAG_PATTERN = /(?:^|\s)--tokens(?:=|\s+)(\S+)(?=\s|$)/;
-const TOKEN_OPTION_PATTERN = /(?:^|\s)--tokens(?=$|[=\s])/;
+const PAUSE_REASONS = new Set<GoalPauseReason>(['user', 'reload', 'no_progress', null]);
+const BUDGET_REASONS = new Set<GoalBudgetLimitReason>([
+  'tokens',
+  'wall_time',
+  'tokens_and_wall_time',
+  null,
+]);
+const RESTART_POLICIES = new Set<GoalRestartPolicy>(['pause', 'restore-idle', 'resume']);
 const TOKEN_VALUE_PATTERN = /^(\d+(?:\.\d+)?)([km])?$/i;
+const TIME_VALUE_PATTERN = /^(\d+(?:\.\d+)?)([smhd])$/i;
 
-export function parseTokenBudget(input: string): ParsedGoalCommand {
-  const match = TOKEN_FLAG_PATTERN.exec(input);
-  if (!match) {
-    return TOKEN_OPTION_PATTERN.test(input)
-      ? {
-          objective: input.trim(),
-          tokenBudget: null,
-          error: 'Token budget must be a positive number.',
-        }
-      : { objective: input.trim(), tokenBudget: null };
+export function parseGoalCommand(input: string): ParsedGoalCommand {
+  const tokens = input.trim() ? input.trim().split(/\s+/) : [];
+  const objective: string[] = [];
+  let tokenBudget: number | null = null;
+  let wallTimeBudgetSeconds: number | null = null;
+  let sawTokens = false;
+  let sawTime = false;
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index] ?? '';
+    const tokenOption = optionValue(token, '--tokens', tokens[index + 1]);
+    if (tokenOption.recognized) {
+      if (sawTokens) return parseError(input, 'Duplicate --tokens option.');
+      sawTokens = true;
+      if (tokenOption.consumedNext) index += 1;
+      const parsed = parseTokenValue(tokenOption.value);
+      if (parsed === null) return parseError(input, 'Token budget must be a positive number.');
+      tokenBudget = parsed;
+      continue;
+    }
+    const timeOption = optionValue(token, '--time', tokens[index + 1]);
+    if (timeOption.recognized) {
+      if (sawTime) return parseError(input, 'Duplicate --time option.');
+      sawTime = true;
+      if (timeOption.consumedNext) index += 1;
+      const parsed = parseTimeValue(timeOption.value);
+      if (parsed.error) return parseError(input, parsed.error);
+      wallTimeBudgetSeconds = parsed.seconds;
+      continue;
+    }
+    objective.push(token);
   }
-
-  const rawValue = match[1] ?? '';
-  const parsedValue = TOKEN_VALUE_PATTERN.exec(rawValue);
-  if (!parsedValue) {
-    return {
-      objective: input.trim(),
-      tokenBudget: null,
-      error: 'Token budget must be a positive number.',
-    };
-  }
-
-  const numeric = Number(parsedValue[1]);
-  const multiplier = tokenMultiplier(parsedValue[2]);
-  const tokenBudget = Math.round(numeric * multiplier);
-  if (!Number.isFinite(tokenBudget) || tokenBudget <= 0) {
-    return {
-      objective: input.trim(),
-      tokenBudget: null,
-      error: 'Token budget must be a positive number.',
-    };
-  }
-
-  const objective = `${input.slice(0, match.index)} ${input.slice(match.index + match[0].length)}`
-    .replace(/\s+/g, ' ')
-    .trim();
-  return { objective, tokenBudget };
+  const normalizedObjective = objective.join(' ').trim();
+  if (normalizedObjective.length > MAX_GOAL_OBJECTIVE_LENGTH)
+    return parseError(input, `Objective cannot exceed ${MAX_GOAL_OBJECTIVE_LENGTH} characters.`);
+  return { objective: normalizedObjective, tokenBudget, wallTimeBudgetSeconds };
 }
+
+/** Backward-compatible name retained for callers while parsing both budget kinds. */
+export const parseTokenBudget = parseGoalCommand;
 
 export function normalizeTokenBudget(value: unknown): {
   tokenBudget: number | null;
   error?: string;
 } {
   if (value === undefined || value === null) return { tokenBudget: null };
-
   const tokenBudget = Math.round(Number(value));
-  if (!Number.isFinite(tokenBudget) || tokenBudget <= 0) {
-    return {
-      tokenBudget: null,
-      error: 'tokenBudget must be a positive number when provided.',
-    };
-  }
+  if (!Number.isFinite(tokenBudget) || tokenBudget <= 0)
+    return { tokenBudget: null, error: 'tokenBudget must be a positive number when provided.' };
   return { tokenBudget };
+}
+
+export function normalizeWallTimeBudget(value: unknown): {
+  wallTimeBudgetSeconds: number | null;
+  error?: string;
+} {
+  if (value === undefined || value === null) return { wallTimeBudgetSeconds: null };
+  const wallTimeBudgetSeconds = Math.round(Number(value));
+  if (!Number.isFinite(wallTimeBudgetSeconds) || wallTimeBudgetSeconds <= 0)
+    return {
+      wallTimeBudgetSeconds: null,
+      error: 'timeBudgetSeconds must be a positive number when provided.',
+    };
+  if (wallTimeBudgetSeconds > MAX_WALL_TIME_BUDGET_SECONDS)
+    return {
+      wallTimeBudgetSeconds: null,
+      error: `timeBudgetSeconds cannot exceed ${MAX_WALL_TIME_BUDGET_SECONDS} seconds (one year).`,
+    };
+  return { wallTimeBudgetSeconds };
 }
 
 export function createGoalState(
@@ -102,17 +127,22 @@ export function createGoalState(
   now = Date.now(),
   createId: (now: number) => string = (timestamp) =>
     `${timestamp.toString(36)}-${Math.random().toString(36).slice(2)}`,
+  wallTimeBudgetSeconds: number | null = null,
 ): GoalState {
   return {
-    version: 1,
     id: createId(now),
-    objective: objective.trim(),
+    objective: objective.trim().slice(0, MAX_GOAL_OBJECTIVE_LENGTH),
     status: 'active',
     tokenBudget,
+    wallTimeBudgetSeconds,
     tokensUsed: 0,
     timeUsedSeconds: 0,
-    createdAt: now,
-    updatedAt: now,
+    activeWallTimeSeconds: 0,
+    activeSince: Math.max(0, now),
+    pauseReason: null,
+    budgetLimitReason: null,
+    createdAt: Math.max(0, now),
+    updatedAt: Math.max(0, now),
   };
 }
 
@@ -122,14 +152,16 @@ export function accountGoalTurn(
   elapsedSeconds: number,
   now = Date.now(),
 ): GoalState {
-  const tokensUsed = state.tokensUsed + Math.max(0, tokenDelta);
-  const timeUsedSeconds = state.timeUsedSeconds + Math.max(0, elapsedSeconds);
-  const status =
-    state.status === 'active' && state.tokenBudget !== null && tokensUsed >= state.tokenBudget
-      ? 'budget_limited'
-      : state.status;
-
-  return { ...state, tokensUsed, timeUsedSeconds, status, updatedAt: now };
+  let next: GoalState = {
+    ...state,
+    tokensUsed: state.tokensUsed + Math.max(0, tokenDelta),
+    timeUsedSeconds: state.timeUsedSeconds + Math.max(0, elapsedSeconds),
+    updatedAt: Math.max(0, now),
+  };
+  const reason = evaluateBudgetLimit(next, now);
+  if (reason) return transitionGoal(next, 'budget_limited', now, { budgetLimitReason: reason });
+  if (next.status === 'active') next = checkpointAndRestartActiveClock(next, now);
+  return next;
 }
 
 export function remainingTokens(state: GoalState): number | null {
@@ -149,14 +181,22 @@ export function formatElapsed(seconds: number): string {
   if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
-  return remainingMinutes === 0 ? `${hours}h` : `${hours}h ${remainingMinutes}m`;
+  if (hours < 24) return remainingMinutes === 0 ? `${hours}h` : `${hours}h ${remainingMinutes}m`;
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return remainingHours === 0 ? `${days}d` : `${days}d ${remainingHours}h`;
 }
 
-export function formatGoalUsage(state: GoalState): string {
-  if (state.tokenBudget !== null) {
-    return `${formatTokens(state.tokensUsed)}/${formatTokens(state.tokenBudget)} tokens`;
-  }
-  return `${formatTokens(state.tokensUsed)} tokens, ${formatElapsed(state.timeUsedSeconds)}`;
+export function formatGoalUsage(state: GoalState, now = Date.now()): string {
+  const tokens =
+    state.tokenBudget === null
+      ? `${formatTokens(state.tokensUsed)} tokens`
+      : `${formatTokens(state.tokensUsed)}/${formatTokens(state.tokenBudget)} tokens`;
+  const wall =
+    state.wallTimeBudgetSeconds === null
+      ? `${formatElapsed(activeWallTimeAt(state, now))} active wall`
+      : `${formatElapsed(activeWallTimeAt(state, now))}/${formatElapsed(state.wallTimeBudgetSeconds)} active wall`;
+  return `${tokens}; ${wall}; ${formatElapsed(state.timeUsedSeconds)} turn time`;
 }
 
 export function truncateObjective(objective: string, maxLength = 96): string {
@@ -178,21 +218,54 @@ export function goalEventLabel(kind: GoalEventKind): string {
 }
 
 export function isGoalState(value: unknown): value is GoalState {
-  if (!isRecord(value)) return false;
   return (
-    value.version === 1 &&
-    typeof value.id === 'string' &&
-    value.id.length > 0 &&
-    typeof value.objective === 'string' &&
-    value.objective.trim().length > 0 &&
-    typeof value.status === 'string' &&
-    GOAL_STATUSES.has(value.status as GoalStatus) &&
-    (value.tokenBudget === null || isPositiveFiniteNumber(value.tokenBudget)) &&
-    isNonNegativeFiniteNumber(value.tokensUsed) &&
-    isNonNegativeFiniteNumber(value.timeUsedSeconds) &&
-    isNonNegativeFiniteNumber(value.createdAt) &&
-    isNonNegativeFiniteNumber(value.updatedAt)
+    isRecord(value) &&
+    'wallTimeBudgetSeconds' in value &&
+    'activeWallTimeSeconds' in value &&
+    'activeSince' in value &&
+    'pauseReason' in value &&
+    'budgetLimitReason' in value &&
+    normalizeGoalState(value) !== null
   );
+}
+
+export function normalizeGoalState(value: unknown): GoalState | null {
+  if (!isRecord(value)) return null;
+  const id = boundedString(value.id, 128);
+  const objective = boundedString(value.objective, MAX_GOAL_OBJECTIVE_LENGTH);
+  if (!id || !objective || !GOAL_STATUSES.has(value.status as GoalStatus)) return null;
+  if (value.tokenBudget !== null && !positiveNumber(value.tokenBudget)) return null;
+  const wallBudget = value.wallTimeBudgetSeconds ?? null;
+  if (
+    wallBudget !== null &&
+    (!positiveNumber(wallBudget) || wallBudget > MAX_WALL_TIME_BUDGET_SECONDS)
+  )
+    return null;
+  for (const counter of [value.tokensUsed, value.timeUsedSeconds, value.createdAt, value.updatedAt])
+    if (!nonNegativeNumber(counter)) return null;
+  const activeWallTimeSeconds = value.activeWallTimeSeconds ?? 0;
+  const activeSince = value.activeSince ?? null;
+  const pauseReason = value.pauseReason ?? null;
+  const budgetLimitReason = value.budgetLimitReason ?? null;
+  if (!nonNegativeNumber(activeWallTimeSeconds)) return null;
+  if (activeSince !== null && !nonNegativeNumber(activeSince)) return null;
+  if (!PAUSE_REASONS.has(pauseReason as GoalPauseReason)) return null;
+  if (!BUDGET_REASONS.has(budgetLimitReason as GoalBudgetLimitReason)) return null;
+  return {
+    id,
+    objective,
+    status: value.status as GoalStatus,
+    tokenBudget: value.tokenBudget as number | null,
+    wallTimeBudgetSeconds: wallBudget as number | null,
+    tokensUsed: value.tokensUsed as number,
+    timeUsedSeconds: value.timeUsedSeconds as number,
+    activeWallTimeSeconds,
+    activeSince,
+    pauseReason: pauseReason as GoalPauseReason,
+    budgetLimitReason: budgetLimitReason as GoalBudgetLimitReason,
+    createdAt: value.createdAt as number,
+    updatedAt: value.updatedAt as number,
+  };
 }
 
 export function restoreGoalState(
@@ -202,53 +275,128 @@ export function restoreGoalState(
   const branch = [...entries];
   for (let index = branch.length - 1; index >= 0; index -= 1) {
     const entry = branch[index];
-    if (
-      !isRecord(entry) ||
-      entry.type !== 'custom' ||
-      entry.customType !== GOAL_STATE_CUSTOM_TYPE
-    ) {
+    if (!isRecord(entry) || entry.type !== 'custom' || entry.customType !== GOAL_STATE_CUSTOM_TYPE)
       continue;
-    }
     const data = entry.data;
     if (!isRecord(data)) continue;
+    const goal = normalizeGoalState(data.goal);
     return {
-      version: 1,
-      goal: isGoalState(data.goal) ? { ...data.goal } : null,
+      goal,
+      ledger: goal ? parseGoalEvidenceLedger(data.ledger, goal.id) : null,
+      progress: goal ? parseGoalProgressState(data.progress, goal.id) : null,
       statusBarEnabled:
         typeof data.statusBarEnabled === 'boolean'
           ? data.statusBarEnabled
           : defaultStatusBarEnabled,
+      restartPolicy: RESTART_POLICIES.has(data.restartPolicy as GoalRestartPolicy)
+        ? (data.restartPolicy as GoalRestartPolicy)
+        : 'pause',
+      noProgressEnabled: typeof data.noProgressEnabled === 'boolean' && data.noProgressEnabled,
+      pendingBudgetSummary:
+        typeof data.pendingBudgetSummary === 'boolean' && data.pendingBudgetSummary,
     };
   }
-  return { version: 1, goal: null, statusBarEnabled: defaultStatusBarEnabled };
+  return {
+    goal: null,
+    ledger: null,
+    progress: null,
+    statusBarEnabled: defaultStatusBarEnabled,
+    restartPolicy: 'pause',
+    noProgressEnabled: false,
+    pendingBudgetSummary: false,
+  };
 }
 
 export function createPersistedState(
   goal: GoalState | null,
+  ledger: GoalEvidenceLedger | null,
+  progress: GoalProgressState | null,
   statusBarEnabled: boolean,
+  restartPolicy: GoalRestartPolicy,
+  noProgressEnabled: boolean,
+  pendingBudgetSummary: boolean,
 ): GoalPersistedState {
-  return { version: 1, goal, statusBarEnabled };
+  return {
+    goal,
+    ledger,
+    progress,
+    statusBarEnabled,
+    restartPolicy,
+    noProgressEnabled,
+    pendingBudgetSummary,
+  };
 }
 
+function optionValue(
+  token: string,
+  name: '--tokens' | '--time',
+  next: string | undefined,
+): { recognized: boolean; value?: string; consumedNext: boolean } {
+  if (token === name)
+    return {
+      recognized: true,
+      value: next && !next.startsWith('--') ? next : undefined,
+      consumedNext: Boolean(next) && !next?.startsWith('--'),
+    };
+  if (token.startsWith(`${name}=`))
+    return { recognized: true, value: token.slice(name.length + 1), consumedNext: false };
+  return { recognized: false, consumedNext: false };
+}
+
+function parseTokenValue(value: string | undefined): number | null {
+  const match = value ? TOKEN_VALUE_PATTERN.exec(value) : null;
+  if (!match) return null;
+  const budget = Math.round(Number(match[1]) * tokenMultiplier(match[2]));
+  return Number.isFinite(budget) && budget > 0 ? budget : null;
+}
+
+function parseTimeValue(value: string | undefined): { seconds: number | null; error?: string } {
+  const match = value ? TIME_VALUE_PATTERN.exec(value) : null;
+  if (!match)
+    return {
+      seconds: null,
+      error: 'Time budget must be a positive number with s, m, h, or d suffix.',
+    };
+  const multiplier = timeMultiplier(match[2] ?? 's');
+  const seconds = Math.round(Number(match[1]) * multiplier);
+  if (!Number.isFinite(seconds) || seconds <= 0)
+    return { seconds: null, error: 'Time budget must round to at least one second.' };
+  if (seconds > MAX_WALL_TIME_BUDGET_SECONDS)
+    return { seconds: null, error: 'Time budget cannot exceed one year.' };
+  return { seconds };
+}
+
+function parseError(input: string, error: string): ParsedGoalCommand {
+  return { objective: input.trim(), tokenBudget: null, wallTimeBudgetSeconds: null, error };
+}
 function tokenMultiplier(suffix: string | undefined): number {
-  switch (suffix?.toLowerCase()) {
+  if (suffix?.toLowerCase() === 'm') return 1_000_000;
+  if (suffix?.toLowerCase() === 'k') return 1_000;
+  return 1;
+}
+function timeMultiplier(suffix: string): number {
+  switch (suffix.toLowerCase()) {
+    case 'd':
+      return 86_400;
+    case 'h':
+      return 3_600;
     case 'm':
-      return 1_000_000;
-    case 'k':
-      return 1_000;
+      return 60;
     default:
       return 1;
   }
 }
-
+function boundedString(value: unknown, maximum: number): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized.length > 0 && normalized.length <= maximum ? normalized : null;
+}
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
-
-function isPositiveFiniteNumber(value: unknown): value is number {
+function positiveNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
-
-function isNonNegativeFiniteNumber(value: unknown): value is number {
+function nonNegativeNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }

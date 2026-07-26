@@ -22,28 +22,34 @@ const gate: ContinuationGate = {
 
 describe('goal status and diagnostics', () => {
   it('maps lifecycle and waiting states to stable payloads', () => {
-    expect(collectGoalStatus(active, 0)).toEqual({
+    expect(collectGoalStatus(active, 0, 1)).toEqual({
       key: 'goal',
-      text: 'goal 12.3K/50K',
+      text: 'goal 12.3K/50K · 0s',
       state: 'active',
       fallbackColor: 'accent',
     });
-    expect(collectGoalStatus(active, 2)).toMatchObject({
-      text: 'goal waiting (2)',
+    expect(collectGoalStatus(active, 2, 1)).toMatchObject({
+      text: 'goal waiting (2) 12.3K/50K · 0s',
       state: 'waiting',
       fallbackColor: 'warning',
     });
-    expect(collectGoalStatus({ ...active, status: 'paused' }, 0)).toMatchObject({
+    expect(collectGoalStatus({ ...active, status: 'paused' }, 0, 1)).toMatchObject({
       text: 'goal paused',
       state: 'paused',
     });
-    expect(collectGoalStatus({ ...active, status: 'complete' }, 0)).toMatchObject({
+    expect(
+      collectGoalStatus({ ...active, status: 'paused', pauseReason: 'no_progress' }, 0, 1),
+    ).toMatchObject({ text: 'goal paused (no progress)', state: 'paused' });
+    expect(collectGoalStatus({ ...active, status: 'complete' }, 0, 1)).toMatchObject({
       text: 'goal achieved',
       state: 'complete',
     });
-    expect(collectGoalStatus({ ...active, status: 'budget_limited' }, 0)).toMatchObject({
-      text: 'goal unmet 12.3K/50K',
+    expect(collectGoalStatus({ ...active, status: 'budget_limited' }, 0, 1)).toMatchObject({
+      text: 'goal unmet 12.3K/50K · 0s',
       state: 'budget_limited',
+    });
+    expect(collectGoalStatus({ ...active, wallTimeBudgetSeconds: 60 }, 0, 1)).toMatchObject({
+      text: 'goal 12.3K/50K · 1m left',
     });
   });
 
