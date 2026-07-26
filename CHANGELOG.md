@@ -1,3 +1,14 @@
+## 0.3.11 (2026-07-26)
+
+### 🩹 Fixes
+
+- **tmux-bash:** gate required finite background work ([417d29d](https://github.com/aliaksei-raketski/pi-packages/commit/417d29d))
+- **tmux-bash:** recover missed completion events ([9e8026c](https://github.com/aliaksei-raketski/pi-packages/commit/9e8026c))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.10 (2026-07-26)
 
 ### 🩹 Fixes
