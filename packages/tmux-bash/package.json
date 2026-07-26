@@ -1,6 +1,6 @@
 {
   "name": "@aliaksei-raketski/pi-tmux-bash",
-  "version": "0.3.14",
+  "version": "0.3.15",
   "type": "module",
   "description": "Pi extension that executes model-facing shell commands in managed tmux windows.",
   "keywords": [

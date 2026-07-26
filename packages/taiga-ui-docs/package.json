@@ -1,6 +1,6 @@
 {
   "name": "@aliaksei-raketski/pi-taiga-ui-docs",
-  "version": "0.3.14",
+  "version": "0.3.15",
   "type": "module",
   "description": "Pi package with a Taiga UI docs skill backed by a self-contained llms-full.txt helper script.",
   "keywords": [

@@ -1,3 +1,13 @@
+## 0.3.15 (2026-07-26)
+
+### 🩹 Fixes
+
+- **tmux-bash:** terminate turns while awaiting commands ([7fa9539](https://github.com/aliaksei-raketski/pi-packages/commit/7fa9539))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.14 (2026-07-26)
 
 ### 🩹 Fixes
