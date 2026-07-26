@@ -8,6 +8,7 @@ on:
       - completed
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -21,9 +22,6 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
-    outputs:
-      ci_sha: ${{ steps.nx_release.outputs.before_sha }}
-      release_sha: ${{ steps.nx_release.outputs.release_sha }}
     steps:
       - name: Checkout CI-verified commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -94,13 +92,37 @@ jobs:
             echo "release_sha=$after_sha" >> "$GITHUB_OUTPUT"
           fi
 
-  publish:
-    needs: release
-    if: needs.release.outputs.release_sha != ''
-    uses: ./.github/workflows/publish-npm.yml
-    with:
-      ci_sha: ${{ needs.release.outputs.ci_sha }}
-      release_sha: ${{ needs.release.outputs.release_sha }}
-    permissions:
-      contents: read
-      id-token: write
+      - name: Dispatch npm publish workflow
+        if: steps.nx_release.outputs.release_sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_SHA: ${{ steps.nx_release.outputs.before_sha }}
+          RELEASE_SHA: ${{ steps.nx_release.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+
+          payload_file="${RUNNER_TEMP}/publish-dispatch.json"
+          PAYLOAD_FILE="$payload_file" \
+            CI_SHA="$CI_SHA" \
+            RELEASE_SHA="$RELEASE_SHA" \
+            node <<'NODE'
+          const fs = require('node:fs');
+
+          const payload = {
+            ref: 'main',
+            inputs: {
+              ci_sha: process.env.CI_SHA,
+              release_sha: process.env.RELEASE_SHA,
+            },
+          };
+
+          fs.writeFileSync(process.env.PAYLOAD_FILE, JSON.stringify(payload));
+          NODE
+
+          workflow_endpoint="repos/${GITHUB_REPOSITORY}/actions/workflows/publish-npm.yml/dispatches"
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "$workflow_endpoint" \
+            --input "$payload_file"

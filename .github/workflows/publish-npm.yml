@@ -1,7 +1,7 @@
 name: Publish npm packages
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
       ci_sha:
         description: CI-verified main-branch commit that produced the release.
@@ -73,10 +73,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Check and test release commit
-        run: |
-          pnpm run check
-          pnpm run test
+      - name: Check release artifacts
+        run: pnpm run check
 
       - name: Publish with Nx Release
         env:
