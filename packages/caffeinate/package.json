@@ -1,6 +1,6 @@
 {
   "name": "@aliaksei-raketski/pi-caffeinate",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "type": "module",
   "description": "Pi extension that keeps the computer awake while Pi is active or continuation gates are pending.",
   "keywords": [
