@@ -12,7 +12,11 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { clampPollInterval, clampTimeout } from './config.js';
-import { createCommandArtifacts, createPiSessionEnvironment } from './command-artifacts.js';
+import {
+  createCommandArtifacts,
+  createPiSessionEnvironment,
+  scheduleRunDirectoryCleanup,
+} from './command-artifacts.js';
 import { formatOutput, readExitCode, readOutput, type OutputTail } from './output.js';
 import type { BashInput } from './schemas.js';
 import { sanitizeTerminalText } from './sanitize.js';
@@ -90,8 +94,12 @@ export class TmuxBashRuntime {
     this.state.runDir = null;
     this.state.statusContext = null;
     this.state.commands.clear();
-    if (runDir && !this.config.preserveOutputFiles && !hasLiveCommands) {
-      await rm(runDir, { recursive: true, force: true });
+    if (runDir && !this.config.preserveOutputFiles) {
+      if (hasLiveCommands) {
+        await scheduleRunDirectoryCleanup(runDir);
+      } else {
+        await rm(runDir, { recursive: true, force: true });
+      }
     }
   }
 
@@ -139,6 +147,7 @@ export class TmuxBashRuntime {
       completionDelivered: false,
       completionClaimed: false,
       completionDeliveryFailures: 0,
+      completionDeliveryFailed: false,
       killed: false,
     };
     this.state.commands.set(runId, run);
@@ -445,7 +454,13 @@ export class TmuxBashRuntime {
     if (!this.state.completionMonitor) {
       this.state.completionMonitor = setInterval(() => {
         for (const run of this.state.commands.values()) {
-          if (run.mode === 'background' && run.backgroundReady && !run.completionDelivered) {
+          if (
+            run.mode === 'background' &&
+            run.backgroundReady &&
+            !run.completionDelivered &&
+            !run.completionDeliveryFailed &&
+            !run.completionRetryTimer
+          ) {
             void this.completeIfReady(run, true);
           }
         }
@@ -459,9 +474,11 @@ export class TmuxBashRuntime {
     deliver: boolean,
   ): Promise<AgentToolResult<TmuxBashDetails> | undefined> {
     const exitCode = await readExitCode(run.exitCodeFile);
-    if (exitCode === undefined || run.completionDelivered) return undefined;
+    if (exitCode === undefined || run.completionDelivered || run.completionDeliveryFailed) {
+      return undefined;
+    }
     if (run.completionPromise) return run.completionPromise;
-    if (run.completionClaimed) return undefined;
+    if (run.completionClaimed || run.completionRetryTimer) return undefined;
 
     const completion = this.finishBackgroundCompletion(run, exitCode, deliver);
     run.completionPromise = completion;
@@ -516,20 +533,30 @@ export class TmuxBashRuntime {
         run.completionDeliveryFailures += 1;
         this.releaseGate(run, 'failed', 'none');
         result.details = this.details(run, result.details?.truncation);
-        const reason = sanitizeTerminalText(error instanceof Error ? error.message : String(error));
-        try {
-          this.state.statusContext?.ui.notify(
-            `Tmux command ${run.windowId ?? run.runId} completed, but its follow-up could not be delivered${reason ? `: ${reason}` : '.'}`,
-            'error',
+        const exhausted =
+          run.completionDeliveryFailures >= this.config.completionDeliveryMaxAttempts;
+        run.completionDeliveryFailed = exhausted;
+        if (exhausted) {
+          const reason = sanitizeTerminalText(
+            error instanceof Error ? error.message : String(error),
           );
-        } catch {
-          // The gate is already released; a broken fallback UI cannot strand the session.
-        }
-        if (run.completionDeliveryFailures === 1 && !this.state.disposed) {
+          try {
+            this.state.statusContext?.ui.notify(
+              `Tmux command ${run.windowId ?? run.runId} completed, but its follow-up could not be delivered after ${run.completionDeliveryFailures} attempts${reason ? `: ${reason}` : '.'}`,
+              'error',
+            );
+          } catch {
+            // The gate is already released; a broken fallback UI cannot strand the session.
+          }
+          await this.closeCompletedWindow(run).catch(() => undefined);
+        } else if (!this.state.disposed) {
+          const delay =
+            this.config.completionDeliveryRetryBaseMs * 2 ** (run.completionDeliveryFailures - 1);
           run.completionRetryTimer = setTimeout(() => {
             run.completionRetryTimer = undefined;
             void this.completeIfReady(run, true);
-          }, 100);
+          }, delay);
+          run.completionRetryTimer.unref();
         }
         this.publishStatus();
         return result;

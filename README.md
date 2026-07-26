@@ -4,12 +4,17 @@ Nx monorepo for public npm-distributed [Pi](https://pi.dev) packages.
 
 ## Packages
 
-| Workspace                    | npm package                               | Description                                                                         | Install                                                  |
-| ---------------------------- | ----------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `packages/angular-developer` | `@aliaksei-raketski/pi-angular-developer` | Angular developer skill with local documentation helper scripts.                    | `pi install npm:@aliaksei-raketski/pi-angular-developer` |
-| `packages/taiga-ui-docs`     | `@aliaksei-raketski/pi-taiga-ui-docs`     | Taiga UI docs skill backed by a bundled helper script.                              | `pi install npm:@aliaksei-raketski/pi-taiga-ui-docs`     |
-| `packages/fast-mode`         | `@aliaksei-raketski/pi-fast-mode`         | Extension that enables fast-mode payload tuning for supported Claude/OpenAI models. | `pi install npm:@aliaksei-raketski/pi-fast-mode`         |
-| `packages/statusline`        | `@aliaksei-raketski/pi-statusline`        | Extension for a customizable, ANSI-aware statusline footer.                         | `pi install npm:@aliaksei-raketski/pi-statusline`        |
+| Workspace                             | npm package                                        | Description                                                                         | Install                                                           |
+| ------------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `packages/angular-developer`          | `@aliaksei-raketski/pi-angular-developer`          | Angular developer skill with local documentation helper scripts.                    | `pi install npm:@aliaksei-raketski/pi-angular-developer`          |
+| `packages/continuation-gate-protocol` | `@aliaksei-raketski/pi-continuation-gate-protocol` | Shared continuation-gate protocol for cooperating Pi extensions.                    | `pi install npm:@aliaksei-raketski/pi-continuation-gate-protocol` |
+| `packages/fast-mode`                  | `@aliaksei-raketski/pi-fast-mode`                  | Extension that enables fast-mode payload tuning for supported Claude/OpenAI models. | `pi install npm:@aliaksei-raketski/pi-fast-mode`                  |
+| `packages/goal`                       | `@aliaksei-raketski/pi-goal`                       | Persistent, evidence-gated thread goals and continuation support.                   | `pi install npm:@aliaksei-raketski/pi-goal`                       |
+| `packages/nx-developer`               | `@aliaksei-raketski/pi-nx-developer`               | Nx workspace development and documentation skills.                                  | `pi install npm:@aliaksei-raketski/pi-nx-developer`               |
+| `packages/statusline`                 | `@aliaksei-raketski/pi-statusline`                 | Extension for a customizable, ANSI-aware statusline footer.                         | `pi install npm:@aliaksei-raketski/pi-statusline`                 |
+| `packages/statusline-protocol`        | `@aliaksei-raketski/pi-statusline-protocol`        | Shared source-aware structured status protocol.                                     | `pi install npm:@aliaksei-raketski/pi-statusline-protocol`        |
+| `packages/taiga-ui-docs`              | `@aliaksei-raketski/pi-taiga-ui-docs`              | Taiga UI docs skill backed by a bundled helper script.                              | `pi install npm:@aliaksei-raketski/pi-taiga-ui-docs`              |
+| `packages/tmux-bash`                  | `@aliaksei-raketski/pi-tmux-bash`                  | Tmux-backed command execution with bounded output and continuation gates.           | `pi install npm:@aliaksei-raketski/pi-tmux-bash`                  |
 
 ## Development
 
@@ -34,16 +39,13 @@ pnpm nx show project @aliaksei-raketski/pi-fast-mode --json
 Run checks for all Pi packages:
 
 ```bash
-pnpm nx run-many \
-  --projects=@aliaksei-raketski/pi-angular-developer,@aliaksei-raketski/pi-fast-mode,@aliaksei-raketski/pi-statusline,@aliaksei-raketski/pi-taiga-ui-docs \
-  -t lint,typecheck
+pnpm nx run-many --projects='packages/*' -t lint,typecheck
 ```
 
-Run extension tests:
+Run all configured test targets:
 
 ```bash
-pnpm nx run @aliaksei-raketski/pi-fast-mode:test
-pnpm nx run @aliaksei-raketski/pi-statusline:test
+pnpm nx run-many -t test --parallel=3
 ```
 
 Explore the workspace graph:

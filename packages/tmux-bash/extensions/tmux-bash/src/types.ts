@@ -40,10 +40,15 @@ export interface TmuxBashConfig {
   minimumModelPollIntervalSeconds: number;
   pollDelivery: 'model' | 'display';
   maxOutputBytes: number;
+  maxSpoolBytes: number;
   foregroundContextLines: number;
   completionContextLines: number;
   pollContextLines: number;
   peekContextLines: number;
+  completedCompactDisplayLines: number;
+  completedExpandedDisplayLines: number;
+  completionDeliveryMaxAttempts: number;
+  completionDeliveryRetryBaseMs: number;
   outputDir: string;
   preserveOutputFiles: boolean;
   environmentDenylist: string[];
@@ -60,6 +65,9 @@ export interface CommandArtifacts {
   outputFile: string;
   exitCodeFile: string;
   temporaryExitCodeFile: string;
+  liveFile: string;
+  spoolFile: string;
+  cleanupSentinelFile: string;
 }
 
 export interface CommandRun extends CommandArtifacts {
@@ -81,6 +89,7 @@ export interface CommandRun extends CommandArtifacts {
   completionPromise?: Promise<AgentToolResult<TmuxBashDetails> | undefined>;
   completionRetryTimer?: ReturnType<typeof setTimeout>;
   completionDeliveryFailures: number;
+  completionDeliveryFailed: boolean;
   killed: boolean;
 }
 

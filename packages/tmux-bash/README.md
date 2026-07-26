@@ -43,9 +43,9 @@ Finite asynchronous work that should suspend synthetic goal continuation:
 }
 ```
 
-> **Use waitForCompletion only for finite asynchronous work when the agent has
-> nothing productive to do until the result. Do not use it for persistent
-> servers or watchers.**
+> **Use `waitForCompletion` for required finite asynchronous work, even while
+> other productive work can continue. Do not use it for persistent servers,
+> watchers, or REPLs.**
 
 Background completion is delivered automatically as a follow-up model message while the same Pi runtime remains active. The message is queued before the continuation gate is released.
 
@@ -97,12 +97,12 @@ Window titles are presentation only. Ownership is enforced with tmux user-option
 
 Each command receives a private per-session artifact directory (mode `0700` where supported):
 
-- `<runId>.command` — exact command body;
-- `<runId>.sh` — generated wrapper;
-- `<runId>.out` — combined stdout/stderr;
+- `<runId>.command` — exact command body while the command is running;
+- `<runId>.sh` — generated wrapper while the command is running;
+- `<runId>.out` — combined stdout/stderr, bounded by `maxSpoolBytes`;
 - `<runId>.exit` — atomically published exit status.
 
-Model-visible output is tail-truncated by both byte and line limits. The details and truncation notice identify the full output path. Completed-run artifacts are removed on shutdown unless `preserveOutputFiles` is enabled; artifacts for commands still running in tmux are retained so shutdown does not break those commands. Command output and tmux metadata are treated as untrusted text.
+Model-visible output is tail-truncated by independent byte and context-line limits. Compact and expanded tool cards have separate presentation limits, so reducing UI output does not discard model context. Truncation notices identify the full output path. Unless `preserveOutputFiles` is enabled, wrappers containing environment values are deleted as soon as the command exits. Shutdown schedules detached cleanup for a live command's directory after its final process exits. Command output and tmux metadata are treated as untrusted text.
 
 ## Scope and sessions
 
@@ -156,15 +156,26 @@ Common options:
   "defaultPollIntervalSeconds": 30,
   "minimumModelPollIntervalSeconds": 15,
   "maxOutputBytes": 51200,
+  "maxSpoolBytes": 10485760,
+  "foregroundContextLines": 2000,
+  "completionContextLines": 20,
+  "pollContextLines": 80,
+  "peekContextLines": 200,
+  "completedCompactDisplayLines": 5,
+  "completedExpandedDisplayLines": 20,
+  "completionDeliveryMaxAttempts": 5,
+  "completionDeliveryRetryBaseMs": 250,
   "preserveOutputFiles": false,
   "statusbarEnabled": true,
 }
 ```
 
+`maxOutputBytes` bounds each read into model context, while `maxSpoolBytes` is the hard on-disk quota for a command log. The four context-line settings independently limit foreground, completion, poll, and peek results. The compact and expanded display settings affect only completed tool cards. Completion delivery uses bounded exponential backoff controlled by the attempt and base-delay settings.
+
 `enabledTmuxActions` can narrow the public `tmux` schema. `environmentDenylist` excludes sensitive/process-specific variables from generated wrappers; `TMUX`, `TMUX_PANE`, `PWD`, `OLDPWD`, `SHLVL`, and `_` are denied by default.
 
 ## Shutdown and security boundary
 
-Tmux processes can continue after Pi exits, but baseline v1 does not adopt them after restart and cannot promise post-exit completion messages. Shutdown removes watchers, timers, gates, status providers, and transient artifacts; it does not kill preserved background tmux windows.
+Tmux processes can continue after Pi exits, but baseline v1 does not adopt them after restart and cannot promise post-exit completion messages. Shutdown removes watchers, timers, gates, and status providers; it does not kill preserved background tmux windows. Unless output preservation is configured, a detached cleanup helper removes artifacts after surviving commands exit.
 
 Commands run with the user's permissions. The extension uses argument-array subprocess invocation for tmux, shell-quotes wrapper paths and environment values, restricts actions to managed stable IDs, and never provides arbitrary tmux target access.

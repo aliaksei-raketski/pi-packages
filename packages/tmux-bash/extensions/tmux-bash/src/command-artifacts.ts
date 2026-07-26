@@ -1,6 +1,7 @@
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { spawn } from 'node:child_process';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { CommandArtifacts, TmuxBashConfig } from './types.js';
 
@@ -17,6 +18,9 @@ export function artifactPaths(runDir: string, runId: string): CommandArtifacts {
     outputFile: join(runDir, `${runId}.out`),
     exitCodeFile: join(runDir, `${runId}.exit`),
     temporaryExitCodeFile: join(runDir, `${runId}.exit.tmp`),
+    liveFile: join(runDir, `${runId}.live`),
+    spoolFile: join(runDir, `${runId}.spool.mjs`),
+    cleanupSentinelFile: join(runDir, '.cleanup-on-exit'),
   };
 }
 
@@ -39,15 +43,51 @@ export async function createCommandArtifacts(input: {
     ...artifacts,
     displayCommand: input.displayCommand,
     environment,
+    maxSpoolBytes: input.config.maxSpoolBytes,
+    preserveOutputFiles: input.config.preserveOutputFiles,
   });
 
   await Promise.all([
     writeFile(artifacts.commandFile, `${input.command}\n`, { encoding: 'utf8', mode: 0o700 }),
     writeFile(artifacts.outputFile, '', { encoding: 'utf8', mode: 0o600 }),
     writeFile(artifacts.scriptFile, script, { encoding: 'utf8', mode: 0o700 }),
+    writeFile(artifacts.spoolFile, buildSpoolScript(), { encoding: 'utf8', mode: 0o600 }),
+    writeFile(artifacts.liveFile, '', { encoding: 'utf8', mode: 0o600 }),
   ]);
   await Promise.all([chmod(artifacts.commandFile, 0o700), chmod(artifacts.scriptFile, 0o700)]);
   return artifacts;
+}
+
+export async function scheduleRunDirectoryCleanup(runDir: string): Promise<void> {
+  const sentinel = join(runDir, '.cleanup-on-exit');
+  await writeFile(sentinel, '', { encoding: 'utf8', mode: 0o600 });
+  const cleanup = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      `import { readdir, rm } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
+const root = process.env.TMUX_BASH_RUN_DIR;
+if (!root) process.exit(1);
+for (;;) {
+  const names = await readdir(root).catch((error) => {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (names === null) process.exit(0);
+  if (!names.some((name) => name.endsWith('.live'))) break;
+  await delay(250);
+}
+await rm(root, { recursive: true, force: true });`,
+    ],
+    {
+      detached: true,
+      env: { TMUX_BASH_RUN_DIR: runDir },
+      stdio: 'ignore',
+    },
+  );
+  cleanup.unref();
 }
 
 export function createPiSessionEnvironment(
@@ -96,23 +136,88 @@ export function buildEnvironmentExports(
 }
 
 function buildWrapperScript(
-  input: CommandArtifacts & { displayCommand: string; environment: string[] },
+  input: CommandArtifacts & {
+    displayCommand: string;
+    environment: string[];
+    maxSpoolBytes: number;
+    preserveOutputFiles: boolean;
+  },
 ): string {
   const header = `$ ${input.displayCommand}\n`;
   return `#!/usr/bin/env bash
 set +e
 umask 077
 ${input.environment.join('\n')}
+run_dir=${shellQuote(dirname(input.outputFile))}
 output_file=${shellQuote(input.outputFile)}
 command_file=${shellQuote(input.commandFile)}
+script_file=${shellQuote(input.scriptFile)}
+spool_file=${shellQuote(input.spoolFile)}
+live_file=${shellQuote(input.liveFile)}
+cleanup_sentinel=${shellQuote(input.cleanupSentinelFile)}
 exit_file=${shellQuote(input.exitCodeFile)}
 exit_tmp=${shellQuote(input.temporaryExitCodeFile)}
-printf %s ${shellQuote(header)} > "$output_file"
+printf %s ${shellQuote(header)} | head -c ${input.maxSpoolBytes} > "$output_file"
 shell_binary="${'${BASH:-/bin/bash}'}"
-"$shell_binary" "$command_file" 2>&1 | tee -a "$output_file"
+"$shell_binary" "$command_file" 2>&1 | \
+  ${shellQuote(process.execPath)} "$spool_file" "$output_file" ${input.maxSpoolBytes}
 status=${'${PIPESTATUS[0]}'}
 printf '%s\\n' "$status" > "$exit_tmp"
 mv -f "$exit_tmp" "$exit_file"
+rm -f "$live_file"
+if [ -f "$cleanup_sentinel" ]; then
+  if ! find "$run_dir" -name '*.live' -print -quit | grep -q .; then
+    rm -rf "$run_dir"
+  fi
+elif [ ${input.preserveOutputFiles ? 'true' : 'false'} != true ]; then
+  rm -f "$command_file" "$script_file" "$spool_file"
+fi
 exit "$status"
+`;
+}
+
+function buildSpoolScript(): string {
+  return `import { open } from 'node:fs/promises';
+import { once } from 'node:events';
+
+const [outputFile, maximumText] = process.argv.slice(2);
+const maximum = Number(maximumText);
+const notice = Buffer.from('\\n[tmux-bash spool limit reached; further output discarded]\\n');
+const file = await open(outputFile, 'r+');
+let position = (await file.stat()).size;
+let truncated = position >= maximum;
+if (truncated) {
+  const initialNotice = notice.subarray(Math.max(0, notice.length - maximum));
+  const initialNoticePosition = maximum - initialNotice.length;
+  await file.write(initialNotice, 0, initialNotice.length, initialNoticePosition);
+  await file.truncate(maximum);
+  position = maximum;
+}
+
+for await (const value of process.stdin) {
+  const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+  if (!process.stdout.write(chunk)) await once(process.stdout, 'drain');
+  if (truncated) continue;
+
+  const available = maximum - position;
+  if (chunk.length <= available) {
+    await file.write(chunk, 0, chunk.length, position);
+    position += chunk.length;
+    continue;
+  }
+
+  const noticeBytes = notice.subarray(Math.max(0, notice.length - maximum));
+  const noticePosition = maximum - noticeBytes.length;
+  if (position < noticePosition) {
+    const dataLength = Math.min(chunk.length, noticePosition - position);
+    await file.write(chunk, 0, dataLength, position);
+  }
+  await file.write(noticeBytes, 0, noticeBytes.length, noticePosition);
+  await file.truncate(maximum);
+  position = maximum;
+  truncated = true;
+}
+
+await file.close();
 `;
 }

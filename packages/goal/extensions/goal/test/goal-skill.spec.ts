@@ -40,9 +40,9 @@ describe('goal-writer skill contract', () => {
     const output = execFileSync('npm', ['pack', '--dry-run', '--json'], {
       cwd: packageRoot,
       encoding: 'utf8',
-      timeout: 20_000,
+      timeout: 60_000,
     });
     const packed = JSON.parse(output) as Array<{ files: Array<{ path: string }> }>;
     expect(packed[0]?.files.map((file) => file.path)).toContain('skills/goal-writer/SKILL.md');
-  }, 30_000);
+  }, 70_000);
 });

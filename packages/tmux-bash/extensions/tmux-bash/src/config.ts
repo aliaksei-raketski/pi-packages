@@ -35,10 +35,15 @@ export const DEFAULT_TMUX_BASH_CONFIG: Readonly<TmuxBashConfig> = {
   minimumModelPollIntervalSeconds: 15,
   pollDelivery: 'display',
   maxOutputBytes: 50 * 1024,
+  maxSpoolBytes: 10 * 1024 * 1024,
   foregroundContextLines: 2_000,
-  completionContextLines: 200,
+  completionContextLines: 20,
   pollContextLines: 80,
   peekContextLines: 200,
+  completedCompactDisplayLines: 5,
+  completedExpandedDisplayLines: 20,
+  completionDeliveryMaxAttempts: 5,
+  completionDeliveryRetryBaseMs: 250,
   outputDir: '',
   preserveOutputFiles: false,
   environmentDenylist: ['TMUX', 'TMUX_PANE', 'PWD', 'OLDPWD', 'SHLVL', '_'],
@@ -103,6 +108,7 @@ export function validateTmuxBashConfig(input: Record<string, unknown>): TmuxBash
   requireInteger(config.minimumModelPollIntervalSeconds, 'minimumModelPollIntervalSeconds', 1);
   requireEnum(config.pollDelivery, 'pollDelivery', ['model', 'display']);
   requireInteger(config.maxOutputBytes, 'maxOutputBytes', 1_024, 10 * 1024 * 1024);
+  requireInteger(config.maxSpoolBytes, 'maxSpoolBytes', 1_024, 1024 * 1024 * 1024);
   for (const key of [
     'foregroundContextLines',
     'completionContextLines',
@@ -111,6 +117,10 @@ export function validateTmuxBashConfig(input: Record<string, unknown>): TmuxBash
   ] as const) {
     requireInteger(config[key], key, 1, 10_000);
   }
+  requireInteger(config.completedCompactDisplayLines, 'completedCompactDisplayLines', 3, 10_000);
+  requireInteger(config.completedExpandedDisplayLines, 'completedExpandedDisplayLines', 3, 10_000);
+  requireInteger(config.completionDeliveryMaxAttempts, 'completionDeliveryMaxAttempts', 1, 20);
+  requireInteger(config.completionDeliveryRetryBaseMs, 'completionDeliveryRetryBaseMs', 10, 60_000);
   if (typeof config.outputDir !== 'string' || config.outputDir.includes('\0')) {
     throw new Error('tmux-bash config outputDir must be a string without NUL bytes.');
   }

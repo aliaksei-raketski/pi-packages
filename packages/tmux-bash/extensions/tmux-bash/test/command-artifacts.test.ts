@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createCommandArtifacts,
   createPiSessionEnvironment,
+  scheduleRunDirectoryCleanup,
   shellQuote,
 } from '../src/command-artifacts.js';
 import { DEFAULT_TMUX_BASH_CONFIG } from '../src/config.js';
@@ -91,6 +92,12 @@ describe('command artifacts', () => {
       env: { SHELL: '/bin/zsh', SECRET: 'hidden', SAFE_VALUE: "quoted'value" },
     });
 
+    const script = await readFile(artifacts.scriptFile, 'utf8');
+    expect(script).toContain('unset SECRET');
+    expect(script).toContain('unset TMUX');
+    expect(script).toContain("export SAFE_VALUE='quoted'\"'\"'value'");
+    expect(script).not.toContain('${SHELL');
+
     await expect(
       execFileAsync(artifacts.scriptFile, [], {
         env: { ...process.env, SHELL: '/bin/zsh', SECRET: 'inherited', TMUX: 'stale' },
@@ -103,11 +110,46 @@ describe('command artifacts', () => {
     await expect(readFile(artifacts.temporaryExitCodeFile, 'utf8')).rejects.toMatchObject({
       code: 'ENOENT',
     });
-    const script = await readFile(artifacts.scriptFile, 'utf8');
-    expect(script).toContain('unset SECRET');
-    expect(script).toContain('unset TMUX');
-    expect(script).toContain("export SAFE_VALUE='quoted'\"'\"'value'");
-    expect(script).not.toContain('${SHELL');
+    await expect(readFile(artifacts.scriptFile, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it('bounds the on-disk output spool without cutting off command stdout', async () => {
+    const runDir = await mkdtemp(join(tmpdir(), 'tmux-artifacts-quota-'));
+    directories.push(runDir);
+    const artifacts = await createCommandArtifacts({
+      runDir,
+      runId: 'quota123',
+      command: "printf '%5000s' '' | tr ' ' x",
+      displayCommand: `produce large output ${'header'.repeat(1_000)}`,
+      config: { ...DEFAULT_TMUX_BASH_CONFIG, maxSpoolBytes: 1_024 },
+    });
+
+    const { stdout } = await execFileAsync(artifacts.scriptFile, []);
+    const output = await readFile(artifacts.outputFile, 'utf8');
+
+    expect(stdout).toHaveLength(5_000);
+    expect((await stat(artifacts.outputFile)).size).toBeLessThanOrEqual(1_024);
+    expect(output).toContain('tmux-bash spool limit reached');
+  });
+
+  it('removes retained artifacts after a live command exits', async () => {
+    const runDir = await mkdtemp(join(tmpdir(), 'tmux-artifacts-cleanup-'));
+    directories.push(runDir);
+    const artifacts = await createCommandArtifacts({
+      runDir,
+      runId: 'cleanup123',
+      command: 'sleep 0.2; printf done',
+      displayCommand: 'delayed output',
+      config: DEFAULT_TMUX_BASH_CONFIG,
+    });
+
+    const completion = execFileAsync(artifacts.scriptFile, []);
+    await scheduleRunDirectoryCleanup(runDir);
+    await completion;
+
+    await expect(stat(runDir)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('uses Bash even when the inherited login shell is not Bash', async () => {

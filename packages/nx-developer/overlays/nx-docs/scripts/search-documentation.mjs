@@ -1,11 +1,18 @@
 #!/usr/bin/env node
 
-const ENDPOINT = 'https://nx.dev/api/query-ai-embeddings';
+import { fetchBoundedText } from './bounded-fetch.mjs';
+
+const ENDPOINT = process.env.PI_NX_DOCS_ENDPOINT ?? 'https://nx.dev/api/query-ai-embeddings';
 const DEFAULT_LIMIT = 4;
 const MAX_LIMIT = 15;
 const MAX_TOTAL_CONTENT_LENGTH = 20_000;
 const MAX_SECTION_CONTENT_LENGTH = 8_000;
 const TRUNCATION_MARKER = '\n\n… [truncated]';
+const FETCH_TIMEOUT_MS = positiveEnvironmentInteger('PI_DOCS_FETCH_TIMEOUT_MS', 15_000);
+const MAX_RESPONSE_BYTES = positiveEnvironmentInteger(
+  'PI_DOCS_MAX_RESPONSE_BYTES',
+  2 * 1024 * 1024,
+);
 
 main().catch((error) => {
   console.error(`Fatal: ${error instanceof Error ? error.message : String(error)}`);
@@ -114,23 +121,38 @@ function setLimit(parsed, rawValue) {
 }
 
 async function searchDocumentation(query, limit) {
-  const response = await fetch(ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
+  const { response, text } = await fetchBoundedText(
+    ENDPOINT,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: query }],
+      }),
     },
-    body: JSON.stringify({
-      messages: [{ role: 'user', content: query }],
-    }),
-  });
+    {
+      timeoutMs: FETCH_TIMEOUT_MS,
+      maxBytes: MAX_RESPONSE_BYTES,
+      maxRedirects: 3,
+      acceptedContentTypes: ['application/json'],
+    },
+  );
 
   if (!response.ok) {
     const message = response.statusText || String(response.status);
-    const responseText = await safeText(response);
-    throw new Error(`HTTP ${response.status} ${message}: ${responseText}`);
+    throw new Error(`HTTP ${response.status} ${message}: ${text}`);
   }
 
-  const data = await response.json();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    throw new Error(
+      `Nx documentation endpoint returned malformed JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   const sections = data?.context?.pageSections;
 
   if (!Array.isArray(sections)) {
@@ -201,20 +223,17 @@ function truncate(content, maxLength) {
   return `${content.slice(0, maxLength - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
 }
 
+function positiveEnvironmentInteger(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
 function stringValue(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
-}
-
-async function safeText(response) {
-  try {
-    return await response.text();
-  } catch {
-    return '';
-  }
 }
 
 function printMarkdown(query, results) {

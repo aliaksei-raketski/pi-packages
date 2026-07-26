@@ -1,10 +1,14 @@
 name: Publish npm packages
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      ref:
-        description: Git ref or SHA to publish.
+      ci_sha:
+        description: CI-verified main-branch commit that produced the release.
+        required: true
+        type: string
+      release_sha:
+        description: Release commit created from the CI-verified commit.
         required: true
         type: string
 
@@ -18,20 +22,49 @@ concurrency:
 
 jobs:
   publish:
+    environment: npm
     runs-on: ubuntu-latest
     steps:
       - name: Checkout release commit
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.ref }}
+          persist-credentials: false
+          ref: ${{ inputs.release_sha }}
           fetch-depth: 0
           filter: tree:0
 
+      - name: Verify release provenance
+        env:
+          CI_SHA: ${{ inputs.ci_sha }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+
+          sha_pattern='^[0-9a-f]{40}$'
+          if [[ ! "$CI_SHA" =~ $sha_pattern ]]; then
+            echo "CI input must be a full lowercase Git commit SHA." >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_SHA" =~ $sha_pattern ]]; then
+            echo "Release input must be a full lowercase Git commit SHA." >&2
+            exit 1
+          fi
+
+          git fetch origin main --tags --force
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          git merge-base --is-ancestor "$CI_SHA" "$RELEASE_SHA"
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main
+
+          if ! git tag --points-at "$RELEASE_SHA" | grep -q .; then
+            echo "Release commit must have a release tag." >&2
+            exit 1
+          fi
+
       - name: Install pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 24
           cache: pnpm
@@ -40,7 +73,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build, verify, and publish with Nx Release
+      - name: Check and test release commit
+        run: |
+          pnpm run check
+          pnpm run test
+
+      - name: Publish with Nx Release
         env:
           NPM_CONFIG_PROVENANCE: 'true'
-        run: pnpm run publish
+        run: pnpm nx release publish

@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 
+import { fetchBoundedText } from './bounded-fetch.mjs';
+
 const APP_ID = 'L1XWT2UJ7F';
 const API_KEY = 'dfca7ed184db27927a512e5c6668b968';
-const ENDPOINT = `https://${APP_ID}-dsn.algolia.net/1/indexes/*/queries`;
+const ENDPOINT =
+  process.env.PI_ANGULAR_DOCS_ENDPOINT ?? `https://${APP_ID}-dsn.algolia.net/1/indexes/*/queries`;
 
 const SEARCH_ATTRIBUTES = [
   'hierarchy.lvl0',
@@ -22,6 +25,11 @@ const KNOWN_LATEST_VERSION = 22;
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 20;
 const CONTENT_MAX_LENGTH = 20_000;
+const FETCH_TIMEOUT_MS = positiveEnvironmentInteger('PI_DOCS_FETCH_TIMEOUT_MS', 15_000);
+const MAX_RESPONSE_BYTES = positiveEnvironmentInteger(
+  'PI_DOCS_MAX_RESPONSE_BYTES',
+  2 * 1024 * 1024,
+);
 
 main().catch((error) => {
   console.error(`Fatal: ${error instanceof Error ? error.message : String(error)}`);
@@ -200,30 +208,45 @@ async function queryDocs(version, query, limit) {
     hitsPerPage: String(clampLimit(limit)),
   }).toString();
 
-  const response = await fetch(ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Algolia-Application-Id': APP_ID,
-      'X-Algolia-API-Key': API_KEY,
+  const { response, text } = await fetchBoundedText(
+    ENDPOINT,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Algolia-Application-Id': APP_ID,
+        'X-Algolia-API-Key': API_KEY,
+      },
+      body: JSON.stringify({
+        requests: [
+          {
+            indexName: `angular_v${version}`,
+            params,
+          },
+        ],
+      }),
     },
-    body: JSON.stringify({
-      requests: [
-        {
-          indexName: `angular_v${version}`,
-          params,
-        },
-      ],
-    }),
-  });
+    {
+      timeoutMs: FETCH_TIMEOUT_MS,
+      maxBytes: MAX_RESPONSE_BYTES,
+      maxRedirects: 3,
+      acceptedContentTypes: ['application/json'],
+    },
+  );
 
   if (!response.ok) {
     const message = response.statusText || String(response.status);
-    const responseText = await safeText(response);
-    throw new Error(`HTTP ${response.status} ${message}: ${responseText}`);
+    throw new Error(`HTTP ${response.status} ${message}: ${text}`);
   }
 
-  const data = await response.json();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    throw new Error(
+      `Algolia returned malformed JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   const result = data?.results?.[0];
 
   if (!result || !Array.isArray(result.hits)) {
@@ -289,12 +312,20 @@ async function enrichTopResultContent(results) {
   }
 
   try {
-    const response = await fetch(top.url);
+    const { response, text: html } = await fetchBoundedText(
+      top.url,
+      {},
+      {
+        timeoutMs: FETCH_TIMEOUT_MS,
+        maxBytes: MAX_RESPONSE_BYTES,
+        maxRedirects: 3,
+        acceptedContentTypes: ['text/html'],
+      },
+    );
     if (!response.ok) {
       throw new Error(`${response.status} ${response.statusText}`);
     }
 
-    const html = await response.text();
     top.content = extractMainContent(html);
   } catch (error) {
     console.error(
@@ -328,6 +359,11 @@ function extractMainContent(html) {
   return stripped;
 }
 
+function positiveEnvironmentInteger(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
 function clampLimit(value) {
   if (!Number.isInteger(value) || value < 1) {
     return DEFAULT_LIMIT;
@@ -338,14 +374,6 @@ function clampLimit(value) {
   }
 
   return value;
-}
-
-async function safeText(response) {
-  try {
-    return await response.text();
-  } catch {
-    return '';
-  }
 }
 
 function printMarkdown(query, version, results) {

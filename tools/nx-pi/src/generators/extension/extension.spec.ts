@@ -1,8 +1,21 @@
-import { addProjectConfiguration, readJson, type Tree, writeJson } from '@nx/devkit';
+import {
+  addProjectConfiguration,
+  readJson,
+  type ProjectConfiguration,
+  type Tree,
+  workspaceRoot,
+  writeJson,
+} from '@nx/devkit';
+import { execFile } from 'node:child_process';
+import { symlink } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 import { cleanupTestWorkspaceRoots, createTreeWithExistingWorkspaceRoot } from '../test-tree';
 
 import { extensionGenerator } from './extension';
 import type { ExtensionGeneratorSchema } from './schema';
+
+const execFileAsync = promisify(execFile);
 
 describe('extension generator', () => {
   let tree: Tree;
@@ -61,6 +74,24 @@ describe('extension generator', () => {
       },
       references: [{ path: './tsconfig.lib.json' }],
     });
+
+    await symlink(join(workspaceRoot, 'node_modules'), join(tree.root, 'node_modules'), 'dir');
+    const nxPackageRoot = dirname(require.resolve('nx/package.json'));
+    const nxCli = join(nxPackageRoot, 'dist', 'bin', 'nx.js');
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [nxCli, 'show', 'project', '@scope/pi-demo', '--json'],
+      { cwd: tree.root, env: { ...process.env, NX_DAEMON: 'false' } },
+    );
+    let physicalProject: ProjectConfiguration;
+    try {
+      physicalProject = JSON.parse(stdout) as ProjectConfiguration;
+    } catch (error) {
+      throw new Error(
+        `Temporary workspace returned invalid project JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    expect(physicalProject.targets?.test).toBeDefined();
   });
 
   it('patches an existing Vitest config include list', async () => {

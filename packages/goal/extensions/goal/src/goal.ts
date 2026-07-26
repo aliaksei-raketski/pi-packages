@@ -87,7 +87,7 @@ export function goal(pi: ExtensionAPI): void {
         ? collectGoalStatus(runtime.goal, currentGates().length)
         : undefined;
     if (!status) {
-      clearStatus(pi, createStatusContext(ctx), GOAL_STATUS_KEY);
+      clearStatus(pi, createStatusContext(ctx), GOAL_STATUS_KEY, GOAL_STATUS_SOURCE);
       return;
     }
     publishStatus(pi, createStatusContext(ctx), status, GOAL_STATUS_SOURCE);
@@ -410,7 +410,7 @@ export function goal(pi: ExtensionAPI): void {
     runtime.disposed = true;
     invalidateContinuation(runtime);
     disposeStatusProvider();
-    clearStatus(pi, createStatusContext(ctx), GOAL_STATUS_KEY);
+    clearStatus(pi, createStatusContext(ctx), GOAL_STATUS_KEY, GOAL_STATUS_SOURCE);
     runtime.gateRegistry.dispose();
     runtime.statusContext = null;
   });

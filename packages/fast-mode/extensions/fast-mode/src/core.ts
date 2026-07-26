@@ -202,9 +202,31 @@ export function getCurrentModelStatus(ctx: FastContext): CurrentModelStatus {
 }
 
 export function syncFeatureState(ctx: FastContext, state: FastModeState): CurrentModelStatus {
-  const modelStatus = getCurrentModelStatus(ctx);
-  syncClaudeBetaHeader(ctx, state, modelStatus);
-  return modelStatus;
+  void state;
+  return getCurrentModelStatus(ctx);
+}
+
+export function applyFastModeHeaders(
+  headers: Record<string, string | null>,
+  ctx: FastContext,
+  state: FastModeState,
+  modelStatus = getCurrentModelStatus(ctx),
+): void {
+  const model = ctx.model;
+  const shouldEnable =
+    model?.provider === CLAUDE_PROVIDER &&
+    model.api === CLAUDE_API &&
+    state.enabled &&
+    modelStatus.isSupported &&
+    modelStatus.feature?.provider === CLAUDE_PROVIDER;
+  if (!shouldEnable || !model) return;
+
+  const headerKey =
+    Object.keys(headers).find((key) => key.toLowerCase() === 'anthropic-beta') ?? 'anthropic-beta';
+  const existingValue = headers[headerKey];
+  const existing = splitBetaHeader(typeof existingValue === 'string' ? existingValue : '');
+  const requiredBase = ctx.modelRegistry.isUsingOAuth(model) ? CLAUDE_CODE_OAUTH_BETAS : [];
+  headers[headerKey] = Array.from(new Set([...existing, ...requiredBase, FAST_BETA])).join(',');
 }
 
 export function getFastPayload(
@@ -254,32 +276,6 @@ const FAST_FEATURES: readonly FastFeature[] = [
         : 'ChatGPT OAuth auth is required; API-key auth is intentionally not used',
   },
 ];
-
-function syncClaudeBetaHeader(
-  ctx: FastContext,
-  state: FastModeState,
-  modelStatus: CurrentModelStatus,
-): void {
-  const model = ctx.model;
-  if (!model || model.provider !== CLAUDE_PROVIDER || model.api !== CLAUDE_API) return;
-
-  const shouldEnable =
-    state.enabled && modelStatus.isSupported && modelStatus.feature?.provider === CLAUDE_PROVIDER;
-  const headers = { ...(model.headers ?? {}) };
-  const existing = splitBetaHeader(headers['anthropic-beta'] ?? headers['Anthropic-Beta']);
-  const requiredBase = ctx.modelRegistry.isUsingOAuth(model) ? CLAUDE_CODE_OAUTH_BETAS : [];
-  const next = shouldEnable
-    ? Array.from(new Set([...existing, ...requiredBase, FAST_BETA]))
-    : existing.filter((beta) => beta !== FAST_BETA);
-
-  delete headers['Anthropic-Beta'];
-  if (next.length > 0) {
-    headers['anthropic-beta'] = next.join(',');
-  } else {
-    delete headers['anthropic-beta'];
-  }
-  model.headers = headers;
-}
 
 function splitBetaHeader(value: string): string[] {
   return (value ?? '')

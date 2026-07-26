@@ -24,6 +24,11 @@ export function registerBashTool(pi: ExtensionAPI, runtime: TmuxBashRuntime): vo
       ),
     renderCall: (args, theme) => renderBashCall(args as unknown as BashInput, theme),
     renderResult: (result, options, theme) =>
-      renderBashResult(result as typeof result & { details?: TmuxBashDetails }, options, theme),
+      renderBashResult(
+        result as typeof result & { details?: TmuxBashDetails },
+        options,
+        theme,
+        runtime.config,
+      ),
   });
 }

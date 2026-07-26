@@ -294,13 +294,13 @@ describe('goal extension', () => {
     });
 
     await harness.commands.get('goal')?.handler('statusbar off', harness.ctx as never);
-    expect(clears.at(-1)).toEqual({ key: 'goal' });
+    expect(clears.at(-1)).toEqual({ key: 'goal', source: 'pi-goal' });
     const snapshotCount = snapshots.length;
     harness.events.emit(STATUSLINE_STATUS_SNAPSHOT_REQUEST_EVENT, {});
     expect(snapshots).toHaveLength(snapshotCount);
 
     await emit(harness, 'session_shutdown', { reason: 'quit' });
-    expect(clears.at(-1)).toEqual({ key: 'goal' });
+    expect(clears.at(-1)).toEqual({ key: 'goal', source: 'pi-goal' });
   });
 
   it('preserves unrelated active tools and hides active-only tools after completion', async () => {

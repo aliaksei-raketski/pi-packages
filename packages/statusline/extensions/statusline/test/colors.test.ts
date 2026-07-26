@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest';
-import type { Theme } from '@earendil-works/pi-coding-agent';
+import type { ExtensionContext, Theme, ThemeColor } from '@earendil-works/pi-coding-agent';
 import {
   THEME_DEFAULT_COLORS,
   colorize,
@@ -14,6 +14,75 @@ import {
 const fakeTheme = {
   fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
 } as Theme;
+
+const CURRENT_THEME_COLORS = {
+  accent: true,
+  border: true,
+  borderAccent: true,
+  borderMuted: true,
+  success: true,
+  error: true,
+  warning: true,
+  muted: true,
+  dim: true,
+  text: true,
+  thinkingText: true,
+  userMessageText: true,
+  customMessageText: true,
+  customMessageLabel: true,
+  toolTitle: true,
+  toolOutput: true,
+  mdHeading: true,
+  mdLink: true,
+  mdLinkUrl: true,
+  mdCode: true,
+  mdCodeBlock: true,
+  mdCodeBlockBorder: true,
+  mdQuote: true,
+  mdQuoteBorder: true,
+  mdHr: true,
+  mdListBullet: true,
+  toolDiffAdded: true,
+  toolDiffRemoved: true,
+  toolDiffContext: true,
+  syntaxComment: true,
+  syntaxKeyword: true,
+  syntaxFunction: true,
+  syntaxVariable: true,
+  syntaxString: true,
+  syntaxNumber: true,
+  syntaxType: true,
+  syntaxOperator: true,
+  syntaxPunctuation: true,
+  thinkingOff: true,
+  thinkingMinimal: true,
+  thinkingLow: true,
+  thinkingMedium: true,
+  thinkingHigh: true,
+  thinkingXhigh: true,
+  thinkingMax: true,
+  bashMode: true,
+} satisfies Record<ThemeColor, true>;
+
+type ThinkingLevel = NonNullable<ExtensionContext['thinkingLevel']>;
+const CURRENT_THINKING_LEVELS = {
+  off: true,
+  minimal: true,
+  low: true,
+  medium: true,
+  high: true,
+  xhigh: true,
+  max: true,
+} satisfies Record<ThinkingLevel, true>;
+
+test('accepts every current Pi theme color and configures every thinking level', () => {
+  expect(Object.keys(CURRENT_THEME_COLORS).every(isThemeColor)).toBe(true);
+  const thinkingColors = THEME_DEFAULT_COLORS.thinking;
+  for (const level of Object.keys(CURRENT_THINKING_LEVELS)) {
+    expect(thinkingColors[level as keyof typeof thinkingColors]).toBeDefined();
+  }
+  expect(thinkingColors.max).toBe('thinkingMax');
+});
 
 test('accepts theme/hex/256/simple values', () => {
   expect(isThemeColor('muted')).toBe(true);

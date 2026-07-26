@@ -52,6 +52,69 @@ test('GitStatusCache clears stale snapshots when invalidated', async () => {
   cache.dispose();
 });
 
+test('GitStatusCache clears a closed PR but preserves it across transient failures', async () => {
+  const gitOutput = '# branch.oid 111\n# branch.head main\n# branch.ab +0 -0\n';
+  const pullRequestResults = [
+    { stdout: '[{"number":101}]', stderr: '', exitCode: 0 },
+    { stdout: 'not-json', stderr: '', exitCode: 0 },
+    { stdout: '', stderr: 'authentication failed', exitCode: 1 },
+    { stdout: '[]', stderr: '', exitCode: 0 },
+  ];
+  const cache = new GitStatusCache({
+    cwd: () => '/tmp',
+    includeGitStatus: true,
+    includePullRequest: true,
+    refreshIntervalMs: 60_000,
+    runner: async (command) =>
+      command === 'git'
+        ? { stdout: gitOutput, stderr: '', exitCode: 0 }
+        : (pullRequestResults.shift() ?? { stdout: '', stderr: '', exitCode: 1 }),
+  });
+
+  await cache.refresh();
+  expect(cache.getGitInfo().pullRequest?.number).toBe(101);
+  await cache.refresh();
+  expect(cache.getGitInfo().pullRequest?.number).toBe(101);
+  await cache.refresh();
+  expect(cache.getGitInfo().pullRequest?.number).toBe(101);
+  await cache.refresh();
+  expect(cache.getGitInfo().pullRequest).toBeUndefined();
+
+  cache.dispose();
+});
+
+test('GitStatusCache preserves a PR when gh times out', async () => {
+  let ghCalls = 0;
+  const cache = new GitStatusCache({
+    cwd: () => '/tmp',
+    includeGitStatus: true,
+    includePullRequest: true,
+    refreshIntervalMs: 60_000,
+    ghTimeoutMs: 10,
+    runner: async (command, _args, options) => {
+      if (command === 'git') {
+        return {
+          stdout: '# branch.oid 111\n# branch.head main\n# branch.ab +0 -0\n',
+          stderr: '',
+          exitCode: 0,
+        };
+      }
+      ghCalls += 1;
+      if (ghCalls === 1) return { stdout: '[{"number":102}]', stderr: '', exitCode: 0 };
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new Error('timeout')), {
+          once: true,
+        });
+      });
+    },
+  });
+
+  await cache.refresh();
+  await cache.refresh();
+  expect(cache.getGitInfo().pullRequest?.number).toBe(102);
+  cache.dispose();
+});
+
 test('GitStatusCache refreshes and deduplicates snapshots', async () => {
   const clock = {
     setInterval: () => Symbol('timer'),
@@ -65,7 +128,7 @@ test('GitStatusCache refreshes and deduplicates snapshots', async () => {
     '# branch.oid 111\n# branch.head main\n# branch.ab +0 -0\n1 M. N... 100644 100644 100644 abc def file.txt\n',
     '# branch.oid 222\n# branch.head feature\n# branch.ab +0 -0\n',
   ];
-  const prOutputs = ['{"number":101}\n', '{"number":101}\n', '{"number":101}\n', '\n'];
+  const prOutputs = ['[{"number":101}]\n', '[{"number":101}]\n', '[{"number":101}]\n', '\n'];
   let gitIndex = 0;
   let prIndex = 0;
   let changeCount = 0;

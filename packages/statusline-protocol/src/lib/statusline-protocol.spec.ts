@@ -66,11 +66,11 @@ describe('statuslineProtocol', () => {
       },
     };
 
-    clearStatus(host, ui, 'fast ');
+    clearStatus(host, ui, 'fast ', 'fast-mode');
     expect(setStatus).toHaveBeenCalledWith('fast', undefined);
     expect(emit).toHaveBeenCalledWith(STATUSLINE_STATUS_CLEAR_EVENT, {
       key: 'fast',
-      source: undefined,
+      source: 'fast-mode',
     });
   });
 

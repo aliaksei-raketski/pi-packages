@@ -125,7 +125,7 @@ The `layout` array uses the following token names:
 
 - `cwd` — current working directory, shortened with `~` for your home directory.
 - `model` — current model name (model id only, e.g. `gpt-4.1`), or `unknown` if unavailable.
-- `thinking` — current thinking level from Pi: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+- `thinking` — current thinking level from Pi: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
 - `branch` — current git branch from footer context. It is stateful: `clean` when working tree has no changes and `dirty` when there are staged/unstaged/untracked changes.
 - `changes` — git changes summary with counts: `!<conflicts> +<staged> ~<unstaged> ?<untracked> ↑<ahead> ↓<behind>` (only non-zero parts are shown; untracked files are counted per-file).
 - `pr` — current pull request number for current branch, shown as `PR #<number>` when `gh pr view` returns a number.

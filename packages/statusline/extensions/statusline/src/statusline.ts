@@ -4,6 +4,7 @@ import type {
   ReadonlyFooterDataProvider,
   Theme,
 } from '@earendil-works/pi-coding-agent';
+import { sanitizeFooterText } from './ansi-utils.ts';
 import { colorize, resolveColorValue } from './colors.ts';
 import { collectStatusItems } from './status-items.ts';
 import { createProtocolStatusRegistry } from './statuses/protocol.ts';
@@ -37,7 +38,7 @@ function shouldCollectGitItems(requestedKeys: Set<string>): boolean {
   );
 }
 
-function renderFooter(
+export function renderFooter(
   ctx: ExtensionContext,
   pi: ExtensionAPI,
   theme: Theme,
@@ -47,7 +48,7 @@ function renderFooter(
   width: number,
   protocolStatuses: Map<string, StatuslineStatus>,
 ): string[] {
-  const separator = colorize(config.separator, config.separatorColor, theme);
+  const separator = colorize(sanitizeFooterText(config.separator), config.separatorColor, theme);
   const requestedKeys = new Set(config.layout.flat().filter((token) => token !== 'spacer'));
   const items = collectStatusItems(
     ctx,
@@ -64,10 +65,11 @@ function renderFooter(
       return undefined;
     }
 
-    const prefix = config.prefix[key];
+    const prefix = sanitizeFooterText(config.prefix[key] ?? '');
+    const valueText = sanitizeFooterText(value.text);
     const itemText = prefix
-      ? `${prefix.endsWith(' ') ? prefix : `${prefix} `}${value.text}`
-      : value.text;
+      ? `${prefix.endsWith(' ') ? prefix : `${prefix} `}${valueText}`
+      : valueText;
     const color = resolveColorValue(config.colors, key, value.state);
     return colorize(itemText, color, theme);
   };

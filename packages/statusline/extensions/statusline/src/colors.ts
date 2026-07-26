@@ -54,6 +54,7 @@ const THEME_COLOR_TOKENS = new Set([
   'thinkingMedium',
   'thinkingHigh',
   'thinkingXhigh',
+  'thinkingMax',
   'bashMode',
 ]);
 interface ThemeLike {
@@ -79,6 +80,7 @@ export const THEME_DEFAULT_COLORS = {
     medium: 'thinkingMedium',
     high: 'thinkingHigh',
     xhigh: 'thinkingXhigh',
+    max: 'thinkingMax',
     default: 'accent',
   },
   context: {

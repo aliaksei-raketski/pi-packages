@@ -153,7 +153,14 @@ async function loadWorkspaceBestPractices(workspaceRoot) {
   const require = createRequire(pathToFileURL(requireBase).href);
 
   const corePackageJsonPath = require.resolve('@angular/core/package.json');
-  const corePackageJson = JSON.parse(await fs.readFile(corePackageJsonPath, 'utf8'));
+  let corePackageJson;
+  try {
+    corePackageJson = JSON.parse(await fs.readFile(corePackageJsonPath, 'utf8'));
+  } catch (error) {
+    throw new Error(
+      `Invalid @angular/core package metadata: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 
   const bestPracticesMeta = corePackageJson.angular?.bestPractices;
 

@@ -60,6 +60,7 @@
     "thinkingMedium": "#00ffff",
     "thinkingHigh": "#ff00ff",
     "thinkingXhigh": "errorRed",
+    "thinkingMax": "errorRed",
     "bashMode": "#ffaa00"
   }
 }

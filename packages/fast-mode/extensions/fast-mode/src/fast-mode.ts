@@ -10,6 +10,7 @@ import {
   FAST_FLAG,
   FAST_STATE_CUSTOM_TYPE,
   FAST_STATUS_KEY,
+  applyFastModeHeaders,
   createFastModeState,
   createFastStateEntryData,
   getFastPayload,
@@ -131,10 +132,17 @@ export default function fastMode(pi: ExtensionAPI) {
     updateStatus(pi, ctx);
   });
 
+  pi.on('before_provider_headers', (event, ctx) => {
+    const state = getSessionState(ctx);
+    const fastContext = toFastContext(ctx);
+    const modelStatus = getCurrentModelStatus(fastContext);
+    applyFastModeHeaders(event.headers, fastContext, state, modelStatus);
+  });
+
   pi.on('before_provider_request', (event, ctx) => {
     const state = getSessionState(ctx);
     const fastContext = toFastContext(ctx);
-    const modelStatus = syncFeatureState(fastContext, state);
+    const modelStatus = getCurrentModelStatus(fastContext);
     updateStatus(pi, ctx);
     return getFastPayload(event.payload, fastContext, state, modelStatus);
   });
@@ -148,7 +156,7 @@ export default function fastMode(pi: ExtensionAPI) {
 
     if (!ctx.hasUI) return;
 
-    clearStatus(pi, createStatusContext(ctx), FAST_STATUS_KEY);
+    clearStatus(pi, createStatusContext(ctx), FAST_STATUS_KEY, FAST_STATUS_SOURCE);
   });
 
   pi.registerCommand(FAST_COMMAND, {

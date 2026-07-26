@@ -148,6 +148,107 @@ describe('TmuxBashRuntime', () => {
     expect(run.completionDelivered).toBe(true);
   });
 
+  it('stops retrying and reports one terminal notification after permanent delivery failure', async () => {
+    const events = new EventBus();
+    let attempts = 0;
+    const pi = {
+      events,
+      sendMessage: () => {
+        attempts += 1;
+        throw new Error('delivery permanently unavailable');
+      },
+    };
+    const context = fakeContext();
+    const execute = vi.fn<TmuxExecutor>(async (_binary, args) => ({
+      stdout: args[0] === 'new-window' ? '@79\n' : '',
+      stderr: '',
+      code: 0,
+    }));
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        completionDeliveryMaxAttempts: 3,
+        completionDeliveryRetryBaseMs: 10,
+        statusbarEnabled: false,
+      },
+      createContinuationGateController(pi, { source: 'pi-tmux-bash' }),
+      new TmuxClient('tmux', execute),
+    );
+    activeRuntimes.push(runtime);
+    await runtime.startSession(context as never);
+
+    const started = await runtime.executeBash(
+      { command: 'echo done', background: true },
+      undefined,
+      undefined,
+      context as never,
+    );
+    const run = runtime.state.commands.get(started.details?.runId ?? '');
+    if (!run) throw new Error('Expected registered command run.');
+    await writeFile(run.outputFile, '$ echo done\ndone\n');
+    await writeFile(run.exitCodeFile, '0\n');
+
+    await vi.waitFor(() => expect(attempts).toBe(3));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(attempts).toBe(3);
+    expect(run.completionDeliveryFailed).toBe(true);
+    expect(run.completionRetryTimer).toBeUndefined();
+    expect(context.ui.notify).toHaveBeenCalledTimes(1);
+    expect(context.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining('after 3 attempts'),
+      'error',
+    );
+  });
+
+  it('cancels a pending completion retry during shutdown', async () => {
+    const events = new EventBus();
+    let attempts = 0;
+    const pi = {
+      events,
+      sendMessage: () => {
+        attempts += 1;
+        throw new Error('delivery unavailable');
+      },
+    };
+    const context = fakeContext();
+    const execute = vi.fn<TmuxExecutor>(async (_binary, args) => ({
+      stdout: args[0] === 'new-window' ? '@80\n' : '',
+      stderr: '',
+      code: 0,
+    }));
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        completionDeliveryRetryBaseMs: 50,
+        statusbarEnabled: false,
+      },
+      createContinuationGateController(pi, { source: 'pi-tmux-bash' }),
+      new TmuxClient('tmux', execute),
+    );
+    activeRuntimes.push(runtime);
+    await runtime.startSession(context as never);
+
+    const started = await runtime.executeBash(
+      { command: 'echo done', background: true },
+      undefined,
+      undefined,
+      context as never,
+    );
+    const run = runtime.state.commands.get(started.details?.runId ?? '');
+    if (!run) throw new Error('Expected registered command run.');
+    await writeFile(run.outputFile, '$ echo done\ndone\n');
+    await writeFile(run.exitCodeFile, '0\n');
+    await vi.waitFor(() => expect(attempts).toBe(1));
+
+    await runtime.shutdown(context as never);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(attempts).toBe(1);
+  });
+
   it('bounds poll updates and reports an unowned awaited window before releasing its gate', async () => {
     const events = new EventBus();
     const ordering: string[] = [];

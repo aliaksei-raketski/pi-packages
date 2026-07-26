@@ -39,6 +39,10 @@ describe('tmux-bash config', () => {
     expect(config.enabledTmuxActions).toEqual(['list', 'peek']);
     expect(config.defaultWaitForBackgroundCompletion).toBe(false);
     expect(config.defaultWaitAfterForegroundTimeout).toBe(true);
+    expect(config.completionContextLines).toBe(20);
+    expect(config.completedCompactDisplayLines).toBe(5);
+    expect(config.completedExpandedDisplayLines).toBe(20);
+    expect(config.maxSpoolBytes).toBe(10 * 1024 * 1024);
   });
 
   it('rejects invalid security-sensitive paths and actions', () => {
@@ -48,6 +52,12 @@ describe('tmux-bash config', () => {
     expect(() =>
       validateTmuxBashConfig({ ...DEFAULT_TMUX_BASH_CONFIG, enabledTmuxActions: ['attach'] }),
     ).toThrow(/enabledTmuxActions/);
+    expect(() =>
+      validateTmuxBashConfig({ ...DEFAULT_TMUX_BASH_CONFIG, maxSpoolBytes: 100 }),
+    ).toThrow(/maxSpoolBytes/);
+    expect(() =>
+      validateTmuxBashConfig({ ...DEFAULT_TMUX_BASH_CONFIG, completionDeliveryMaxAttempts: 0 }),
+    ).toThrow(/completionDeliveryMaxAttempts/);
   });
 
   it('clamps timeouts and model polling', () => {

@@ -8,6 +8,8 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { fetchBoundedText } from './bounded-fetch.mjs';
 
 const DEFAULT_SOURCE_URL = 'https://taiga-ui.dev/llms-full.txt';
 const DEFAULT_TTL_MS = 6 * 60 * 60 * 1000; // 6h
@@ -15,6 +17,8 @@ const DEFAULT_CACHE_DIR = path.join(os.homedir(), '.cache', 'taiga-ui-docs');
 const COMMANDS = ['overview', 'list', 'example', 'migration'];
 const CACHE_SOURCE_FILE = 'source.txt';
 const CACHE_META_FILE = 'meta.json';
+const FETCH_TIMEOUT_MS = positiveEnvironmentInteger('PI_DOCS_FETCH_TIMEOUT_MS', 15_000);
+const MAX_SOURCE_BYTES = positiveEnvironmentInteger('PI_DOCS_MAX_RESPONSE_BYTES', 16 * 1024 * 1024);
 
 const GENERIC_SUFFIXES = new Set([
   'component',
@@ -276,6 +280,11 @@ function normalizeOptions(parsed) {
   };
 }
 
+function positiveEnvironmentInteger(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
 function parseInteger(value, name, min, allowEmpty = false) {
   if (value === undefined) {
     if (allowEmpty) {
@@ -369,22 +378,62 @@ async function loadSource(config, runtimeOptions = {}) {
   }
 
   let response;
+  let content;
 
   try {
-    response = await fetch(sourceUrl);
+    const fetched = await fetchBoundedText(
+      sourceUrl,
+      {},
+      {
+        timeoutMs: FETCH_TIMEOUT_MS,
+        maxBytes: MAX_SOURCE_BYTES,
+        maxRedirects: 3,
+        acceptedContentTypes: ['text/plain', 'text/markdown'],
+      },
+    );
+    response = fetched.response;
+    content = fetched.text;
   } catch (error) {
+    const stale = cacheEnabled
+      ? await loadCachedSource(sourceUrl, cacheDir, Number.POSITIVE_INFINITY)
+      : null;
+    if (stale) {
+      return {
+        source: {
+          type: 'remote',
+          value: sourceUrl,
+          sourceUrl,
+          cached: true,
+          loadedAt: stale.loadedAt,
+        },
+        content: stale.content,
+      };
+    }
     throw new Error(
       `Network error fetching documentation source: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
   if (!response.ok) {
+    const stale = cacheEnabled
+      ? await loadCachedSource(sourceUrl, cacheDir, Number.POSITIVE_INFINITY)
+      : null;
+    if (stale) {
+      return {
+        source: {
+          type: 'remote',
+          value: sourceUrl,
+          sourceUrl,
+          cached: true,
+          loadedAt: stale.loadedAt,
+        },
+        content: stale.content,
+      };
+    }
     throw new Error(
       `Failed to fetch documentation (HTTP ${response.status} ${response.statusText}) from ${sourceUrl}`,
     );
   }
-
-  const content = await response.text();
 
   if (!content.trim()) {
     throw new Error(`Fetched documentation from ${sourceUrl} is empty.`);
@@ -410,30 +459,21 @@ async function loadSource(config, runtimeOptions = {}) {
 
 async function loadCachedSource(sourceUrl, cacheDir, ttlMs) {
   try {
-    const [metaText, sourceText] = await Promise.all([
-      fs.readFile(path.join(cacheDir, CACHE_META_FILE), 'utf8'),
-      fs.readFile(path.join(cacheDir, CACHE_SOURCE_FILE), 'utf8'),
-    ]);
-
+    const metaPath = path.join(cacheDir, CACHE_META_FILE);
+    const metaStat = await fs.stat(metaPath);
+    if (metaStat.size > MAX_SOURCE_BYTES + 4_096) return null;
+    const metaText = await fs.readFile(metaPath, 'utf8');
     const meta = JSON.parse(metaText);
 
-    if (meta.sourceUrl !== sourceUrl) {
-      return null;
-    }
-
+    if (meta.sourceUrl !== sourceUrl) return null;
     const loadedAt = Number(meta.loadedAt);
+    if (!Number.isFinite(loadedAt) || Date.now() - loadedAt > ttlMs) return null;
 
-    if (!Number.isFinite(loadedAt)) {
-      return null;
-    }
-
-    if (Date.now() - loadedAt > ttlMs) {
-      return null;
-    }
-
-    if (!sourceText.trim()) {
-      return null;
-    }
+    const sourceText =
+      typeof meta.content === 'string'
+        ? meta.content
+        : await fs.readFile(path.join(cacheDir, CACHE_SOURCE_FILE), 'utf8');
+    if (Buffer.byteLength(sourceText) > MAX_SOURCE_BYTES || !sourceText.trim()) return null;
 
     return { content: sourceText, loadedAt };
   } catch {
@@ -442,17 +482,20 @@ async function loadCachedSource(sourceUrl, cacheDir, ttlMs) {
 }
 
 async function saveCachedSource(sourceUrl, content, cacheDir, loadedAt) {
+  if (Buffer.byteLength(content) > MAX_SOURCE_BYTES) return;
+
+  const serialized = JSON.stringify({ sourceUrl, loadedAt, content });
+  if (Buffer.byteLength(serialized) > MAX_SOURCE_BYTES + 4_096) return;
+
+  const id = randomUUID();
+  const metaPath = path.join(cacheDir, CACHE_META_FILE);
+  const metaTemporaryPath = path.join(cacheDir, `.meta-${id}.tmp`);
   try {
     await fs.mkdir(cacheDir, { recursive: true });
-    await Promise.all([
-      fs.writeFile(path.join(cacheDir, CACHE_SOURCE_FILE), content, 'utf8'),
-      fs.writeFile(
-        path.join(cacheDir, CACHE_META_FILE),
-        JSON.stringify({ sourceUrl, loadedAt }),
-        'utf8',
-      ),
-    ]);
+    await fs.writeFile(metaTemporaryPath, serialized, { encoding: 'utf8', mode: 0o600 });
+    await fs.rename(metaTemporaryPath, metaPath);
   } catch {
+    await fs.rm(metaTemporaryPath, { force: true }).catch(() => undefined);
     // Cache errors are non-fatal; command can still work.
   }
 }

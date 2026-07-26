@@ -49,9 +49,9 @@ pi --fast
   - `fast on` (accent color)
   - `fast off` (gray)
 
-When fast mode is enabled but the current model is not supported, status stays as:
+When fast mode is enabled but the current model is not supported, status is:
 
-- `fast on` in gray (so you can see it is enabled, but inactive for current model)
+- `no fast` in the warning color (enabled, but inactive for the current model)
 
 When you switch to a supported model, fast mode is applied automatically if it is enabled.
 

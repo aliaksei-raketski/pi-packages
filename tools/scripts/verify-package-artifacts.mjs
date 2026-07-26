@@ -36,6 +36,12 @@ function collectRelativePackageRefs(value, refs = new Set()) {
   return refs;
 }
 
+function inferLicenseIdentifier(licenseText) {
+  if (/Apache License\s+Version 2\.0/iu.test(licenseText)) return 'Apache-2.0';
+  if (/^MIT License\s*$/imu.test(licenseText)) return 'MIT';
+  return undefined;
+}
+
 function parsePackOutput(stdout, packageName) {
   const trimmed = stdout.trim();
 
@@ -68,7 +74,16 @@ for (const entry of readdirSync(packagesRoot, { withFileTypes: true })) {
     continue;
   }
 
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
+  let packageJson;
+  try {
+    packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
+  } catch (error) {
+    failures.push({
+      packageName: entry.name,
+      message: `invalid package.json: ${error instanceof Error ? error.message : String(error)}`,
+    });
+    continue;
+  }
 
   if (packageJson.private) {
     continue;
@@ -106,17 +121,40 @@ for (const entry of readdirSync(packagesRoot, { withFileTypes: true })) {
       message: `tarball is missing package.json artifact reference(s): ${missing.join(', ')}`,
     });
   }
+
+  const licensePath = join(packageDir, 'LICENSE');
+  if (packedFiles.has('LICENSE') && existsSync(licensePath)) {
+    const shippedLicense = inferLicenseIdentifier(readFileSync(licensePath, 'utf8'));
+    if (!shippedLicense) {
+      failures.push({
+        packageName: packageJson.name ?? entry.name,
+        message: 'could not identify the SPDX license represented by LICENSE',
+      });
+    } else if (packageJson.license !== shippedLicense) {
+      failures.push({
+        packageName: packageJson.name ?? entry.name,
+        message: `package.json license ${packageJson.license ?? '(missing)'} does not match shipped ${shippedLicense} LICENSE`,
+      });
+    }
+
+    if (shippedLicense === 'Apache-2.0' && !packedFiles.has('NOTICE')) {
+      failures.push({
+        packageName: packageJson.name ?? entry.name,
+        message: 'Apache-2.0 package tarball is missing NOTICE attribution',
+      });
+    }
+  }
 }
 
 if (failures.length > 0) {
   for (const failure of failures) {
-    console.error(
-      `::error title=${failure.packageName}::${failure.message.replaceAll('\n', '%0A')}`,
+    process.stderr.write(
+      `::error title=${failure.packageName}::${failure.message.replaceAll('\n', '%0A')}\n`,
     );
-    console.error(`${failure.packageName}: ${failure.message}`);
+    process.stderr.write(`${failure.packageName}: ${failure.message}\n`);
   }
 
   process.exit(1);
 }
 
-console.log(`Verified publish artifacts for ${checked} package(s).`);
+process.stdout.write(`Verified publish artifacts for ${checked} package(s).\n`);

@@ -218,14 +218,19 @@ export function publishStatus(
   host.events.emit(STATUSLINE_STATUS_SET_EVENT, buildEventPayload(normalized, source));
 }
 
-export function clearStatus(host: StatuslineProtocolHost, ctx: StatuslineUICtx, key: string): void {
+export function clearStatus(
+  host: StatuslineProtocolHost,
+  ctx: StatuslineUICtx,
+  key: string,
+  source?: string,
+): void {
   const cleaned = key.trim();
   if (!cleaned) {
     return;
   }
 
   ctx.setStatus(cleaned, undefined);
-  const payload: StatuslineStatusClearEvent = { key: cleaned };
+  const payload: StatuslineStatusClearEvent = { key: cleaned, source };
   host.events.emit(STATUSLINE_STATUS_CLEAR_EVENT, payload);
 }
 

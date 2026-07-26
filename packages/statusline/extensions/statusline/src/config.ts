@@ -81,6 +81,7 @@ export const DEFAULT_STATUSLINE_CONFIG: StatuslineConfig = {
       medium: 'thinkingMedium',
       high: 'thinkingHigh',
       xhigh: 'thinkingXhigh',
+      max: 'thinkingMax',
     },
     changes: 'dim',
     pr: 'muted',

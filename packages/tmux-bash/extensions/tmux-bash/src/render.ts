@@ -20,6 +20,10 @@ export function renderBashResult(
   result: { content: Array<{ type: string; text?: string }>; details?: TmuxBashDetails },
   options: { expanded: boolean; isPartial: boolean },
   theme: ThemeLike,
+  displayLimits: CompletedDisplayLimits = {
+    completedCompactDisplayLines: 5,
+    completedExpandedDisplayLines: 20,
+  },
 ) {
   if (options.isPartial) {
     const output = sanitizeTerminalText(
@@ -47,7 +51,12 @@ export function renderBashResult(
   const output = sanitizeTerminalText(
     result.content.find((item) => item.type === 'text')?.text ?? '',
   );
-  if (output) text += `\n${theme.fg('dim', compact(output, options.expanded ? 80 : 8))}`;
+  if (output) {
+    const displayLines = options.expanded
+      ? displayLimits.completedExpandedDisplayLines
+      : displayLimits.completedCompactDisplayLines;
+    text += `\n${theme.fg('dim', compactCompletedOutput(output, displayLines, details.outputFile))}`;
+  }
   return new Text(text, 0, 0);
 }
 
@@ -80,8 +89,29 @@ interface ThemeLike {
   bold(text: string): string;
 }
 
+interface CompletedDisplayLimits {
+  completedCompactDisplayLines: number;
+  completedExpandedDisplayLines: number;
+}
+
 function compact(value: string, maxLines: number): string {
   const lines = value.split('\n');
   if (lines.length <= maxLines) return value;
   return `${lines.slice(-maxLines).join('\n')}\n…`;
+}
+
+function compactCompletedOutput(value: string, maxLines: number, outputFile: string): string {
+  const lines = value.split('\n');
+  if (lines.length <= maxLines) return value;
+
+  const modelTruncationNotice = lines[0]?.startsWith('[Output truncated:')
+    ? lines.shift()
+    : undefined;
+  const metadataLines = 2;
+  const tailLines = lines.slice(-(maxLines - metadataLines));
+  const omittedLines = lines.length - tailLines.length;
+  const notice = modelTruncationNotice ?? `Full output: ${outputFile}`;
+  return [notice, `… ${omittedLines} earlier lines omitted from display …`, ...tailLines].join(
+    '\n',
+  );
 }

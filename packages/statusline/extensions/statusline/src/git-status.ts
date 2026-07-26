@@ -65,7 +65,16 @@ type SnapshotStateResult =
 const BRANCH_HEAD_PREFIX = '# branch.head ';
 const BRANCH_AB_PREFIX = '# branch.ab ';
 const GIT_STATUS_ARGS = ['--no-optional-locks', 'status', '--porcelain=v2', '--branch'] as const;
-const GH_PR_VIEW_ARGS = ['pr', 'view', '--json', 'number'] as const;
+const GH_PR_LIST_ARGS = [
+  'pr',
+  'list',
+  '--state',
+  'open',
+  '--json',
+  'number',
+  '--limit',
+  '1',
+] as const;
 const DEFAULT_REFRESH_INTERVAL_MS = 8_000;
 const DEFAULT_GIT_TIMEOUT_MS = 1_500;
 const DEFAULT_GH_TIMEOUT_MS = 3_000;
@@ -192,34 +201,31 @@ export function isBranchDirty(status: GitStatusSnapshot | undefined): boolean {
   );
 }
 
-function parsePullRequestJson(stdout: string): PullRequestSnapshot | undefined {
-  const trimmed = stdout.trim();
-  if (!trimmed) {
-    return undefined;
-  }
+type PullRequestFetchResult =
+  | { kind: 'found'; snapshot: PullRequestSnapshot }
+  | { kind: 'none' }
+  | { kind: 'transient' };
 
+function parsePullRequestListJson(stdout: string): PullRequestFetchResult {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(trimmed);
+    parsed = JSON.parse(stdout.trim());
   } catch {
-    return undefined;
+    return { kind: 'transient' };
   }
 
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return undefined;
+  if (!Array.isArray(parsed)) return { kind: 'transient' };
+  if (parsed.length === 0) return { kind: 'none' };
+  const first = parsed[0];
+  if (!first || typeof first !== 'object' || Array.isArray(first)) {
+    return { kind: 'transient' };
   }
 
-  const record = parsed as Record<string, unknown>;
-  const snapshot: PullRequestSnapshot = {};
-  if (typeof record.number === 'number' || typeof record.number === 'string') {
-    snapshot.number = record.number;
+  const number = (first as Record<string, unknown>).number;
+  if (typeof number !== 'number' && typeof number !== 'string') {
+    return { kind: 'transient' };
   }
-
-  if (Object.keys(snapshot).length === 0) {
-    return undefined;
-  }
-
-  return snapshot;
+  return { kind: 'found', snapshot: { number } };
 }
 
 export function formatPullRequest(
@@ -452,13 +458,13 @@ export class GitStatusCache {
     }
 
     if (this.includePullRequest) {
-      const pullRequest = await this.fetchPullRequest();
+      const pullRequest = await this.fetchPullRequest(branch);
       if (this.disposed) {
         return;
       }
-      if (pullRequest !== undefined) {
-        this.pullRequestSnapshot = pullRequest;
-      } else if (branchChanged) {
+      if (pullRequest.kind === 'found') {
+        this.pullRequestSnapshot = pullRequest.snapshot;
+      } else if (pullRequest.kind === 'none' || branchChanged) {
         this.pullRequestSnapshot = undefined;
       }
     }
@@ -504,12 +510,16 @@ export class GitStatusCache {
     };
   }
 
-  private async fetchPullRequest(): Promise<PullRequestSnapshot | undefined> {
-    const result = await this.runCommandSafely('gh', GH_PR_VIEW_ARGS, this.ghTimeoutMs);
+  private async fetchPullRequest(branch: string): Promise<PullRequestFetchResult> {
+    const result = await this.runCommandSafely(
+      'gh',
+      [...GH_PR_LIST_ARGS, '--head', branch],
+      this.ghTimeoutMs,
+    );
     if (!result || result.exitCode !== 0) {
-      return undefined;
+      return { kind: 'transient' };
     }
-    return parsePullRequestJson(result.stdout);
+    return parsePullRequestListJson(result.stdout);
   }
 
   private async runCommandSafely(

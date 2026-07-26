@@ -43,7 +43,7 @@ export function updateTmuxBashStatus(
   const statusContext = createStatusContext(ctx);
   const status = config.statusbarEnabled ? collectTmuxBashStatus(commands) : undefined;
   if (status) publishStatus(pi, statusContext, status, TMUX_BASH_STATUS_SOURCE);
-  else clearStatus(pi, statusContext, TMUX_BASH_STATUS_KEY);
+  else clearStatus(pi, statusContext, TMUX_BASH_STATUS_KEY, TMUX_BASH_STATUS_SOURCE);
 }
 
 export function createStatusContext(ctx: ExtensionContext): StatuslineUICtx {

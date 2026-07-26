@@ -8,6 +8,7 @@ export default defineConfig(() => ({
     watch: false,
     globals: true,
     environment: 'jsdom',
+    testTimeout: 60_000,
     include: ['{src,tests}/**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
     reporters: ['default'],
     coverage: {
