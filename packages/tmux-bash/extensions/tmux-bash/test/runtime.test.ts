@@ -40,7 +40,7 @@ afterEach(async () => {
 });
 
 describe('TmuxBashRuntime', () => {
-  it('queues completion before gate release and delivers it exactly once', async () => {
+  it('queues completion before gate release when the file watcher misses the exit event', async () => {
     const events = new EventBus();
     const ordering: string[] = [];
     const messages: unknown[] = [];
@@ -81,6 +81,8 @@ describe('TmuxBashRuntime', () => {
 
     const details = started.details;
     if (!details) throw new Error('Expected tmux-bash details.');
+    runtime.state.watcher?.close();
+    runtime.state.watcher = null;
     await writeFile(details.outputFile, '$ sleep 1; echo done\ndone\n');
     const run = runtime.state.commands.get(details.runId);
     if (!run) throw new Error('Expected registered command run.');

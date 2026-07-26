@@ -29,6 +29,8 @@ import {
   type TmuxToolDetails,
 } from './types.js';
 
+const BACKGROUND_COMPLETION_SCAN_INTERVAL_MS = 250;
+
 export class TmuxBashRuntime {
   readonly state: TmuxBashRuntimeState;
   private currentGitRoot?: string;
@@ -43,6 +45,7 @@ export class TmuxBashRuntime {
       runDir: null,
       commands: new Map(),
       watcher: null,
+      completionMonitor: null,
       pollers: new Map(),
       gateController,
       statusContext: null,
@@ -67,6 +70,8 @@ export class TmuxBashRuntime {
     this.state.disposed = true;
     this.state.watcher?.close();
     this.state.watcher = null;
+    if (this.state.completionMonitor) clearInterval(this.state.completionMonitor);
+    this.state.completionMonitor = null;
     for (const poller of this.state.pollers.values()) clearInterval(poller.timer);
     this.state.pollers.clear();
     for (const run of this.state.commands.values()) {
@@ -426,13 +431,27 @@ export class TmuxBashRuntime {
   }
 
   private ensureWatcher(): void {
-    if (this.state.watcher || !this.state.runDir) return;
-    this.state.watcher = watch(this.state.runDir, (_event, filename) => {
-      if (!filename?.endsWith('.exit')) return;
-      const runId = filename.slice(0, -'.exit'.length);
-      const run = this.state.commands.get(runId);
-      if (run?.mode === 'background' && run.backgroundReady) void this.completeIfReady(run, true);
-    });
+    if (!this.state.runDir) return;
+    if (!this.state.watcher) {
+      this.state.watcher = watch(this.state.runDir, (_event, filename) => {
+        if (!filename?.endsWith('.exit')) return;
+        const runId = filename.slice(0, -'.exit'.length);
+        const run = this.state.commands.get(runId);
+        if (run?.mode === 'background' && run.backgroundReady) {
+          void this.completeIfReady(run, true);
+        }
+      });
+    }
+    if (!this.state.completionMonitor) {
+      this.state.completionMonitor = setInterval(() => {
+        for (const run of this.state.commands.values()) {
+          if (run.mode === 'background' && run.backgroundReady && !run.completionDelivered) {
+            void this.completeIfReady(run, true);
+          }
+        }
+      }, BACKGROUND_COMPLETION_SCAN_INTERVAL_MS);
+      this.state.completionMonitor.unref();
+    }
   }
 
   private async completeIfReady(

@@ -97,6 +97,7 @@ export interface TmuxBashRuntimeState {
   runDir: string | null;
   commands: Map<string, CommandRun>;
   watcher: FSWatcher | null;
+  completionMonitor: ReturnType<typeof setInterval> | null;
   pollers: Map<string, Poller>;
   gateController: ContinuationGateController;
   clearStatusProvider?: () => void;
