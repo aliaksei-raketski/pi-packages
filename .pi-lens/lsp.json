@@ -1,0 +1,12 @@
+{
+  "disabledServers": ["typescript"],
+  "servers": {
+    "typescript-native": {
+      "name": "TypeScript 7 native",
+      "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"],
+      "command": "node",
+      "args": ["./node_modules/@typescript/native/bin/tsc", "--lsp", "--stdio"],
+      "rootMarkers": ["pnpm-workspace.yaml"]
+    }
+  }
+}

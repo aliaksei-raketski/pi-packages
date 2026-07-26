@@ -8,6 +8,10 @@ out-tsc
 # dependencies
 node_modules
 
+# pi-lens project configuration
+/.pi-lens/*
+!/.pi-lens/lsp.json
+
 # IDEs and editors
 /.idea
 .project
