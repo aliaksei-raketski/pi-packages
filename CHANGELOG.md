@@ -1,3 +1,13 @@
+## 0.3.14 (2026-07-26)
+
+### 🩹 Fixes
+
+- **caffeinate:** harden lifecycle and platform support ([da7c01d](https://github.com/aliaksei-raketski/pi-packages/commit/da7c01d))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.13 (2026-07-26)
 
 ### 🚀 Features
