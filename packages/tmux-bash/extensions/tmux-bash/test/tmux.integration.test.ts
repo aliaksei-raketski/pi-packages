@@ -140,7 +140,7 @@ suite('real tmux integration', () => {
       await runtime.kill(windowId, context as never);
       await expect(new TmuxClient('tmux').hasWindow(windowId)).resolves.toBe(false);
 
-      await runtime.executeBash(
+      const backgroundResult = await runtime.executeBash(
         {
           command: "sleep 0.1; printf 'background-complete\\n'",
           background: true,
@@ -150,12 +150,23 @@ suite('real tmux integration', () => {
         undefined,
         context as never,
       );
-      // Completion delivery includes tmux shutdown, filesystem notification, and the
-      // runtime's fallback scan. Give slower CI runners enough time for that chain.
-      await waitFor(async () => pi.sendMessage.mock.calls.length === 1, 30_000);
-      expect(pi.sendMessage.mock.calls[0]?.[0]).toMatchObject({
-        content: expect.stringContaining('background-complete'),
-      });
+      if (backgroundResult.details?.state === 'running') {
+        // Completion delivery includes tmux shutdown, filesystem notification, and the
+        // runtime's fallback scan. Give slower CI runners enough time for that chain.
+        await waitFor(async () => pi.sendMessage.mock.calls.length === 1, 30_000);
+        expect(pi.sendMessage.mock.calls[0]?.[0]).toMatchObject({
+          content: expect.stringContaining('background-complete'),
+        });
+      } else {
+        // A slow runner can observe the exit before executeBash returns. In that case the
+        // completion is returned inline instead of being delivered as a follow-up.
+        expect(backgroundResult.details?.state).toBe('completed');
+        expect(backgroundResult.content[0]).toMatchObject({
+          type: 'text',
+          text: expect.stringContaining('background-complete'),
+        });
+        expect(pi.sendMessage).not.toHaveBeenCalled();
+      }
       expect(controller.list('real-runtime-session')).toHaveLength(0);
     } finally {
       await runtime.shutdown(context as never);
