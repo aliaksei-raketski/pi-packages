@@ -122,6 +122,8 @@ This package communicates through `@aliaksei-raketski/pi-continuation-gate-proto
 
 Persistent servers and watchers should use `waitForCompletion: false` so autonomous work is not blocked.
 
+The extension exposes the configured `defaultWaitForBackgroundCompletion` value in both its model prompt guidance and the `waitForCompletion` tool-schema description. Models are instructed to set the option explicitly for every background command: `true` for finite blocking work and `false` for persistent servers, watchers, and REPLs.
+
 ## Statusline integration
 
 The extension publishes `tmux-bash` status through `@aliaksei-raketski/pi-statusline-protocol` and also uses Pi's built-in footer status fallback:
