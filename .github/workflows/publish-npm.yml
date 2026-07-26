@@ -11,6 +11,11 @@ on:
         description: Release commit created from the CI-verified commit.
         required: true
         type: string
+      projects:
+        description: Optional comma-separated Nx projects to publish.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -79,4 +84,10 @@ jobs:
       - name: Publish with Nx Release
         env:
           NPM_CONFIG_PROVENANCE: 'true'
-        run: pnpm nx release publish
+          PUBLISH_PROJECTS: ${{ inputs.projects }}
+        run: |
+          if [ -n "$PUBLISH_PROJECTS" ]; then
+            pnpm nx release publish --projects "$PUBLISH_PROJECTS"
+          else
+            pnpm nx release publish
+          fi
