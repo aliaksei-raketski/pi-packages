@@ -1,0 +1,12 @@
+{
+  "skills": [
+    "-skills/link-workspace-packages/SKILL.md",
+    "-skills/monitor-ci/SKILL.md",
+    "-skills/nx-generate/SKILL.md",
+    "-skills/nx-import/SKILL.md",
+    "-skills/nx-plugins/SKILL.md",
+    "-skills/nx-run-tasks/SKILL.md",
+    "-skills/nx-workspace/SKILL.md"
+  ],
+  "packages": ["npm:@aliaksei-raketski/pi-nx-developer"]
+}
