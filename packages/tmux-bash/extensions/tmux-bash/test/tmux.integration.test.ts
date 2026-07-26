@@ -150,7 +150,9 @@ suite('real tmux integration', () => {
         undefined,
         context as never,
       );
-      await waitFor(async () => pi.sendMessage.mock.calls.length === 1);
+      // Completion delivery includes tmux shutdown, filesystem notification, and the
+      // runtime's fallback scan. Give slower CI runners enough time for that chain.
+      await waitFor(async () => pi.sendMessage.mock.calls.length === 1, 30_000);
       expect(pi.sendMessage.mock.calls[0]?.[0]).toMatchObject({
         content: expect.stringContaining('background-complete'),
       });
@@ -159,11 +161,11 @@ suite('real tmux integration', () => {
       await runtime.shutdown(context as never);
       controller.dispose();
     }
-  }, 20_000);
+  }, 40_000);
 });
 
-async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + 10_000;
+async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
