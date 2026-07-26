@@ -1,6 +1,8 @@
 import { formatSize, truncateTail, type TruncationResult } from '@earendil-works/pi-coding-agent';
 import { open, readFile } from 'node:fs/promises';
 
+import { sanitizeTerminalText } from './sanitize.js';
+
 export interface OutputTail {
   content: string;
   totalBytes: number;
@@ -64,12 +66,21 @@ export function formatOutput(
           truncated: false,
         }
       : output;
-  const truncation = truncateTail(source.content, {
+  const sanitized = sanitizeTerminalText(source.content);
+  const boundedTail = truncateTail(sanitized, {
     maxLines: options.maxLines,
     maxBytes: options.maxBytes,
   });
-  if (!source.truncated && !truncation.truncated) {
-    return { text: truncation.content, raw: source.content };
+  const truncation: TruncationResult = source.truncated
+    ? {
+        ...boundedTail,
+        truncated: true,
+        truncatedBy: 'bytes',
+        totalBytes: source.totalBytes,
+      }
+    : boundedTail;
+  if (!truncation.truncated) {
+    return { text: truncation.content, raw: sanitized };
   }
 
   const omittedBytes = Math.max(0, source.totalBytes - truncation.outputBytes);
@@ -78,7 +89,7 @@ export function formatOutput(
     : `[Output truncated: showing the last ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}); ${truncation.totalLines - truncation.outputLines} lines/${formatSize(omittedBytes)} omitted. Full output: ${options.fullOutputPath}]`;
   return {
     text: `${notice}\n${truncation.content}`,
-    raw: source.content,
+    raw: sanitized,
     truncation,
   };
 }

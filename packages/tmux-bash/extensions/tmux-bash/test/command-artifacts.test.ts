@@ -88,10 +88,14 @@ describe('command artifacts', () => {
       command: "printf 'stdout\\n'; printf 'stderr\\n' >&2; exit 7",
       displayCommand: 'printf output; exit 7',
       config: { ...DEFAULT_TMUX_BASH_CONFIG, environmentDenylist: ['SECRET', 'TMUX'] },
-      env: { SHELL: '/bin/bash', SECRET: 'hidden', SAFE_VALUE: "quoted'value" },
+      env: { SHELL: '/bin/zsh', SECRET: 'hidden', SAFE_VALUE: "quoted'value" },
     });
 
-    await expect(execFileAsync(artifacts.scriptFile, [])).rejects.toMatchObject({ code: 7 });
+    await expect(
+      execFileAsync(artifacts.scriptFile, [], {
+        env: { ...process.env, SHELL: '/bin/zsh', SECRET: 'inherited', TMUX: 'stale' },
+      }),
+    ).rejects.toMatchObject({ code: 7 });
     expect(await readFile(artifacts.outputFile, 'utf8')).toBe(
       '$ printf output; exit 7\nstdout\nstderr\n',
     );
@@ -100,7 +104,30 @@ describe('command artifacts', () => {
       code: 'ENOENT',
     });
     const script = await readFile(artifacts.scriptFile, 'utf8');
-    expect(script).not.toContain('SECRET');
+    expect(script).toContain('unset SECRET');
+    expect(script).toContain('unset TMUX');
     expect(script).toContain("export SAFE_VALUE='quoted'\"'\"'value'");
+    expect(script).not.toContain('${SHELL');
+  });
+
+  it('uses Bash even when the inherited login shell is not Bash', async () => {
+    const runDir = await mkdtemp(join(tmpdir(), 'tmux-artifacts-bash-'));
+    directories.push(runDir);
+    const artifacts = await createCommandArtifacts({
+      runDir,
+      runId: 'bash123',
+      command: 'shopt -s extglob; printf \'%s:%s\\n\' "$BASH_VERSION" "${SECRET-unset}"',
+      displayCommand: 'verify bash',
+      config: { ...DEFAULT_TMUX_BASH_CONFIG, environmentDenylist: ['SECRET'] },
+      env: { SHELL: '/bin/zsh' },
+    });
+
+    await execFileAsync(artifacts.scriptFile, [], {
+      env: { ...process.env, SHELL: '/bin/zsh', SECRET: 'inherited' },
+    });
+
+    expect(await readFile(artifacts.outputFile, 'utf8')).toMatch(
+      /^\$ verify bash\n[^:\n]+:unset\n$/,
+    );
   });
 });

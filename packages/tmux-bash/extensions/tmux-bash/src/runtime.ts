@@ -15,6 +15,7 @@ import { clampPollInterval, clampTimeout } from './config.js';
 import { createCommandArtifacts, createPiSessionEnvironment } from './command-artifacts.js';
 import { formatOutput, readExitCode, readOutput, type OutputTail } from './output.js';
 import type { BashInput } from './schemas.js';
+import { sanitizeTerminalText } from './sanitize.js';
 import { updateTmuxBashStatus } from './status.js';
 import { TmuxClient } from './tmux-client.js';
 import { deriveTmuxSession, deriveWindowName, resolveGitRoot, shortHash } from './tmux-scope.js';
@@ -68,6 +69,9 @@ export class TmuxBashRuntime {
     this.state.watcher = null;
     for (const poller of this.state.pollers.values()) clearInterval(poller.timer);
     this.state.pollers.clear();
+    for (const run of this.state.commands.values()) {
+      if (run.completionRetryTimer) clearTimeout(run.completionRetryTimer);
+    }
 
     const sessionId =
       ctx?.sessionManager.getSessionId() ?? this.state.statusContext?.sessionManager.getSessionId();
@@ -129,6 +133,7 @@ export class TmuxBashRuntime {
       backgroundReady: false,
       completionDelivered: false,
       completionClaimed: false,
+      completionDeliveryFailures: 0,
       killed: false,
     };
     this.state.commands.set(runId, run);
@@ -435,35 +440,90 @@ export class TmuxBashRuntime {
     deliver: boolean,
   ): Promise<AgentToolResult<TmuxBashDetails> | undefined> {
     const exitCode = await readExitCode(run.exitCodeFile);
-    if (exitCode === undefined) return undefined;
-    if (run.completionClaimed)
-      return run.completionDelivered ? undefined : this.completedResult(run);
+    if (exitCode === undefined || run.completionDelivered) return undefined;
+    if (run.completionPromise) return run.completionPromise;
+    if (run.completionClaimed) return undefined;
 
-    run.completionClaimed = true;
+    const completion = this.finishBackgroundCompletion(run, exitCode, deliver);
+    run.completionPromise = completion;
+    try {
+      return await completion;
+    } finally {
+      if (run.completionPromise === completion) run.completionPromise = undefined;
+    }
+  }
+
+  private async finishBackgroundCompletion(
+    run: CommandRun,
+    exitCode: number,
+    deliver: boolean,
+  ): Promise<AgentToolResult<TmuxBashDetails>> {
     run.exitCode = exitCode;
     run.endedAt = Date.now();
     this.stopPoll(run.runId);
-    const result = await this.completedResult(run);
+
+    let result: AgentToolResult<TmuxBashDetails>;
+    try {
+      result = await this.completedResult(run);
+    } catch (error) {
+      const reason = sanitizeTerminalText(error instanceof Error ? error.message : String(error));
+      result = {
+        content: [
+          {
+            type: 'text',
+            text: `Command completed, but its output could not be read${reason ? `: ${reason}` : '.'}`,
+          },
+        ],
+        details: this.details(run),
+      };
+    }
 
     if (deliver && run.mode === 'background' && !this.state.disposed) {
       const output = result.content[0]?.type === 'text' ? result.content[0].text : '';
-      this.pi.sendMessage(
-        {
-          customType: TMUX_BASH_COMPLETION_MESSAGE,
-          content:
-            `${run.windowId ?? run.runId} completed with exit code ${exitCode}.\n${output}`.trim(),
-          display: true,
-          details: result.details,
-        },
-        { triggerTurn: true, deliverAs: 'followUp' },
-      );
+      try {
+        this.pi.sendMessage(
+          {
+            customType: TMUX_BASH_COMPLETION_MESSAGE,
+            content:
+              `${run.windowId ?? run.runId} completed with exit code ${exitCode}.\n${output}`.trim(),
+            display: true,
+            details: result.details,
+          },
+          { triggerTurn: true, deliverAs: 'followUp' },
+        );
+      } catch (error) {
+        run.completionClaimed = false;
+        run.completionDelivered = false;
+        run.completionDeliveryFailures += 1;
+        this.releaseGate(run, 'failed', 'none');
+        result.details = this.details(run, result.details?.truncation);
+        const reason = sanitizeTerminalText(error instanceof Error ? error.message : String(error));
+        try {
+          this.state.statusContext?.ui.notify(
+            `Tmux command ${run.windowId ?? run.runId} completed, but its follow-up could not be delivered${reason ? `: ${reason}` : '.'}`,
+            'error',
+          );
+        } catch {
+          // The gate is already released; a broken fallback UI cannot strand the session.
+        }
+        if (run.completionDeliveryFailures === 1 && !this.state.disposed) {
+          run.completionRetryTimer = setTimeout(() => {
+            run.completionRetryTimer = undefined;
+            void this.completeIfReady(run, true);
+          }, 100);
+        }
+        this.publishStatus();
+        return result;
+      }
+      run.completionClaimed = true;
       run.completionDelivered = true;
       this.releaseGate(run, exitCode === 0 ? 'completed' : 'failed', 'producer-message');
     } else {
+      run.completionClaimed = true;
       run.completionDelivered = true;
       this.releaseGate(run, exitCode === 0 ? 'completed' : 'failed', 'current-turn');
     }
-    await this.closeCompletedWindow(run);
+    await this.closeCompletedWindow(run).catch(() => undefined);
     this.publishStatus();
     return result;
   }
@@ -581,7 +641,7 @@ export class TmuxBashRuntime {
     this.state.gateController.acquire({
       sessionId: run.sessionId,
       gateId,
-      reason: `Waiting for tmux command: ${run.displayCommand.slice(0, 160)}`,
+      reason: `Waiting for tmux command: ${sanitizeTerminalText(run.displayCommand).slice(0, 160)}`,
       resource: { kind: 'tmux-command', id: run.runId, label: run.windowId ?? run.runId },
     });
     run.gateId = gateId;
@@ -616,7 +676,7 @@ export class TmuxBashRuntime {
       runId: run.runId,
       windowId: run.windowId,
       tmuxSession: run.tmuxSession,
-      command: run.command,
+      command: sanitizeTerminalText(run.command),
       outputFile: run.outputFile,
       fullOutputPath: truncation?.truncated ? run.outputFile : undefined,
       truncation,
@@ -634,13 +694,13 @@ export class TmuxBashRuntime {
     text: string,
   ): AgentToolResult<TmuxToolDetails> {
     return {
-      content: [{ type: 'text', text }],
+      content: [{ type: 'text', text: sanitizeTerminalText(text) }],
       details: {
         action,
         runs: runs.map((run) => ({
           runId: run.runId,
           windowId: run.windowId,
-          command: run.displayCommand,
+          command: sanitizeTerminalText(run.displayCommand),
           state: this.details(run).state,
           background: run.mode === 'background',
           awaited: Boolean(run.gateId),
@@ -653,12 +713,14 @@ export class TmuxBashRuntime {
   }
 
   private async reconcile(ctx: ExtensionContext): Promise<void> {
-    for (const run of this.list(ctx)) {
-      if (run.endedAt || run.killed) continue;
-      if (await this.completeIfReady(run, false)) continue;
-      if (await this.isOwnedWindow(run)) continue;
-      await this.failUnownedRun(run, false);
-    }
+    await Promise.all(
+      this.list(ctx).map(async (run) => {
+        if (run.endedAt || run.killed) return undefined;
+        if (await this.completeIfReady(run, false)) return undefined;
+        if (await this.isOwnedWindow(run)) return undefined;
+        return this.failUnownedRun(run, false);
+      }),
+    );
     this.publishStatus();
   }
 

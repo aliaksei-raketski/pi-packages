@@ -1,10 +1,12 @@
 import { Text } from '@earendil-works/pi-tui';
 
 import type { BashInput, TmuxInput } from './schemas.js';
+import { sanitizeTerminalText } from './sanitize.js';
 import type { TmuxBashDetails, TmuxToolDetails } from './types.js';
 
 export function renderBashCall(args: BashInput, theme: ThemeLike) {
-  const command = args.command.length > 100 ? `${args.command.slice(0, 97)}...` : args.command;
+  const safeCommand = sanitizeTerminalText(args.command);
+  const command = safeCommand.length > 100 ? `${safeCommand.slice(0, 97)}...` : safeCommand;
   const mode = args.background ? ' bg' : '';
   const awaited = args.waitForCompletion ? ' awaited' : '';
   return new Text(
@@ -20,14 +22,16 @@ export function renderBashResult(
   theme: ThemeLike,
 ) {
   if (options.isPartial) {
-    const output = result.content.find((item) => item.type === 'text')?.text ?? 'Running...';
+    const output = sanitizeTerminalText(
+      result.content.find((item) => item.type === 'text')?.text ?? 'Running...',
+    );
     return new Text(theme.fg('warning', compact(output, options.expanded ? 20 : 4)), 0, 0);
   }
   const details = result.details;
   if (!details) {
     const output = result.content
       .filter((item) => item.type === 'text' && item.text)
-      .map((item) => item.text)
+      .map((item) => sanitizeTerminalText(item.text ?? ''))
       .join('\n');
     return new Text(theme.fg(output ? 'error' : 'dim', output || 'No output'), 0, 0);
   }
@@ -40,13 +44,15 @@ export function renderBashResult(
       : `${details.state}${details.exitCode === undefined ? '' : ` (${details.exitCode})`}`,
   );
   if (details.awaited) text += theme.fg('warning', ' · awaited');
-  const output = result.content.find((item) => item.type === 'text')?.text;
+  const output = sanitizeTerminalText(
+    result.content.find((item) => item.type === 'text')?.text ?? '',
+  );
   if (output) text += `\n${theme.fg('dim', compact(output, options.expanded ? 80 : 8))}`;
   return new Text(text, 0, 0);
 }
 
 export function renderTmuxCall(args: TmuxInput, theme: ThemeLike) {
-  const target = args.windowId ? ` ${args.windowId}` : '';
+  const target = args.windowId ? ` ${sanitizeTerminalText(args.windowId)}` : '';
   return new Text(
     `${theme.fg('toolTitle', theme.bold('tmux '))}${theme.fg('accent', args.action)}${theme.fg('dim', target)}`,
     0,
@@ -59,7 +65,9 @@ export function renderTmuxResult(
   options: { expanded: boolean; isPartial: boolean },
   theme: ThemeLike,
 ) {
-  const output = result.content.find((item) => item.type === 'text')?.text ?? '';
+  const output = sanitizeTerminalText(
+    result.content.find((item) => item.type === 'text')?.text ?? '',
+  );
   return new Text(
     theme.fg(options.isPartial ? 'warning' : 'dim', compact(output, options.expanded ? 100 : 12)),
     0,

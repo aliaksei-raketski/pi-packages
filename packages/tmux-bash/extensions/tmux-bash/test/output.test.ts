@@ -26,9 +26,26 @@ describe('bounded output reads', () => {
     expect(output.totalBytes).toBeGreaterThan(output.readBytes);
     expect(output.content).not.toContain('BEGIN-ONLY');
     expect(output.content.endsWith('final-line\n')).toBe(true);
-    expect(
-      formatOutput(output, { maxLines: 200, maxBytes: 1_024, fullOutputPath: path }).text,
-    ).toMatch(/Output truncated: showing a bounded tail.*Full output:/s);
+    const formatted = formatOutput(output, {
+      maxLines: 200,
+      maxBytes: 1_024,
+      fullOutputPath: path,
+    });
+    expect(formatted.text).toMatch(/Output truncated: showing a bounded tail.*Full output:/s);
+    expect(formatted.truncation?.truncated).toBe(true);
+  });
+
+  it('removes terminal and binary control sequences from model-visible output', () => {
+    const path = '/tmp/untrusted.out';
+    const formatted = formatOutput(
+      `safe\u001b[31m red\u001b[0m\n\u001b]0;hostile-title\u0007title-safe\n\u001b]52;c;Y2xpcGJvYXJk\u001b\\clipboard-safe\u0000`,
+      { maxLines: 200, maxBytes: 1_024, fullOutputPath: path },
+    );
+
+    expect(formatted.text).toBe('safe red\ntitle-safe\nclipboard-safe');
+    expect(formatted.text).not.toContain(String.fromCodePoint(0x00));
+    expect(formatted.text).not.toContain(String.fromCodePoint(0x1b));
+    expect(formatted.text).not.toContain(String.fromCodePoint(0x9b));
   });
 
   it('returns an empty bounded value for a missing artifact', async () => {

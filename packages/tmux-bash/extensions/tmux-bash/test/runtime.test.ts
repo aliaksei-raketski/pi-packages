@@ -95,6 +95,57 @@ describe('TmuxBashRuntime', () => {
     expect(messages).toHaveLength(1);
   });
 
+  it('releases the gate and retries after completion follow-up delivery fails', async () => {
+    const events = new EventBus();
+    const releases: Array<{ wake?: string }> = [];
+    events.on(CONTINUATION_GATE_RELEASE_EVENT, (payload) =>
+      releases.push(payload as { wake?: string }),
+    );
+    const delivered: unknown[] = [];
+    let attempts = 0;
+    const pi = {
+      events,
+      sendMessage: (message: unknown) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('delivery unavailable');
+        delivered.push(message);
+      },
+    };
+    const context = fakeContext();
+    const execute = vi.fn<TmuxExecutor>(async (_binary, args) => ({
+      stdout: args[0] === 'new-window' ? '@78\n' : '',
+      stderr: '',
+      code: 0,
+    }));
+    const controller = createContinuationGateController(pi, { source: 'pi-tmux-bash' });
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      { ...DEFAULT_TMUX_BASH_CONFIG, statusbarEnabled: false },
+      controller,
+      new TmuxClient('tmux', execute),
+    );
+    activeRuntimes.push(runtime);
+    await runtime.startSession(context as never);
+
+    const started = await runtime.executeBash(
+      { command: 'echo done', background: true, waitForCompletion: true },
+      undefined,
+      undefined,
+      context as never,
+    );
+    const run = runtime.state.commands.get(started.details?.runId ?? '');
+    if (!run) throw new Error('Expected registered command run.');
+    await writeFile(run.outputFile, '$ echo done\ndone\n');
+    await writeFile(run.exitCodeFile, '0\n');
+
+    await vi.waitFor(() => expect(delivered).toHaveLength(1));
+    expect(attempts).toBe(2);
+    expect(releases[0]).toMatchObject({ wake: 'none' });
+    expect(controller.list('session-1')).toHaveLength(0);
+    expect(run.completionClaimed).toBe(true);
+    expect(run.completionDelivered).toBe(true);
+  });
+
   it('bounds poll updates and reports an unowned awaited window before releasing its gate', async () => {
     const events = new EventBus();
     const ordering: string[] = [];

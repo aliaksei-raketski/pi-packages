@@ -80,15 +80,19 @@ export function buildEnvironmentExports(
   environment: NodeJS.ProcessEnv,
   denylist: ReadonlySet<string>,
 ): string[] {
-  return Object.entries(environment)
+  const validName = (name: string) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+  const unsets = [...denylist]
+    .filter(validName)
+    .sort((left, right) => left.localeCompare(right))
+    .map((name) => `unset ${name}`);
+  const exports = Object.entries(environment)
     .filter(
       (entry): entry is [string, string] =>
-        /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry[0]) &&
-        typeof entry[1] === 'string' &&
-        !denylist.has(entry[0]),
+        validName(entry[0]) && typeof entry[1] === 'string' && !denylist.has(entry[0]),
     )
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([name, value]) => `export ${name}=${shellQuote(value)}`);
+  return [...unsets, ...exports];
 }
 
 function buildWrapperScript(
@@ -104,7 +108,7 @@ command_file=${shellQuote(input.commandFile)}
 exit_file=${shellQuote(input.exitCodeFile)}
 exit_tmp=${shellQuote(input.temporaryExitCodeFile)}
 printf %s ${shellQuote(header)} > "$output_file"
-shell_binary="${'${SHELL:-/bin/bash}'}"
+shell_binary="${'${BASH:-/bin/bash}'}"
 "$shell_binary" "$command_file" 2>&1 | tee -a "$output_file"
 status=${'${PIPESTATUS[0]}'}
 printf '%s\\n' "$status" > "$exit_tmp"

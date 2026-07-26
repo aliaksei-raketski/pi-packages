@@ -22,6 +22,7 @@ function run(overrides: Partial<CommandRun> = {}): CommandRun {
     backgroundReady: true,
     completionDelivered: false,
     completionClaimed: false,
+    completionDeliveryFailures: 0,
     killed: false,
     ...overrides,
   };

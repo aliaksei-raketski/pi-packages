@@ -1,4 +1,8 @@
-import type { BashToolDetails, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import type {
+  AgentToolResult,
+  BashToolDetails,
+  ExtensionContext,
+} from '@earendil-works/pi-coding-agent';
 import type { ContinuationGateController } from '@aliaksei-raketski/pi-continuation-gate-protocol';
 import type { FSWatcher } from 'node:fs';
 
@@ -74,6 +78,9 @@ export interface CommandRun extends CommandArtifacts {
   gateId?: string;
   completionDelivered: boolean;
   completionClaimed: boolean;
+  completionPromise?: Promise<AgentToolResult<TmuxBashDetails> | undefined>;
+  completionRetryTimer?: ReturnType<typeof setTimeout>;
+  completionDeliveryFailures: number;
   killed: boolean;
 }
 
