@@ -9,7 +9,8 @@ on:
 permissions: {}
 
 jobs:
-  main:
+  ci:
+    name: CI
     permissions:
       actions: read
       contents: read
@@ -46,11 +47,153 @@ jobs:
 
   release:
     name: Release
-    needs: main
+    needs: ci
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    outputs:
+      ci_sha: ${{ steps.nx_release.outputs.before_sha }}
+      release_sha: ${{ steps.nx_release.outputs.release_sha }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CI-verified commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          filter: tree:0
+
+      - name: Verify CI-verified release target
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          actual_sha="$(git rev-parse HEAD)"
+          if [ "$actual_sha" != "$EXPECTED_SHA" ]; then
+            echo "Expected CI commit $EXPECTED_SHA." >&2
+            echo "Checked out $actual_sha instead." >&2
+            exit 1
+          fi
+
+          git fetch origin main --no-tags
+          if [ "$(git rev-parse origin/main)" != "$EXPECTED_SHA" ]; then
+            echo "main advanced after CI." >&2
+            echo "The newer commit must pass its own CI run." >&2
+            exit 1
+          fi
+
+          git switch --force-create main --track origin/main
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Configure authenticated git push
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: gh auth setup-git
+
+      - name: Run Nx release without publishing
+        id: nx_release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          before_sha="$(git rev-parse HEAD)"
+          pnpm run release
+          after_sha="$(git rev-parse HEAD)"
+
+          echo "before_sha=$before_sha" >> "$GITHUB_OUTPUT"
+          if [ "$before_sha" != "$after_sha" ]; then
+            echo "release_sha=$after_sha" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    name: Publish
+    needs: release
+    if: needs.release.outputs.release_sha != ''
+    permissions:
+      contents: read
       id-token: write
-    uses: ./.github/workflows/release.yml
-    with:
-      ci_sha: ${{ github.sha }}
+    concurrency:
+      group: publish-npm
+      cancel-in-progress: false
+    environment: npm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.release.outputs.release_sha }}
+          fetch-depth: 0
+          filter: tree:0
+
+      - name: Verify release provenance
+        env:
+          CI_SHA: ${{ needs.release.outputs.ci_sha }}
+          RELEASE_SHA: ${{ needs.release.outputs.release_sha }}
+        run: |
+          set -euo pipefail
+
+          sha_pattern='^[0-9a-f]{40}$'
+          if [[ ! "$CI_SHA" =~ $sha_pattern ]]; then
+            echo "CI input must be a full lowercase Git commit SHA." >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_SHA" =~ $sha_pattern ]]; then
+            echo "Release input must be a full lowercase Git commit SHA." >&2
+            exit 1
+          fi
+
+          git fetch origin main --tags --force
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          git merge-base --is-ancestor "$CI_SHA" "$RELEASE_SHA"
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main
+
+          if ! git tag --points-at "$RELEASE_SHA" | grep -q .; then
+            echo "Release commit must have a release tag." >&2
+            exit 1
+          fi
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b0f76dfb45f55f8421693e4803ac7bb65143bd34 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check release artifacts
+        run: pnpm run check
+
+      - name: Publish with Nx Release
+        env:
+          NPM_CONFIG_PROVENANCE: 'true'
+        run: pnpm nx release publish

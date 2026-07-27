@@ -35,35 +35,27 @@ for (const [name, source] of workflows) {
   }
 }
 
-const publish = workflows.get('publish-npm.yml');
-assert.ok(publish, 'publish-npm.yml must exist');
-assert.match(publish, /^\s{2}workflow_call:/mu);
-assert.doesNotMatch(publish, /^\s{2}workflow_dispatch:/mu);
-assert.match(publish, /^\s{4}environment:\s*npm$/mu);
-assert.match(publish, /id-token:\s*write/u);
-assert.match(publish, /git merge-base --is-ancestor "\$CI_SHA" "\$RELEASE_SHA"/u);
-assert.match(publish, /git merge-base --is-ancestor "\$RELEASE_SHA" origin\/main/u);
-assert.match(publish, /git tag --points-at "\$RELEASE_SHA"/u);
-assert.match(publish, /pnpm run check/u);
-assert.doesNotMatch(publish, /pnpm run test(?::ci)?/u);
-
 const ci = workflows.get('ci.yml');
 assert.ok(ci, 'ci.yml must exist');
-assert.match(ci, /pnpm run test:ci/u);
-assert.match(ci, /needs:\s*main/u);
-assert.match(ci, /uses:\s*\.\/\.github\/workflows\/release\.yml/u);
+assert.equal(workflows.has('release.yml'), false, 'release must be an inline ci.yml job');
+assert.equal(workflows.has('publish-npm.yml'), false, 'publish must be an inline ci.yml job');
+assert.match(ci, /^\s{2}ci:\n\s{4}name:\s*CI$/mu);
+assert.match(ci, /^\s{2}release:\n\s{4}name:\s*Release$/mu);
+assert.match(ci, /^\s{2}publish:\n\s{4}name:\s*Publish$/mu);
+assert.match(ci, /needs:\s*ci/u);
+assert.match(ci, /needs:\s*release/u);
 assert.match(ci, /github\.event_name == 'push'/u);
 assert.match(ci, /id-token:\s*write/u);
-
-const release = workflows.get('release.yml');
-assert.ok(release, 'release.yml must exist');
-assert.match(release, /^\s{2}workflow_call:/mu);
-assert.doesNotMatch(release, /^\s{2}workflow_(?:dispatch|run):/mu);
-assert.doesNotMatch(release, /actions:\s*write/u);
-assert.match(release, /id-token:\s*write/u);
-assert.match(release, /ref: \$\{\{ inputs\.ci_sha \}\}/u);
-assert.match(release, /uses:\s*\.\/\.github\/workflows\/publish-npm\.yml/u);
-assert.doesNotMatch(release, /actions\/workflows\/publish-npm\.yml\/dispatches/u);
-assert.doesNotMatch(release, /pnpm run test(?::ci)?/u);
+assert.match(ci, /^\s{4}environment:\s*npm$/mu);
+assert.doesNotMatch(ci, /actions:\s*write/u);
+assert.match(ci, /ref: \$\{\{ github\.sha \}\}/u);
+assert.match(ci, /ref: \$\{\{ needs\.release\.outputs\.release_sha \}\}/u);
+assert.match(ci, /git merge-base --is-ancestor "\$CI_SHA" "\$RELEASE_SHA"/u);
+assert.match(ci, /git merge-base --is-ancestor "\$RELEASE_SHA" origin\/main/u);
+assert.match(ci, /git tag --points-at "\$RELEASE_SHA"/u);
+assert.match(ci, /NPM_CONFIG_PROVENANCE:\s*'true'/u);
+assert.match(ci, /pnpm nx release publish/u);
+assert.equal([...ci.matchAll(/pnpm run test:ci/gu)].length, 1, 'CI tests must run exactly once');
+assert.doesNotMatch(ci, /pnpm run test(?!:ci)/u);
 
 process.stdout.write(`Workflow policy passed for ${workflows.size} workflows.\n`);
