@@ -12,13 +12,13 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createCommandArtifacts, shellQuote } from '../src/command-artifacts.js';
 import { DEFAULT_TMUX_BASH_CONFIG } from '../src/config.js';
 import { readExitCode } from '../src/output.js';
 import { TmuxBashRuntime } from '../src/runtime.js';
-import { TmuxClient } from '../src/tmux-client.js';
+import { TmuxClient, type TmuxExecutor } from '../src/tmux-client.js';
 import { resolveWorkspaceScope } from '../src/tmux-scope.js';
 
 const execFileAsync = promisify(execFile);
@@ -30,20 +30,41 @@ const tmuxAvailable = (() => {
     return false;
   }
 })();
+if (process.env.CI && !tmuxAvailable) {
+  throw new Error('The CI integration suite requires tmux, but the binary is unavailable.');
+}
 const suite = tmuxAvailable ? describe : describe.skip;
-const sessionName = `pi-tmux-test-${process.pid}-${Date.now()}`;
-const directories: string[] = [];
+let environment: RealTmuxEnvironment | undefined;
 
-afterAll(async () => {
-  if (tmuxAvailable)
-    await execFileAsync('tmux', ['kill-session', '-t', sessionName]).catch(() => undefined);
-  await Promise.all(directories.map((path) => rm(path, { recursive: true, force: true })));
-});
+interface RealTmuxEnvironment {
+  root: string;
+  sessionName: string;
+  client: TmuxClient;
+  execute: TmuxExecutor;
+}
 
 suite('real tmux integration', () => {
+  beforeEach(async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-tmux-test-'));
+    const execute = isolatedTmuxExecutor(join(root, 'tmux.sock'));
+    environment = {
+      root,
+      sessionName: 'pi-test',
+      client: new TmuxClient('tmux', execute),
+      execute,
+    };
+  });
+
+  afterEach(async () => {
+    const current = environment;
+    environment = undefined;
+    if (!current) return;
+    await current.execute('tmux', ['kill-server']).catch(() => undefined);
+    await rm(current.root, { recursive: true, force: true });
+  });
   it('captures output, exact exit code, stable ID, and owned window metadata', async () => {
-    const runDir = await mkdtemp(join(tmpdir(), 'pi-tmux-integration-'));
-    directories.push(runDir);
+    const current = requireEnvironment();
+    const runDir = await mkdtemp(join(current.root, 'artifacts-'));
     const artifacts = await createCommandArtifacts({
       runDir,
       runId: 'integration',
@@ -51,9 +72,9 @@ suite('real tmux integration', () => {
       displayCommand: 'integration command',
       config: DEFAULT_TMUX_BASH_CONFIG,
     });
-    const client = new TmuxClient('tmux');
+    const client = current.client;
     const windowId = await client.createWindow({
-      sessionName,
+      sessionName: current.sessionName,
       windowName: 'integration',
       cwd: process.cwd(),
       scriptFile: artifacts.scriptFile,
@@ -77,7 +98,7 @@ suite('real tmux integration', () => {
     expect(windowId).toMatch(/^@\d+$/);
     await waitFor(async () => (await readExitCode(artifacts.exitCodeFile)) === 9);
     expect(await readFile(artifacts.outputFile, 'utf8')).toContain('hello from tmux');
-    const { stdout: metadata } = await execFileAsync('tmux', [
+    const metadata = await current.execute('tmux', [
       'show-options',
       '-w',
       '-v',
@@ -85,13 +106,14 @@ suite('real tmux integration', () => {
       windowId,
       '@pi_tmux_bash_run_id',
     ]);
-    expect(metadata.trim()).toBe('integration');
+    expect(metadata.code).toBe(0);
+    expect(metadata.stdout.trim()).toBe('integration');
     await client.killWindow(windowId);
   });
 
   it('streams exact bytes from a real tmux window through the user-bash FIFO', async () => {
-    const runDir = await mkdtemp(join(tmpdir(), 'pi-tmux-stream-integration-'));
-    directories.push(runDir);
+    const current = requireEnvironment();
+    const runDir = await mkdtemp(join(current.root, 'stream-artifacts-'));
     const artifacts = await createCommandArtifacts({
       runDir,
       runId: 'stream-integration',
@@ -109,9 +131,9 @@ suite('real tmux integration', () => {
       }
       return Buffer.concat(chunks);
     })();
-    const client = new TmuxClient('tmux');
+    const client = current.client;
     const windowId = await client.createWindow({
-      sessionName,
+      sessionName: current.sessionName,
       windowName: 'stream-integration',
       cwd: process.cwd(),
       scriptFile: artifacts.scriptFile,
@@ -133,6 +155,9 @@ suite('real tmux integration', () => {
   });
 
   it('lists, peeks, kills, and reports completion through the real runtime', async () => {
+    const current = requireEnvironment();
+    const runDir = await mkdtemp(join(current.root, 'runtime-'));
+    const completeBackgroundFile = join(runDir, 'complete-background');
     const handlers = new Map<string, Set<(payload: unknown) => void>>();
     const events = {
       on(name: string, handler: (payload: unknown) => void) {
@@ -151,18 +176,22 @@ suite('real tmux integration', () => {
       pi as never,
       {
         ...DEFAULT_TMUX_BASH_CONFIG,
+        outputDir: runDir,
+        durableOutputDir: runDir,
+        preserveOutputFiles: true,
         tmuxSessionScope: 'global',
-        globalTmuxSessionName: sessionName,
+        globalTmuxSessionName: current.sessionName,
         autoCloseWindowsOnCompletion: false,
         statusbarEnabled: false,
       },
       controller,
+      current.client,
     );
     const context = {
       cwd: process.cwd(),
       sessionManager: {
         getSessionId: () => 'real-runtime-session',
-        getSessionFile: () => '/tmp/real-runtime-session.jsonl',
+        getSessionFile: () => join(runDir, 'real-runtime-session.jsonl'),
       },
       ui: {
         notify: vi.fn(),
@@ -174,7 +203,7 @@ suite('real tmux integration', () => {
     try {
       await runtime.startSession(context as never);
       const longRunning = await runtime.executeBash(
-        { command: "printf 'peek-ready\\n'; sleep 10", background: true },
+        { command: "printf 'peek-ready\\n'; while :; do sleep 1; done", background: true },
         undefined,
         undefined,
         context as never,
@@ -196,11 +225,11 @@ suite('real tmux integration', () => {
         text: expect.stringContaining('peek-ready'),
       });
       await runtime.kill(windowId, context as never);
-      await expect(new TmuxClient('tmux').hasWindow(windowId)).resolves.toBe(false);
+      await expect(current.client.hasWindow(windowId)).resolves.toBe(false);
 
       const backgroundResult = await runtime.executeBash(
         {
-          command: "sleep 0.1; printf 'background-complete\\n'",
+          command: `while [ ! -e ${shellQuote(completeBackgroundFile)} ]; do sleep 0.05; done; printf 'background-complete\\n'`,
           background: true,
           waitForCompletion: true,
         },
@@ -208,33 +237,22 @@ suite('real tmux integration', () => {
         undefined,
         context as never,
       );
-      if (backgroundResult.details?.state === 'running') {
-        // Completion delivery includes tmux shutdown, filesystem notification, and the
-        // runtime's fallback scan. Give slower CI runners enough time for that chain.
-        await waitFor(async () => pi.sendMessage.mock.calls.length === 1, 30_000);
-        expect(pi.sendMessage.mock.calls[0]?.[0]).toMatchObject({
-          content: expect.stringContaining('background-complete'),
-        });
-      } else {
-        // A slow runner can observe the exit before executeBash returns. In that case the
-        // completion is returned inline instead of being delivered as a follow-up.
-        expect(backgroundResult.details?.state).toBe('completed');
-        expect(backgroundResult.content[0]).toMatchObject({
-          type: 'text',
-          text: expect.stringContaining('background-complete'),
-        });
-        expect(pi.sendMessage).not.toHaveBeenCalled();
-      }
+      expect(backgroundResult.details?.state).toBe('running');
+      await writeFile(completeBackgroundFile, '');
+      await waitFor(async () => pi.sendMessage.mock.calls.length === 1, 10_000);
+      expect(pi.sendMessage.mock.calls[0]?.[0]).toMatchObject({
+        content: expect.stringContaining('background-complete'),
+      });
       await waitFor(async () => controller.list('real-runtime-session').length === 0, 5_000);
     } finally {
       await runtime.shutdown(context as never);
       controller.dispose();
     }
-  }, 40_000);
+  }, 20_000);
 
   it('adopts same-session live and completed-offline awaited runs before publishing gates', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'pi-tmux-adoption-'));
-    directories.push(directory);
+    const current = requireEnvironment();
+    const directory = await mkdtemp(join(current.root, 'adoption-'));
     const handlers = new Map<string, Set<(payload: unknown) => void>>();
     const emittedEvents: string[] = [];
     const entries: unknown[] = [];
@@ -263,7 +281,7 @@ suite('real tmux integration', () => {
       adoptionPolicy: 'same-pi-session' as const,
       preserveOutputFiles: true,
       tmuxSessionScope: 'global' as const,
-      globalTmuxSessionName: sessionName,
+      globalTmuxSessionName: current.sessionName,
       autoCloseWindowsOnCompletion: false,
       statusbarEnabled: false,
     };
@@ -272,7 +290,7 @@ suite('real tmux integration', () => {
       hasUI: false,
       sessionManager: {
         getSessionId: () => 'restart-session',
-        getSessionFile: () => '/tmp/restart-session.jsonl',
+        getSessionFile: () => join(directory, 'restart-session.jsonl'),
         getBranch: () => [...entries],
       },
       ui: { notify: vi.fn(), setStatus: vi.fn(), theme: { fg: (_: string, text: string) => text } },
@@ -280,7 +298,7 @@ suite('real tmux integration', () => {
     const firstController = createContinuationGateController(pi as never, {
       source: 'pi-tmux-bash',
     });
-    const first = new TmuxBashRuntime(pi as never, config, firstController);
+    const first = new TmuxBashRuntime(pi as never, config, firstController, current.client);
     const completeOfflineFile = join(directory, 'complete-offline');
     const completeLiveFile = join(directory, 'complete-live');
     let second: TmuxBashRuntime | undefined;
@@ -320,7 +338,7 @@ suite('real tmux integration', () => {
       secondController = createContinuationGateController(pi as never, {
         source: 'pi-tmux-bash',
       });
-      second = new TmuxBashRuntime(pi as never, config, secondController);
+      second = new TmuxBashRuntime(pi as never, config, secondController, current.client);
       await second.startSession(context as never);
       expect(
         [...second.state.commands.values()].some(
@@ -332,7 +350,7 @@ suite('real tmux integration', () => {
         emittedEvents.indexOf(CONTINUATION_GATE_SNAPSHOT_EVENT),
       );
       await writeFile(completeLiveFile, '');
-      await waitFor(async () => pi.sendMessage.mock.calls.length === 2, 20_000);
+      await waitFor(async () => pi.sendMessage.mock.calls.length === 2, 10_000);
       await waitFor(async () => secondController?.list('restart-session').length === 0, 5_000);
       const completionIds = pi.sendMessage.mock.calls.map(
         (call) => (call[0] as { details?: { completionId?: string } }).details?.completionId,
@@ -344,11 +362,11 @@ suite('real tmux integration', () => {
       await second?.shutdown(context as never).catch(() => undefined);
       secondController?.dispose();
     }
-  }, 40_000);
+  }, 30_000);
 
   it('round-trips literal interactive input through a real prompt without persisting it', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'pi-tmux-input-'));
-    directories.push(directory);
+    const current = requireEnvironment();
+    const directory = await mkdtemp(join(current.root, 'input-'));
     const events = { on: vi.fn(() => vi.fn()), emit: vi.fn() };
     const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
     const controller = createContinuationGateController(pi as never, { source: 'pi-tmux-bash' });
@@ -359,7 +377,7 @@ suite('real tmux integration', () => {
         outputDir: directory,
         durableOutputDir: directory,
         tmuxSessionScope: 'global',
-        globalTmuxSessionName: sessionName,
+        globalTmuxSessionName: current.sessionName,
         autoCloseWindowsOnCompletion: false,
         interactiveInputEnabled: true,
         enabledTmuxActions: [
@@ -370,17 +388,19 @@ suite('real tmux integration', () => {
         statusbarEnabled: false,
       },
       controller,
+      current.client,
     );
     const context = {
       cwd: process.cwd(),
       hasUI: false,
       sessionManager: {
         getSessionId: () => 'interactive-session',
-        getSessionFile: () => '/tmp/interactive-session.jsonl',
+        getSessionFile: () => join(directory, 'interactive-session.jsonl'),
       },
       ui: { notify: vi.fn(), setStatus: vi.fn(), theme: { fg: (_: string, text: string) => text } },
     };
-    const literal = 'literal $(touch /tmp/never-created) ; λ';
+    const neverCreated = join(directory, 'never-created');
+    const literal = `literal $(touch ${shellQuote(neverCreated)}) ; λ`;
     try {
       await runtime.startSession(context as never);
       const started = await runtime.executeBash(
@@ -398,7 +418,6 @@ suite('real tmux integration', () => {
       await runtime.sendInput(windowId, literal, false, context as never);
       const run = runtime.state.commands.get(started.details?.runId ?? '');
       if (!run) throw new Error('Expected interactive run.');
-      await new Promise((resolve) => setTimeout(resolve, 50));
       expect(await readExitCode(run.exitCodeFile)).toBeUndefined();
       await runtime.sendKey(windowId, 'enter', context as never);
       await waitFor(async () => (await readFile(run.outputFile, 'utf8')).includes('answer-1='));
@@ -409,6 +428,7 @@ suite('real tmux integration', () => {
       const manifest = await readFile(run.manifestPath, 'utf8');
       expect(manifest).not.toContain(literal);
       expect(manifest).not.toContain('second λ');
+      await expect(readFile(neverCreated)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await runtime.shutdown(context as never);
       controller.dispose();
@@ -416,8 +436,8 @@ suite('real tmux integration', () => {
   }, 20_000);
 
   it('routes user bash through tmux with ordered bytes, actual non-zero status, cwd, and no gates', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'pi-tmux-user-bash-'));
-    directories.push(directory);
+    const current = requireEnvironment();
+    const directory = await mkdtemp(join(current.root, 'user-bash-'));
     const gateEvents: string[] = [];
     const events = {
       on: vi.fn(() => vi.fn()),
@@ -436,19 +456,20 @@ suite('real tmux integration', () => {
         outputDir: directory,
         durableOutputDir: directory,
         tmuxSessionScope: 'global',
-        globalTmuxSessionName: sessionName,
+        globalTmuxSessionName: current.sessionName,
         autoCloseWindowsOnCompletion: true,
         nonGitScope: 'cwd',
         preserveOutputFiles: true,
         statusbarEnabled: false,
       },
       controller,
+      current.client,
     );
     const context = {
       cwd: directory,
       sessionManager: {
         getSessionId: () => 'user-bash-session',
-        getSessionFile: () => '/tmp/user-bash-session.jsonl',
+        getSessionFile: () => join(directory, 'user-bash-session.jsonl'),
       },
       ui: { notify: vi.fn(), setStatus: vi.fn(), theme: { fg: (_: string, text: string) => text } },
     };
@@ -485,8 +506,7 @@ suite('real tmux integration', () => {
       ).resolves.toEqual({ exitCode: 0 });
       expect(emptyOutput).toEqual([]);
 
-      const routedDirectory = await mkdtemp(join(tmpdir(), 'pi-tmux-user-bash-cwd-'));
-      directories.push(routedDirectory);
+      const routedDirectory = await mkdtemp(join(current.root, 'user-bash-cwd-'));
       await expect(
         runtime.executeUserBash('true', routedDirectory, { onData: () => undefined }),
       ).resolves.toEqual({ exitCode: 0 });
@@ -509,7 +529,8 @@ suite('real tmux integration', () => {
         onData: () => undefined,
         signal: abort.signal,
       });
-      setTimeout(() => abort.abort(), 50);
+      await waitFor(async () => runtime.state.commands.size === 1, 5_000);
+      abort.abort();
       await expect(cancelled).rejects.toThrow('aborted');
       expect(runtime.state.commands.size).toBe(0);
       expect(gateEvents).toEqual([]);
@@ -521,6 +542,42 @@ suite('real tmux integration', () => {
     }
   }, 20_000);
 });
+
+function requireEnvironment(): RealTmuxEnvironment {
+  if (!environment) throw new Error('The disposable tmux environment is unavailable.');
+  return environment;
+}
+
+function isolatedTmuxExecutor(socketPath: string): TmuxExecutor {
+  return async (binary, args, signal) => {
+    const childEnvironment: NodeJS.ProcessEnv = { ...process.env };
+    delete childEnvironment.TMUX;
+    delete childEnvironment.TMUX_PANE;
+    try {
+      const result = await execFileAsync(binary, ['-S', socketPath, ...args], {
+        encoding: 'utf8',
+        timeout: 15_000,
+        maxBuffer: 1024 * 1024,
+        signal,
+        env: childEnvironment,
+      });
+      return { stdout: result.stdout, stderr: result.stderr, code: 0 };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const failed = error as NodeJS.ErrnoException & {
+        stdout?: string;
+        stderr?: string;
+        code?: number | string;
+      };
+      if (failed.code === 'ENOENT') throw new Error(`tmux binary not found: ${binary}`);
+      return {
+        stdout: failed.stdout ?? '',
+        stderr: failed.stderr ?? failed.message,
+        code: typeof failed.code === 'number' ? failed.code : 1,
+      };
+    }
+  };
+}
 
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;

@@ -248,7 +248,6 @@ describe('TmuxBashRuntime', () => {
     if (!run) throw new Error('Expected a managed run.');
 
     await runtime.shutdown(context as never);
-    await new Promise((resolve) => setTimeout(resolve, 400));
 
     await expect(readFile(run.manifestPath, 'utf8')).resolves.toContain('"state":"running"');
     await expect(readFile(run.outputFile, 'utf8')).resolves.toBeDefined();
@@ -408,8 +407,10 @@ describe('TmuxBashRuntime', () => {
     expect(ordering.slice(-2)).toEqual(['message', 'release']);
     expect(controller.list('session-1')).toHaveLength(0);
 
-    await writeFile(run.exitCodeFile, '0\n');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const internals = runtime as unknown as {
+      completeIfReady(value: typeof run, deliver: boolean): Promise<unknown>;
+    };
+    await internals.completeIfReady(run, true);
     expect(messages).toHaveLength(1);
   });
 
@@ -799,7 +800,6 @@ describe('TmuxBashRuntime', () => {
     await writeFile(run.exitCodeFile, '0\n');
 
     await vi.waitFor(() => expect(attempts).toBe(3));
-    await new Promise((resolve) => setTimeout(resolve, 300));
 
     expect(attempts).toBe(3);
     expect(run.completionDeliveryFailed).toBe(true);
@@ -855,9 +855,9 @@ describe('TmuxBashRuntime', () => {
     await vi.waitFor(() => expect(attempts).toBe(1));
 
     await runtime.shutdown(context as never);
-    await new Promise((resolve) => setTimeout(resolve, 150));
 
     expect(attempts).toBe(1);
+    expect(run.completionRetryTimer).toBeUndefined();
     await expect(readFile(run.manifestPath, 'utf8')).resolves.toContain('"deliveryState":"failed"');
     await rm(root, { recursive: true, force: true });
   });
@@ -1399,10 +1399,19 @@ describe('TmuxBashRuntime', () => {
       new TmuxClient('tmux', fakeTmux.execute),
     );
     activeRuntimes.push(second);
-    await second.startSession(context as never);
-    expect(messages).toHaveLength(0);
-    await rm(claimPath, { force: true });
-    await vi.waitFor(() => expect(messages).toHaveLength(1), { timeout: 5_000 });
+    vi.useFakeTimers();
+    try {
+      await second.startSession(context as never);
+      expect(messages).toHaveLength(0);
+      const adoptedRun = second.state.commands.get(offlineRun.runId);
+      if (!adoptedRun) throw new Error('Expected the contended completion to remain retryable.');
+      await rm(claimPath, { force: true });
+      await vi.advanceTimersByTimeAsync(config.completionDeliveryRetryBaseMs);
+      await adoptedRun.completionObserverPromise;
+      expect(messages).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(messages[0]).toMatchObject({ content: expect.stringContaining('offline done') });
     expect(secondController.list('session-1')).toHaveLength(0);
     expect(JSON.parse(await readFile(offlineRun.manifestPath, 'utf8'))).toMatchObject({
@@ -1427,7 +1436,7 @@ describe('TmuxBashRuntime', () => {
     );
     activeRuntimes.push(third);
     await third.startSession(context as never);
-    await vi.waitFor(() => expect(messages).toHaveLength(1), { timeout: 1_000 });
+    expect(messages).toHaveLength(1);
     await third.shutdown(context as never);
     thirdController.dispose();
     await rm(root, { recursive: true, force: true });

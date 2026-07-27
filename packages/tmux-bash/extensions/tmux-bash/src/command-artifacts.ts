@@ -73,6 +73,7 @@ export async function createCommandArtifacts(input: {
   displayCommand: string;
   config: TmuxBashConfig;
   env?: NodeJS.ProcessEnv;
+  unsetEnvironment?: readonly string[];
   streamOutput?: boolean;
 }): Promise<CommandArtifacts> {
   await mkdir(input.runDir, { recursive: true, mode: 0o700 });
@@ -80,7 +81,7 @@ export async function createCommandArtifacts(input: {
   const artifacts = artifactPaths(input.runDir, input.runId);
   const environment = buildEnvironmentExports(
     input.env ?? process.env,
-    new Set(input.config.environmentDenylist),
+    new Set([...input.config.environmentDenylist, ...(input.unsetEnvironment ?? [])]),
   );
   const script = buildWrapperScript({
     ...artifacts,
@@ -245,19 +246,19 @@ async function detachCleanupProcess(
   cleanup.unref();
 }
 
+export const PI_SESSION_ENVIRONMENT_VARIABLES = [
+  'PI_SESSION_ID',
+  'PI_SESSION_FILE',
+  'PI_PROVIDER',
+  'PI_MODEL',
+  'PI_REASONING_LEVEL',
+] as const;
+
 export function createUserBashEnvironment(
   baseEnvironment: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   const environment = { ...baseEnvironment };
-  for (const name of [
-    'PI_SESSION_ID',
-    'PI_SESSION_FILE',
-    'PI_PROVIDER',
-    'PI_MODEL',
-    'PI_REASONING_LEVEL',
-  ]) {
-    delete environment[name];
-  }
+  for (const name of PI_SESSION_ENVIRONMENT_VARIABLES) delete environment[name];
   return environment;
 }
 
@@ -266,15 +267,6 @@ export function createPiSessionEnvironment(
   baseEnvironment: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   const environment = createUserBashEnvironment(baseEnvironment);
-  for (const name of [
-    'PI_SESSION_ID',
-    'PI_SESSION_FILE',
-    'PI_PROVIDER',
-    'PI_MODEL',
-    'PI_REASONING_LEVEL',
-  ]) {
-    delete environment[name];
-  }
 
   environment.PI_SESSION_ID = ctx.sessionManager.getSessionId();
   const sessionFile = ctx.sessionManager.getSessionFile();

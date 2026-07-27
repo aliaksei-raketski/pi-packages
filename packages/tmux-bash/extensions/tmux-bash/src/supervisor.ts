@@ -25,6 +25,7 @@ import {
   createCommandArtifacts,
   createPiSessionEnvironment,
   createUserBashEnvironment,
+  PI_SESSION_ENVIRONMENT_VARIABLES,
   removeUncommittedArtifacts,
   scheduleRunArtifactCleanup,
 } from './command-artifacts.js';
@@ -208,7 +209,9 @@ export class TmuxBashSupervisor {
     for (const poller of this.state.pollers.values()) clearInterval(poller.timer);
     this.state.pollers.clear();
     for (const run of this.state.commands.values()) {
-      if (run.completionRetryTimer) clearTimeout(run.completionRetryTimer);
+      if (!run.completionRetryTimer) continue;
+      clearTimeout(run.completionRetryTimer);
+      run.completionRetryTimer = undefined;
     }
     await Promise.allSettled(
       [...this.state.commands.values()].flatMap((run) => {
@@ -564,6 +567,7 @@ export class TmuxBashSupervisor {
         displayCommand,
         config: this.config,
         env: createUserBashEnvironment(options.env ?? process.env),
+        unsetEnvironment: PI_SESSION_ENVIRONMENT_VARIABLES,
         streamOutput: true,
       });
       this.sessionArtifacts.set(runId, runDir);

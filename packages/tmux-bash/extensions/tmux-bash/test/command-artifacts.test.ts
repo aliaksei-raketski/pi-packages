@@ -10,6 +10,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createCommandArtifacts,
   createPiSessionEnvironment,
+  createUserBashEnvironment,
+  PI_SESSION_ENVIRONMENT_VARIABLES,
   removeUncommittedArtifacts,
   scheduleRunArtifactCleanup,
   scheduleRunDirectoryCleanup,
@@ -83,6 +85,31 @@ describe('command artifacts', () => {
     );
 
     expect(environment).toEqual({ PI_SESSION_ID: 'session-2' });
+  });
+
+  it('unsets Pi metadata inherited from the tmux server for user bash', async () => {
+    const runDir = await mkdtemp(join(tmpdir(), 'tmux-user-environment-'));
+    directories.push(runDir);
+    const artifacts = await createCommandArtifacts({
+      runDir,
+      runId: 'userenv123',
+      command: 'printf \'%s\\n\' "${PI_SESSION_ID-unset}|${SAFE_VALUE-unset}"',
+      displayCommand: 'user bash environment',
+      config: DEFAULT_TMUX_BASH_CONFIG,
+      env: createUserBashEnvironment({
+        PI_SESSION_ID: 'stale-session',
+        SAFE_VALUE: 'safe',
+      }),
+      unsetEnvironment: PI_SESSION_ENVIRONMENT_VARIABLES,
+    });
+
+    await execFileAsync(artifacts.scriptFile, [], {
+      env: { ...process.env, PI_SESSION_ID: 'inherited-session' },
+    });
+
+    expect(await readFile(artifacts.outputFile, 'utf8')).toBe(
+      '$ user bash environment\nunset|safe\n',
+    );
   });
 
   it('captures ordered output and preserves the command exit code atomically', async () => {
@@ -164,29 +191,36 @@ describe('command artifacts', () => {
   it('reconstructs a chronological tail while the circular spool is still live', async () => {
     const runDir = await mkdtemp(join(tmpdir(), 'tmux-artifacts-live-ring-'));
     directories.push(runDir);
+    const releaseFile = join(runDir, 'release-live-command');
     const artifacts = await createCommandArtifacts({
       runDir,
       runId: 'liverng123',
-      command: `${shellQuote(process.execPath)} -e ${shellQuote("process.stdout.write('A'.repeat(700)); setTimeout(() => { process.stdout.write('B'.repeat(700)); setTimeout(() => {}, 500); }, 100)")}`,
+      command: `${shellQuote(process.execPath)} -e ${shellQuote("process.stdout.write('A'.repeat(700) + 'B'.repeat(700))")}; while [ ! -e ${shellQuote(releaseFile)} ]; do sleep 0.01; done`,
       displayCommand: 'produce live ring output',
       config: { ...DEFAULT_TMUX_BASH_CONFIG, maxSpoolBytes: 1_024 },
     });
     const child = execFile(artifacts.scriptFile, []);
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      if (await stat(artifacts.rotationMarkerFile).catch(() => undefined)) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    const live = await readOutput(artifacts.outputFile, 1_024);
-    expect(live.totalBytes).toBeGreaterThan(1_024);
-    expect(live.content.endsWith('B'.repeat(700))).toBe(true);
-    await new Promise<void>((resolve, reject) => {
+    const closed = new Promise<void>((resolve, reject) => {
       child.once('error', reject);
       child.once('close', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
     });
+    try {
+      await vi.waitFor(
+        async () =>
+          expect(await stat(artifacts.rotationMarkerFile).catch(() => undefined)).toBeDefined(),
+        { timeout: 5_000 },
+      );
+      const live = await readOutput(artifacts.outputFile, 1_024);
+      expect(live.totalBytes).toBeGreaterThan(1_024);
+      expect(live.content.endsWith('B'.repeat(700))).toBe(true);
+    } finally {
+      await writeFile(releaseFile, '');
+      await closed;
+    }
     const finalized = await readOutput(artifacts.outputFile, 1_024);
     expect(finalized.totalBytes).toBeGreaterThan(1_024);
     expect(finalized.content.endsWith('B'.repeat(700))).toBe(true);
-  });
+  }, 10_000);
 
   it('streams exact user-bash bytes through its FIFO without including the display header', async () => {
     const runDir = await mkdtemp(join(tmpdir(), 'tmux-artifacts-stream-'));

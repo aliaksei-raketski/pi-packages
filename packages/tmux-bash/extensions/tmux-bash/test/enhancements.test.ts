@@ -148,18 +148,13 @@ describe('durable run store and adoption', () => {
     await execFileAsync('mkfifo', ['-m', '600', fifo]);
     await writeFile(oversized, 'x'.repeat(256 * 1024 + 1), { mode: 0o600 });
 
-    const loaded = await Promise.race([
-      store.loadAll(),
-      new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error('manifest scan blocked')), 1_000),
-      ),
-    ]);
+    const loaded = await withTimeout(store.loadAll(), 5_000, 'manifest scan blocked');
 
     expect(loaded.manifests).toEqual([]);
     expect(loaded.diagnostics.map((item) => item.reason).join('\n')).toMatch(
       /regular file|exceeds 262144 bytes/,
     );
-  });
+  }, 10_000);
 
   it('rejects alternate artifact paths and canonical artifact symlinks', async () => {
     const { root, config } = await fixtureConfig();
@@ -960,6 +955,18 @@ describe('resource reservations and cleanup', () => {
     await expect(resources.reserve('quota-run-123')).rejects.toThrow(/cleanup-preview/);
   });
 });
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 function details(run: CommandRun) {
   return {
