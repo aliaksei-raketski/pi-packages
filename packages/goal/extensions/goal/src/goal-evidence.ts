@@ -34,6 +34,7 @@ export interface GoalEvidenceLedger {
 
 export const MAX_GOAL_REQUIREMENTS = 50;
 export const MAX_GOAL_EVIDENCE_PER_REQUIREMENT = 20;
+export const MAX_GOAL_EVIDENCE_LEDGER_BYTES = 16 * 1_024;
 export const MAX_GOAL_ID_LENGTH = 128;
 export const MAX_REQUIREMENT_ID_LENGTH = 96;
 export const MAX_REQUIREMENT_LENGTH = 2_000;
@@ -121,7 +122,10 @@ export function summarizeGoalEvidence(ledger: GoalEvidenceLedger | null): GoalEv
 }
 
 export function formatGoalEvidenceSummary(ledger: GoalEvidenceLedger | null): string {
-  const summary = summarizeGoalEvidence(ledger);
+  return formatGoalEvidenceSummaryValue(summarizeGoalEvidence(ledger));
+}
+
+export function formatGoalEvidenceSummaryValue(summary: GoalEvidenceSummary): string {
   return `revision ${summary.revision}; ${summary.verified}/${summary.total} verified; ${summary.pending} pending; ${summary.inProgress} in progress; ${summary.blocked} blocked`;
 }
 
@@ -246,12 +250,17 @@ export function mutateGoalEvidence(
     return assertNever(mutation);
   }
 
-  return {
+  const next = {
     goalId,
     revision: ledger.revision + 1,
     requirements,
     updatedAt: Math.max(0, now),
   };
+  if (goalEvidenceLedgerByteLength(next) > MAX_GOAL_EVIDENCE_LEDGER_BYTES)
+    throw new Error(
+      `Evidence ledger cannot exceed ${MAX_GOAL_EVIDENCE_LEDGER_BYTES} serialized bytes.`,
+    );
+  return next;
 }
 
 export function parseGoalEvidenceLedger(value: unknown, goalId: string): GoalEvidenceLedger | null {
@@ -273,7 +282,12 @@ export function parseGoalEvidenceLedger(value: unknown, goalId: string): GoalEvi
     ids.add(requirement.id);
     requirements.push(requirement);
   }
-  return { goalId, revision: value.revision, requirements, updatedAt: value.updatedAt };
+  const ledger = { goalId, revision: value.revision, requirements, updatedAt: value.updatedAt };
+  return goalEvidenceLedgerByteLength(ledger) <= MAX_GOAL_EVIDENCE_LEDGER_BYTES ? ledger : null;
+}
+
+export function goalEvidenceLedgerByteLength(ledger: GoalEvidenceLedger): number {
+  return new TextEncoder().encode(JSON.stringify(ledger)).byteLength;
 }
 
 function parseRequirement(value: unknown): GoalRequirementEvidence | null {

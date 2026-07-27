@@ -1,7 +1,12 @@
 import type { ContinuationGate } from '@aliaksei-raketski/pi-continuation-gate-protocol';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Text } from '@earendil-works/pi-tui';
-import { formatGoalEvidenceSummary, type GoalEvidenceLedger } from './goal-evidence.ts';
+import {
+  formatGoalEvidenceSummaryValue,
+  summarizeGoalEvidence,
+  type GoalEvidenceLedger,
+  type GoalEvidenceSummary,
+} from './goal-evidence.ts';
 import {
   formatGoalUsage,
   goalEventLabel,
@@ -14,7 +19,7 @@ export interface GoalEventDetails {
   kind: GoalEventKind;
   goal: GoalState;
   gates: readonly ContinuationGate[];
-  ledger: GoalEvidenceLedger | null;
+  evidenceSummary: GoalEvidenceSummary;
   noProgressStreak: number;
   timestamp: number;
 }
@@ -22,6 +27,9 @@ export interface GoalEventDetails {
 export function registerGoalRenderer(pi: ExtensionAPI): void {
   pi.registerMessageRenderer(GOAL_EVENT_CUSTOM_TYPE, (message, { expanded }, theme) => {
     const details = message.details as GoalEventDetails | undefined;
+    const legacyLedger = (message.details as { ledger?: GoalEvidenceLedger | null } | undefined)
+      ?.ledger;
+    const evidenceSummary = details?.evidenceSummary ?? summarizeGoalEvidence(legacyLedger ?? null);
     const label = goalEventLabel(details?.kind ?? 'continuation');
     if (!expanded) {
       return new Text(
@@ -38,7 +46,7 @@ export function registerGoalRenderer(pi: ExtensionAPI): void {
       lines.push(
         `Budgets: tokens=${details.goal.tokenBudget ?? 'none'}, wall=${details.goal.wallTimeBudgetSeconds ?? 'none'}s`,
       );
-      lines.push(`Evidence: ${formatGoalEvidenceSummary(details.ledger)}`);
+      lines.push(`Evidence: ${formatGoalEvidenceSummaryValue(evidenceSummary)}`);
       lines.push(`No-progress streak: ${details.noProgressStreak}`);
     }
     if (details?.gates.length) {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   completionEvidenceErrors,
   createGoalEvidenceLedger,
+  MAX_GOAL_EVIDENCE_LEDGER_BYTES,
   MAX_GOAL_EVIDENCE_PER_REQUIREMENT,
   mutateGoalEvidence,
   parseGoalEvidenceLedger,
@@ -261,6 +262,43 @@ describe('goal evidence ledger', () => {
         101,
       ),
     ).toThrow(/different goal/);
+  });
+
+  it('rejects mutations and persisted ledgers above the aggregate byte limit', () => {
+    const requirements = Array.from({ length: 50 }, (_, index) => ({
+      id: `requirement-${index}`,
+      requirement: 'x'.repeat(2_000),
+    }));
+    expect(() =>
+      mutateGoalEvidence(
+        createGoalEvidenceLedger('goal-1', 1),
+        'goal-1',
+        {
+          action: 'initialize_requirements',
+          expectedRevision: 0,
+          requirements,
+        },
+        2,
+      ),
+    ).toThrow(`Evidence ledger cannot exceed ${MAX_GOAL_EVIDENCE_LEDGER_BYTES} serialized bytes.`);
+
+    expect(
+      parseGoalEvidenceLedger(
+        {
+          goalId: 'goal-1',
+          revision: 1,
+          requirements: requirements.map(({ id, requirement }) => ({
+            id,
+            requirement,
+            status: 'pending',
+            evidence: [],
+            updatedAt: 2,
+          })),
+          updatedAt: 2,
+        },
+        'goal-1',
+      ),
+    ).toBeNull();
   });
 
   it('drops malformed persisted ledgers and never stores raw output fields', () => {

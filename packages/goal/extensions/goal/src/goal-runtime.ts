@@ -38,6 +38,7 @@ export * from './goal-runtime-core.ts';
 import {
   accountGoalTurn,
   GOAL_EVENT_CUSTOM_TYPE,
+  summarizeGoalEvidence,
   truncateObjective,
   type GoalEventKind,
   type GoalPauseReason,
@@ -63,6 +64,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     onChange: (change) => handleGateChange(change),
   });
   const runtime: GoalRuntime = createGoalRuntime(gateRegistry);
+  let deferBudgetSummaryUntilNaturalTurn = false;
 
   const currentGates = (): readonly ContinuationGate[] =>
     runtime.sessionId
@@ -171,7 +173,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
       kind,
       goal: state,
       gates: currentGates(),
-      ledger: runtime.ledger,
+      evidenceSummary: summarizeGoalEvidence(runtime.ledger),
       noProgressStreak: runtime.progress?.stagnationStreak ?? 0,
       timestamp: runtime.now(),
     };
@@ -226,6 +228,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
 
   const maybeDeliverBudgetSummary = (ctx: ExtensionContext): void => {
     if (
+      deferBudgetSummaryUntilNaturalTurn ||
       !runtime.pendingBudgetSummary ||
       runtime.goal?.status !== 'budget_limited' ||
       !ctx.isIdle() ||
@@ -315,12 +318,18 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
       runtime.activeResumeClaim = undefined;
       const origin: GoalTurnOrigin = runtime.restartContinuationPending ? 'restart' : 'synthetic';
       runtime.restartContinuationPending = false;
-      emitGoalEvent(
-        'continuation',
-        runtime.goal,
-        { triggerTurn: true, deliverAs: 'followUp' },
-        origin,
-      );
+      try {
+        emitGoalEvent(
+          'continuation',
+          runtime.goal,
+          { triggerTurn: true, deliverAs: 'followUp' },
+          origin,
+        );
+      } catch (error) {
+        runtime.continuationQueued = false;
+        runtime.pendingTurnOrigin = 'other';
+        ctx.ui.notify(`Failed to deliver goal continuation: ${String(error)}`, 'error');
+      }
     });
   }
 
@@ -358,6 +367,9 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     cancelGoalDeadline(runtime);
 
     restoreGoalRuntimeState(runtime, ctx.sessionManager.getBranch());
+    deferBudgetSummaryUntilNaturalTurn =
+      runtime.restartPolicy === 'restore-idle' &&
+      (event.reason === 'startup' || event.reason === 'reload');
 
     let restartContinuation = false;
     if (
@@ -406,6 +418,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     invalidateContinuation(runtime);
     cancelGoalDeadline(runtime);
     runtime.restartContinuationPending = false;
+    deferBudgetSummaryUntilNaturalTurn = false;
     restoreGoalRuntimeState(runtime, ctx.sessionManager.getBranch());
     if (runtime.goal?.status === 'active')
       runtime.goal = restoreActiveWithoutOfflineGap(runtime.goal, runtime.now());
@@ -415,6 +428,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
   });
 
   pi.on('before_agent_start', (_event, ctx) => {
+    deferBudgetSummaryUntilNaturalTurn = false;
     if (!runtime.pendingBudgetSummary || runtime.goal?.status !== 'budget_limited') return;
     const state = runtime.goal;
     const injection = {
@@ -426,7 +440,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
           kind: 'budget_limited' as const,
           goal: state,
           gates: currentGates(),
-          ledger: runtime.ledger,
+          evidenceSummary: summarizeGoalEvidence(runtime.ledger),
           noProgressStreak: runtime.progress?.stagnationStreak ?? 0,
           timestamp: runtime.now(),
         } satisfies GoalEventDetails,
@@ -439,6 +453,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
   });
 
   pi.on('turn_start', () => {
+    deferBudgetSummaryUntilNaturalTurn = false;
     runtime.continuationQueued = false;
     runtime.activeTurnStartedAt = runtime.now();
     runtime.activeGoalThisTurnId = runtime.goal?.status === 'active' ? runtime.goal.id : null;

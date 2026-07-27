@@ -240,7 +240,14 @@ describe('goal extension', () => {
           kind: 'active',
           goal: state,
           gates: [],
-          ledger: null,
+          evidenceSummary: {
+            revision: 0,
+            total: 0,
+            pending: 0,
+            inProgress: 0,
+            verified: 0,
+            blocked: 0,
+          },
           noProgressStreak: 2,
           timestamp: 1_001,
         },
@@ -648,6 +655,37 @@ describe('goal extension', () => {
     }
   });
 
+  it('cleans up a failed auto-resume delivery so later continuation can proceed', async () => {
+    await createActiveGoal(harness);
+    acquireGate(harness);
+    harness.sendMessage.mockImplementationOnce(() => {
+      throw new Error('auto-resume queue failed');
+    });
+
+    harness.events.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'release-failed-auto-resume',
+      sessionId: 'session-1',
+      source: 'producer',
+      gateId: 'tests',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: Date.now(),
+    });
+    await Promise.resolve();
+    expect((harness.ctx.ui as { notify: ReturnType<typeof vi.fn> }).notify).toHaveBeenCalledWith(
+      expect.stringContaining('auto-resume queue failed'),
+      'error',
+    );
+
+    await emit(harness, 'agent_settled');
+    await Promise.resolve();
+    expect(harness.sendMessage).toHaveBeenCalledTimes(2);
+    expect(harness.sendMessage.mock.calls[1]?.[0]).toMatchObject({
+      details: { kind: 'continuation' },
+    });
+  });
+
   it('keeps the wall deadline active when tree navigation is canceled', async () => {
     vi.useFakeTimers();
     try {
@@ -689,6 +727,47 @@ describe('goal extension', () => {
     await emit(harness, 'session_start', { reason: 'startup' });
     await Promise.resolve();
     expect(harness.sendMessage).toHaveBeenCalledTimes(turns);
+  });
+
+  it('defers an exhausted restore-idle budget summary until a natural turn', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(10_000);
+      const restored = {
+        ...createGoalState('exhausted idle restore', null, 1_000, () => 'restored-goal', 10),
+        activeWallTimeSeconds: 10,
+      };
+      harness.branch.push({
+        type: 'custom',
+        customType: 'pi-goal',
+        data: { goal: restored, statusBarEnabled: true, restartPolicy: 'restore-idle' },
+      });
+
+      await emit(harness, 'session_start', { reason: 'startup' });
+      await Promise.resolve();
+
+      expect(harness.sendMessage).not.toHaveBeenCalled();
+      expect(harness.appendEntry.mock.calls.at(-1)?.[1]).toMatchObject({
+        goal: { status: 'budget_limited' },
+        pendingBudgetSummary: true,
+      });
+
+      const beforeStart = harness.handlers.get('before_agent_start')?.[0];
+      const injection = beforeStart?.({}, harness.ctx as never);
+      expect(injection).toMatchObject({
+        message: {
+          details: {
+            kind: 'budget_limited',
+            evidenceSummary: expect.any(Object),
+          },
+        },
+      });
+      expect(
+        (injection as { message?: { details?: unknown } })?.message?.details,
+      ).not.toHaveProperty('ledger');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('enforces an exhausted wall budget before restart continuation', async () => {

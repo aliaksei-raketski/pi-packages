@@ -114,7 +114,7 @@ export function registerGoalTools(pi: ExtensionAPI, controller: GoalToolControll
       controller.emit('active', next, { triggerTurn: ctx.isIdle() });
       const payload = goalPayload(controller.runtime, controller.gates(), timestamp);
       return {
-        content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(payload) }],
         details: payload,
       };
     },
@@ -130,7 +130,7 @@ export function registerGoalTools(pi: ExtensionAPI, controller: GoalToolControll
       if (controller.runtime.goal?.status !== 'active') throw new Error('No active goal is set.');
       const payload = goalPayload(controller.runtime, controller.gates(), now());
       return {
-        content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(payload) }],
         details: payload,
       };
     },
@@ -257,7 +257,7 @@ export function registerGoalTools(pi: ExtensionAPI, controller: GoalToolControll
       controller.emit('complete', next);
       const payload = goalPayload(controller.runtime, controller.gates(), now());
       return {
-        content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(payload) }],
         details: payload,
       };
     },

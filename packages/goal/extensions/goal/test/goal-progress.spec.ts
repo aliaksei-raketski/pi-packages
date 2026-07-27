@@ -67,6 +67,32 @@ describe('goal no-progress observations', () => {
     expect(changedLedger.state.stagnationStreak).toBe(0);
   });
 
+  it('detects alternating repetition across the rolling window', () => {
+    let state: GoalProgressState | null = null;
+    const patterns = [
+      input({
+        observedAt: 1,
+        assistantText: 'Read artifact A and found no new evidence.',
+        tools: [{ name: 'read', isError: false }],
+      }),
+      input({
+        observedAt: 2,
+        assistantText: 'Ran command B and found no new evidence.',
+        tools: [{ name: 'bash', isError: false }],
+      }),
+    ];
+
+    for (let index = 0; index < GOAL_STAGNATION_THRESHOLD + 2; index += 1) {
+      const result = observeGoalProgress(state, {
+        ...(patterns[index % patterns.length] ?? patterns[0]),
+        observedAt: index + 1,
+      });
+      state = result.state;
+      expect(result.shouldPause).toBe(index === GOAL_STAGNATION_THRESHOLD + 1);
+    }
+    expect(state?.stagnationStreak).toBe(GOAL_STAGNATION_THRESHOLD);
+  });
+
   it('normalizes volatile IDs without retaining source text and bounds storage', () => {
     expect(normalizeSummary('Run 123 at 2026-07-26T10:30:00Z ID deadbeefcafebabe').tokens).toEqual([
       'run',

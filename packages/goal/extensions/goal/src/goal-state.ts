@@ -16,6 +16,7 @@ import type {
   GoalStatus,
 } from './goal-types.ts';
 
+export { summarizeGoalEvidence } from './goal-evidence.ts';
 export type {
   GoalBudgetLimitReason,
   GoalEventKind,

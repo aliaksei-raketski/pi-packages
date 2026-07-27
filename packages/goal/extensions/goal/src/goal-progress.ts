@@ -71,13 +71,14 @@ export function observeGoalProgress(
     ),
     evidenceRevision: Math.max(0, Math.floor(input.evidenceRevision)),
   };
-  const previous = lastGoalObservation(state.observations, input.goalId);
-  const repeated =
-    previous !== undefined &&
-    previous.evidenceRevision === observation.evidenceRevision &&
-    previous.toolPattern === observation.toolPattern &&
-    fingerprintSimilarity(previous.summaryFingerprint, observation.summaryFingerprint) >=
-      GOAL_PROGRESS_SIMILARITY;
+  const repeated = state.observations.some(
+    (recent) =>
+      recent.goalId === input.goalId &&
+      recent.evidenceRevision === observation.evidenceRevision &&
+      recent.toolPattern === observation.toolPattern &&
+      fingerprintSimilarity(recent.summaryFingerprint, observation.summaryFingerprint) >=
+        GOAL_PROGRESS_SIMILARITY,
+  );
   const stagnationStreak = repeated ? state.stagnationStreak + 1 : 0;
   const observations = [...state.observations, observation].slice(-GOAL_PROGRESS_WINDOW);
   const shouldPause = stagnationStreak >= GOAL_STAGNATION_THRESHOLD;
@@ -177,17 +178,6 @@ export function parseGoalProgressState(value: unknown, goalId: string): GoalProg
     lastProgressAt: value.lastProgressAt,
     ...(value.pausedAt === undefined ? {} : { pausedAt: value.pausedAt }),
   };
-}
-
-function lastGoalObservation(
-  observations: readonly GoalProgressObservation[],
-  goalId: string,
-): GoalProgressObservation | undefined {
-  for (let index = observations.length - 1; index >= 0; index -= 1) {
-    const observation = observations[index];
-    if (observation?.goalId === goalId) return observation;
-  }
-  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
