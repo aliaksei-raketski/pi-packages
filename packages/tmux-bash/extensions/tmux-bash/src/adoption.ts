@@ -80,24 +80,24 @@ export async function discoverAndReconcileRuns(input: {
     result.diagnostics.push(
       ...loaded.diagnostics.map((item) => boundedDiagnostic(`${item.path}: ${item.reason}`)),
     );
-    let tmuxDiscoveryAvailable = true;
-    const windows = new Map<string, Awaited<ReturnType<TmuxClient['listManaged']>>>();
+    let windows: Map<string, Awaited<ReturnType<TmuxClient['listManaged']>>>;
     try {
       const discovered = await input.tmux.listManaged({
         scope: input.scope,
         piSessionId: input.sessionId,
         signal: controller.signal,
       });
+      windows = new Map();
       for (const window of discovered) {
         const candidates = windows.get(window.metadata.runId) ?? [];
         candidates.push(window);
         windows.set(window.metadata.runId, candidates);
       }
     } catch (error) {
-      tmuxDiscoveryAvailable = false;
       result.diagnostics.push(
         boundedDiagnostic(`tmux discovery unavailable: ${errorMessage(error)}`),
       );
+      return result;
     }
 
     const newest = new Map<string, { manifest: ManagedRunManifest; path: string }>();
@@ -264,13 +264,6 @@ export async function discoverAndReconcileRuns(input: {
             continue;
           }
         }
-      }
-
-      if (!tmuxDiscoveryAvailable && exitCode === undefined) {
-        // A valid exit sentinel is sufficient to reconcile a terminal run. If tmux
-        // discovery is temporarily unavailable, leave non-terminal manifests
-        // untouched so a later session can validate and adopt their windows.
-        continue;
       }
 
       if (manifest.origin === 'user-bash') {

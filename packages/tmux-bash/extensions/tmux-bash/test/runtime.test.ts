@@ -1370,7 +1370,6 @@ describe('TmuxBashRuntime', () => {
       adoptionPolicy: 'same-pi-session' as const,
       autoCloseWindowsOnCompletion: false,
       completionDeliveryRetryBaseMs: 25,
-      preserveOutputFiles: true,
       statusbarEnabled: false,
     };
     const firstController = createContinuationGateController({ events } as never, {
@@ -1394,20 +1393,14 @@ describe('TmuxBashRuntime', () => {
     if (!offlineRun) throw new Error('Expected offline run.');
     await first.shutdown(context as never);
     firstController.dispose();
-    await writeFile(offlineRun.outputFile, '$ sleep 10\noffline done\n');
-    await writeFile(offlineRun.exitCodeFile, '0\n');
+    await writeFile(offlineRun.outputFile, '$ sleep 10\noffline done\n', { mode: 0o600 });
+    await writeFile(offlineRun.exitCodeFile, '0\n', { mode: 0o600 });
     const claimPath = offlineRun.manifestPath.replace(/\.manifest\.json$/, '.completion.claim');
-    await writeFile(claimPath, `${process.pid} ${Date.now()}\n`);
+    await writeFile(claimPath, `${process.pid} ${Date.now()}\n`, { mode: 0o600 });
 
     const messages: unknown[] = [];
     const secondController = createContinuationGateController({ events } as never, {
       source: 'pi-tmux-bash',
-    });
-    const unavailableDiscovery = vi.fn<TmuxExecutor>(async (binary, args, signal) => {
-      if (args[0] === 'list-windows') {
-        return { stdout: '', stderr: 'permission denied', code: 1 };
-      }
-      return fakeTmux.execute(binary, args, signal);
     });
     const second = new TmuxBashRuntime(
       {
@@ -1417,7 +1410,7 @@ describe('TmuxBashRuntime', () => {
       } as never,
       config,
       secondController,
-      new TmuxClient('tmux', unavailableDiscovery),
+      new TmuxClient('tmux', fakeTmux.execute),
     );
     activeRuntimes.push(second);
     vi.useFakeTimers({ toFake: ['clearTimeout', 'setTimeout'] });
@@ -1425,7 +1418,11 @@ describe('TmuxBashRuntime', () => {
       await second.startSession(context as never);
       expect(messages).toHaveLength(0);
       const adoptedRun = second.state.commands.get(offlineRun.runId);
-      if (!adoptedRun) throw new Error('Expected the contended completion to remain retryable.');
+      if (!adoptedRun) {
+        throw new Error(
+          `Expected the contended completion to remain retryable: ${JSON.stringify(context.ui.notify.mock.calls)}`,
+        );
+      }
       await rm(claimPath, { force: true });
       await vi.advanceTimersByTimeAsync(config.completionDeliveryRetryBaseMs);
       await adoptedRun.completionObserverPromise;
