@@ -1387,7 +1387,7 @@ describe('TmuxBashRuntime', () => {
     );
     activeRuntimes.push(second);
     await second.startSession(context as never);
-    expect(messages).toHaveLength(1);
+    await vi.waitFor(() => expect(messages).toHaveLength(1), { timeout: 5_000 });
     expect(messages[0]).toMatchObject({ content: expect.stringContaining('offline done') });
     expect(secondController.list('session-1')).toHaveLength(0);
     expect(JSON.parse(await readFile(offlineRun.manifestPath, 'utf8'))).toMatchObject({
@@ -1412,7 +1412,7 @@ describe('TmuxBashRuntime', () => {
     );
     activeRuntimes.push(third);
     await third.startSession(context as never);
-    expect(messages).toHaveLength(1);
+    await vi.waitFor(() => expect(messages).toHaveLength(1), { timeout: 1_000 });
     await third.shutdown(context as never);
     thirdController.dispose();
     await rm(root, { recursive: true, force: true });

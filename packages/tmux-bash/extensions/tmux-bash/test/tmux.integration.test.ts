@@ -8,13 +8,13 @@ import { createLocalBashOperations } from '@earendil-works/pi-coding-agent';
 import { shortHash, TMUX_BASH_OWNERSHIP_MARKER } from '@aliaksei-raketski/pi-tmux-bash-core';
 import { execFile, execFileSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
-import { createCommandArtifacts } from '../src/command-artifacts.js';
+import { createCommandArtifacts, shellQuote } from '../src/command-artifacts.js';
 import { DEFAULT_TMUX_BASH_CONFIG } from '../src/config.js';
 import { readExitCode } from '../src/output.js';
 import { TmuxBashRuntime } from '../src/runtime.js';
@@ -281,18 +281,28 @@ suite('real tmux integration', () => {
       source: 'pi-tmux-bash',
     });
     const first = new TmuxBashRuntime(pi as never, config, firstController);
+    const completeOfflineFile = join(directory, 'complete-offline');
+    const completeLiveFile = join(directory, 'complete-live');
     let second: TmuxBashRuntime | undefined;
     let secondController: ReturnType<typeof createContinuationGateController> | undefined;
     try {
       await first.startSession(context as never);
       const completedOffline = await first.executeBash(
-        { command: "sleep 0.1; printf 'offline\\n'", background: true, waitForCompletion: true },
+        {
+          command: `while [ ! -e ${shellQuote(completeOfflineFile)} ]; do sleep 0.05; done; printf 'offline\\n'`,
+          background: true,
+          waitForCompletion: true,
+        },
         undefined,
         undefined,
         context as never,
       );
       const stillLive = await first.executeBash(
-        { command: "sleep 1; printf 'live\\n'", background: true, waitForCompletion: true },
+        {
+          command: `while [ ! -e ${shellQuote(completeLiveFile)} ]; do sleep 0.05; done; printf 'live\\n'`,
+          background: true,
+          waitForCompletion: true,
+        },
         undefined,
         undefined,
         context as never,
@@ -303,6 +313,7 @@ suite('real tmux integration', () => {
       if (!completedOfflineExitFile) throw new Error('Expected the offline run exit file.');
       await first.shutdown(context as never);
       firstController.dispose();
+      await writeFile(completeOfflineFile, '');
       await waitFor(async () => (await readExitCode(completedOfflineExitFile)) === 0);
 
       emittedEvents.length = 0;
@@ -320,7 +331,8 @@ suite('real tmux integration', () => {
       expect(emittedEvents.indexOf(CONTINUATION_GATE_ACQUIRE_EVENT)).toBeLessThan(
         emittedEvents.indexOf(CONTINUATION_GATE_SNAPSHOT_EVENT),
       );
-      await waitFor(async () => pi.sendMessage.mock.calls.length === 2, 10_000);
+      await writeFile(completeLiveFile, '');
+      await waitFor(async () => pi.sendMessage.mock.calls.length === 2, 20_000);
       await waitFor(async () => secondController?.list('restart-session').length === 0, 5_000);
       const completionIds = pi.sendMessage.mock.calls.map(
         (call) => (call[0] as { details?: { completionId?: string } }).details?.completionId,
@@ -332,7 +344,7 @@ suite('real tmux integration', () => {
       await second?.shutdown(context as never).catch(() => undefined);
       secondController?.dispose();
     }
-  }, 20_000);
+  }, 40_000);
 
   it('round-trips literal interactive input through a real prompt without persisting it', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'pi-tmux-input-'));
