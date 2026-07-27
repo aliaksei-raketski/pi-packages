@@ -462,6 +462,33 @@ describe('goal extension', () => {
     });
   });
 
+  it('keeps a budget summary pending when queueing fails', async () => {
+    await emit(harness, 'session_start', { reason: 'startup' });
+    await harness.commands
+      .get('goal')
+      ?.handler('--tokens 10 budgeted objective', harness.ctx as never);
+    harness.sendMessage.mockClear();
+    harness.sendMessage.mockImplementationOnce(() => {
+      throw new Error('queue failed');
+    });
+    await emit(harness, 'turn_start');
+    await expect(
+      emit(harness, 'turn_end', { message: { usage: { totalTokens: 10 } } }),
+    ).rejects.toThrow('queue failed');
+
+    const pending = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+      pendingBudgetSummary: boolean;
+    };
+    expect(pending.pendingBudgetSummary).toBe(true);
+
+    await emit(harness, 'agent_settled');
+    expect(harness.sendMessage).toHaveBeenCalledTimes(2);
+    const delivered = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+      pendingBudgetSummary: boolean;
+    };
+    expect(delivered.pendingBudgetSummary).toBe(false);
+  });
+
   it('restores branch-local state on session_tree', async () => {
     await emit(harness, 'session_start', { reason: 'startup' });
     const branchGoal = createGoalState('branch goal', null, 1, () => 'branch-goal');
@@ -551,6 +578,34 @@ describe('goal extension', () => {
       tokenBudget: 50_000,
       wallTimeBudgetSeconds: 1_800,
     });
+  });
+
+  it('combines wall and token limits when the wall timer fires mid-turn', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+      await emit(harness, 'session_start', { reason: 'startup' });
+      await harness.commands
+        .get('goal')
+        ?.handler('--time 10s --tokens 10 combined limit', harness.ctx as never);
+      harness.sendMessage.mockClear();
+      (harness.ctx.isIdle as ReturnType<typeof vi.fn>).mockReturnValue(false);
+      await emit(harness, 'turn_start');
+      await vi.advanceTimersByTimeAsync(10_000);
+      await emit(harness, 'turn_end', { message: { usage: { totalTokens: 10 } } });
+
+      const limited = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+        goal: { status: string; budgetLimitReason: string };
+        pendingBudgetSummary: boolean;
+      };
+      expect(limited.goal).toMatchObject({
+        status: 'budget_limited',
+        budgetLimitReason: 'tokens_and_wall_time',
+      });
+      expect(limited.pendingBudgetSummary).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps a gated wall-budget summary pending until the gate clears', async () => {
@@ -753,6 +808,31 @@ describe('goal extension', () => {
     expect(lastData.progress).toBeNull();
   });
 
+  it('clears prior observations on explicit no-progress reset', async () => {
+    await createActiveGoal(harness);
+    await harness.commands.get('goal')?.handler('no-progress on', harness.ctx as never);
+    await emit(harness, 'agent_settled');
+    await Promise.resolve();
+    await emit(harness, 'turn_start');
+    await emit(harness, 'turn_end', {
+      message: {
+        content: [{ type: 'text', text: 'Initial synthetic observation.' }],
+        usage: { totalTokens: 1 },
+      },
+      toolResults: [],
+    });
+    const observed = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+      progress: { observations: unknown[] };
+    };
+    expect(observed.progress.observations).toHaveLength(1);
+
+    await harness.commands.get('goal')?.handler('no-progress reset', harness.ctx as never);
+    const reset = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+      progress: { observations: unknown[]; stagnationStreak: number };
+    };
+    expect(reset.progress).toMatchObject({ observations: [], stagnationStreak: 0 });
+  });
+
   it('does not count explicit manual continuation toward no-progress', async () => {
     await createActiveGoal(harness);
     await harness.commands.get('goal')?.handler('no-progress on', harness.ctx as never);
@@ -812,17 +892,22 @@ describe('goal extension', () => {
       await vi.advanceTimersByTimeAsync(1_000);
       expect(harness.sendMessage).not.toHaveBeenCalled();
       const beforeStart = harness.handlers.get('before_agent_start')?.[0];
-      const injected = await beforeStart?.({}, harness.ctx as never);
+      const injected = beforeStart?.({}, harness.ctx as never);
+      const pendingAtInjection = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+        pendingBudgetSummary: boolean;
+      };
+      expect(pendingAtInjection.pendingBudgetSummary).toBe(true);
       expect(injected).toMatchObject({
         message: {
           customType: 'pi-goal-event',
           content: expect.stringContaining('budget_limited'),
         },
       });
-      const lastData = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+      await Promise.resolve();
+      const delivered = harness.appendEntry.mock.calls.at(-1)?.[1] as {
         pendingBudgetSummary: boolean;
       };
-      expect(lastData.pendingBudgetSummary).toBe(false);
+      expect(delivered.pendingBudgetSummary).toBe(false);
       expect(await beforeStart?.({}, harness.ctx as never)).toBeUndefined();
     } finally {
       vi.useRealTimers();

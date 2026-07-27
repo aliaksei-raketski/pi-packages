@@ -7,6 +7,7 @@ import {
   observeGoalProgress,
   parseGoalProgressState,
   resetGoalProgress,
+  resumeGoalProgress,
   simHash64,
   type GoalProgressState,
 } from '../src/goal-progress.ts';
@@ -85,7 +86,7 @@ describe('goal no-progress observations', () => {
     expect(serialized).toMatch(/summaryFingerprint/);
   });
 
-  it('parses only bounded fingerprints and resume reset keeps diagnostic history', () => {
+  it('parses only bounded fingerprints and resume keeps diagnostic history', () => {
     const state = observeGoalProgress(null, input()).state;
     expect(parseGoalProgressState(state, 'goal-1')).toEqual(state);
     expect(parseGoalProgressState({ ...state, rawAssistantText: 'secret' }, 'goal-1')).toEqual(
@@ -97,10 +98,20 @@ describe('goal no-progress observations', () => {
         'goal-1',
       ),
     ).toBeNull();
-    const reset = resetGoalProgress({ ...state, stagnationStreak: 2, pausedAt: 5 }, 10);
-    expect(reset.stagnationStreak).toBe(0);
-    expect(reset.observations).toEqual(state.observations);
-    expect(reset.pausedAt).toBeUndefined();
+    const resumed = resumeGoalProgress({ ...state, stagnationStreak: 2, pausedAt: 5 }, 10);
+    expect(resumed.stagnationStreak).toBe(0);
+    expect(resumed.observations).toEqual(state.observations);
+    expect(resumed.pausedAt).toBeUndefined();
+  });
+
+  it('clears diagnostic history on explicit reset', () => {
+    const state = observeGoalProgress(null, input()).state;
+    expect(resetGoalProgress(10)).toEqual({
+      observations: [],
+      stagnationStreak: 0,
+      lastProgressAt: 10,
+    });
+    expect(state.observations).not.toHaveLength(0);
   });
 
   it('produces deterministic similarity-friendly fingerprints', () => {

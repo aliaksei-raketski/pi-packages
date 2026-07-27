@@ -39,7 +39,14 @@ export function createGoalProgressState(now: number): GoalProgressState {
   return { observations: [], stagnationStreak: 0, lastProgressAt: Math.max(0, now) };
 }
 
-export function resetGoalProgress(state: GoalProgressState | null, now: number): GoalProgressState {
+export function resetGoalProgress(now: number): GoalProgressState {
+  return { observations: [], stagnationStreak: 0, lastProgressAt: Math.max(0, now) };
+}
+
+export function resumeGoalProgress(
+  state: GoalProgressState | null,
+  now: number,
+): GoalProgressState {
   return {
     ...(state ?? createGoalProgressState(now)),
     stagnationStreak: 0,

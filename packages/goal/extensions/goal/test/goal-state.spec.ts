@@ -108,6 +108,18 @@ describe('goal state', () => {
       status: 'budget_limited',
       budgetLimitReason: 'tokens',
     });
+    const wallLimited = {
+      ...create(),
+      status: 'budget_limited' as const,
+      wallTimeBudgetSeconds: 8,
+      activeWallTimeSeconds: 8,
+      activeSince: null,
+      budgetLimitReason: 'wall_time' as const,
+    };
+    expect(accountGoalTurn(wallLimited, 100, 8, 55)).toMatchObject({
+      status: 'budget_limited',
+      budgetLimitReason: 'tokens_and_wall_time',
+    });
     const complete = { ...create(), status: 'complete' as const, activeSince: null };
     expect(accountGoalTurn(complete, 25, 7, 55)).toMatchObject({
       status: 'complete',

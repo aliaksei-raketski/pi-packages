@@ -233,14 +233,14 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
       currentGates().length > 0
     )
       return;
-    runtime.pendingBudgetSummary = false;
-    persist(ctx);
     emitGoalEvent(
       'budget_limited',
       runtime.goal,
       { triggerTurn: true, deliverAs: 'followUp' },
       'other',
     );
+    runtime.pendingBudgetSummary = false;
+    persist(ctx);
   };
 
   function enforceBudgetLimit(ctx: ExtensionContext): boolean {
@@ -417,15 +417,13 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
   pi.on('before_agent_start', (_event, ctx) => {
     if (!runtime.pendingBudgetSummary || runtime.goal?.status !== 'budget_limited') return;
     const state = runtime.goal;
-    runtime.pendingBudgetSummary = false;
-    persist(ctx);
-    return {
+    const injection = {
       message: {
         customType: GOAL_EVENT_CUSTOM_TYPE,
         content: budgetLimitPrompt(state, { ledger: runtime.ledger, now: runtime.now() }),
         display: true,
         details: {
-          kind: 'budget_limited',
+          kind: 'budget_limited' as const,
           goal: state,
           gates: currentGates(),
           ledger: runtime.ledger,
@@ -434,6 +432,10 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
         } satisfies GoalEventDetails,
       },
     };
+    runtime.pendingBudgetSummary = false;
+    // Clear the durable marker only after the host receives the injected message.
+    queueMicrotask(() => persist(ctx));
+    return injection;
   });
 
   pi.on('turn_start', () => {

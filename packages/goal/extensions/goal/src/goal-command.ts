@@ -7,7 +7,7 @@ import {
   createGoalEvidenceLedger,
   type GoalEvidenceLedger,
 } from './goal-evidence.ts';
-import { resetGoalProgress, type GoalProgressState } from './goal-progress.ts';
+import { resetGoalProgress, resumeGoalProgress, type GoalProgressState } from './goal-progress.ts';
 import {
   allGatesWereConfirmed,
   invalidateContinuation,
@@ -199,8 +199,7 @@ async function handleGoalCommand(
   }
   if (input === 'no-progress on' || input === 'no-progress off') {
     runtime.noProgressEnabled = input.endsWith('on');
-    if (!runtime.noProgressEnabled)
-      runtime.progress = resetGoalProgress(runtime.progress, runtime.now());
+    if (!runtime.noProgressEnabled) runtime.progress = resetGoalProgress(runtime.now());
     controller.persist(ctx);
     ctx.ui.notify(
       `Goal no-progress detection ${runtime.noProgressEnabled ? 'enabled' : 'disabled'}.`,
@@ -209,7 +208,7 @@ async function handleGoalCommand(
     return;
   }
   if (input === 'no-progress reset') {
-    runtime.progress = resetGoalProgress(runtime.progress, runtime.now());
+    runtime.progress = resetGoalProgress(runtime.now());
     controller.persist(ctx);
     ctx.ui.notify('Goal no-progress diagnostics reset.', 'info');
     return;
@@ -238,7 +237,7 @@ async function handleGoalCommand(
       ctx.ui.notify('Only a paused goal can be resumed.', 'warning');
       return;
     }
-    runtime.progress = resetGoalProgress(runtime.progress, runtime.now());
+    runtime.progress = resumeGoalProgress(runtime.progress, runtime.now());
     const next = controller.transition(ctx, 'active');
     if (controller.enforceBudgetLimit(ctx)) return;
     controller.emitGoalEvent(
@@ -275,7 +274,7 @@ async function resetEvidence(
   );
   if (!confirmed) return;
   runtime.ledger = createGoalEvidenceLedger(runtime.goal.id, runtime.now());
-  runtime.progress = resetGoalProgress(runtime.progress, runtime.now());
+  runtime.progress = resetGoalProgress(runtime.now());
   controller.persist(ctx);
   ctx.ui.notify('Goal evidence reset.', 'info');
 }

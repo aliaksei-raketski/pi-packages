@@ -32,7 +32,7 @@ export function remainingWallTime(goal: GoalState, now: number): number | null {
 }
 
 export function evaluateBudgetLimit(goal: GoalState, now: number): GoalBudgetLimitReason {
-  if (goal.status !== 'active') return null;
+  if (goal.status !== 'active' && goal.status !== 'budget_limited') return null;
   const tokens = goal.tokenBudget !== null && goal.tokensUsed >= goal.tokenBudget;
   const wallTime =
     goal.wallTimeBudgetSeconds !== null &&
