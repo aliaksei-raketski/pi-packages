@@ -1211,6 +1211,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('fails and releases an awaited run when post-launch output handling fails', async () => {
+    const root = await temporaryDirectory('tmux-post-launch-failure-');
     const events = new EventBus();
     const releases: Array<{ outcome?: string }> = [];
     events.on(CONTINUATION_GATE_RELEASE_EVENT, (payload) =>
@@ -1222,7 +1223,12 @@ describe('TmuxBashRuntime', () => {
     const controller = createContinuationGateController(pi, { source: 'pi-tmux-bash' });
     const runtime = new TmuxBashRuntime(
       pi as never,
-      { ...DEFAULT_TMUX_BASH_CONFIG, statusbarEnabled: false },
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        outputDir: root,
+        durableOutputDir: root,
+        statusbarEnabled: false,
+      },
       controller,
       new TmuxClient('tmux', fakeTmux.execute),
     );
