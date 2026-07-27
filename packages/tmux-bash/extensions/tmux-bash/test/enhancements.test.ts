@@ -427,12 +427,20 @@ describe('durable run store and adoption', () => {
     expect(adopted.diagnostics.join('\n')).toContain('pane died without an exit sentinel');
   });
 
-  it('continues startup with diagnostics when tmux discovery is unavailable', async () => {
+  it('reconciles terminal artifacts but preserves live runs when tmux discovery is unavailable', async () => {
     const { root, config } = await fixtureConfig();
     const store = new RunStore(root);
     await store.initialize();
     const run = await createRun(root, config, 'run-unavail-12');
-    await store.persist(run);
+    const completed = await createRun(root, config, 'run-unavail-done');
+    await Promise.all([store.persist(run), store.persist(completed)]);
+    await writeFile(completed.exitCodeFile, '0\n', { mode: 0o600 });
+    await writeFile(
+      completed.manifestPath.replace(/\.manifest\.json$/, '.completion.claim'),
+      `${process.pid} ${Date.now()}\n`,
+      { mode: 0o600 },
+    );
+
     const adopted = await discoverAndReconcileRuns({
       config,
       tmux: { listManaged: vi.fn(async () => Promise.reject(new Error('no server'))) } as never,
@@ -440,8 +448,9 @@ describe('durable run store and adoption', () => {
       sessionId: run.sessionId,
       scope: run.scope,
     });
+
     expect(adopted.live).toEqual([]);
-    expect(adopted.completed).toEqual([]);
+    expect(adopted.completed.map((candidate) => candidate.runId)).toEqual([completed.runId]);
     expect(adopted.orphaned).toEqual([]);
     expect(adopted.diagnostics.join('\n')).toMatch(/discovery unavailable/);
     const persisted = JSON.parse(await readFile(run.manifestPath, 'utf8')) as Record<

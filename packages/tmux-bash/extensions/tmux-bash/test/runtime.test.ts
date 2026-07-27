@@ -30,22 +30,36 @@ class EventBus {
 }
 
 const activeRuntimes: TmuxBashRuntime[] = [];
+const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(
-    activeRuntimes.splice(0).map(async (runtime) => {
-      for (const run of runtime.state.commands.values()) {
-        run.killed = true;
-        run.endedAt ??= Date.now();
-      }
-      await runtime.shutdown();
-    }),
-  );
+  vi.useRealTimers();
+  try {
+    await Promise.all(
+      activeRuntimes.splice(0).map(async (runtime) => {
+        for (const run of runtime.state.commands.values()) {
+          run.killed = true;
+          run.endedAt ??= Date.now();
+        }
+        await runtime.shutdown();
+      }),
+    );
+  } finally {
+    await Promise.all(
+      temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
+    );
+  }
 });
+
+async function temporaryDirectory(prefix: string): Promise<string> {
+  const path = await mkdtemp(join(tmpdir(), prefix));
+  temporaryDirectories.push(path);
+  return path;
+}
 
 describe('TmuxBashRuntime', () => {
   it('surfaces durable no-UI display markers and resource usage through tmux list', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-list-diagnostics-'));
+    const root = await temporaryDirectory('tmux-list-diagnostics-');
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
     const controller = createContinuationGateController(pi as never, {
@@ -95,7 +109,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('bounds list and list-polls model-visible output and run details', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-list-bounded-'));
+    const root = await temporaryDirectory('tmux-list-bounded-');
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
     const controller = createContinuationGateController(pi as never, { source: 'pi-tmux-bash' });
@@ -177,7 +191,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('removes this session artifacts on shutdown when preservation is disabled', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-shutdown-cleanup-'));
+    const root = await temporaryDirectory('tmux-shutdown-cleanup-');
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
     const controller = createContinuationGateController(pi as never, {
@@ -216,7 +230,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('retains live artifacts needed for same-session adoption when preservation is disabled', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-shutdown-adoption-'));
+    const root = await temporaryDirectory('tmux-shutdown-adoption-');
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
     const controller = createContinuationGateController(pi as never, {
@@ -256,7 +270,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('rejects a launch whose structural artifacts exceed the bounded quota headroom', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-launch-quota-'));
+    const root = await temporaryDirectory('tmux-launch-quota-');
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
     const controller = createContinuationGateController(pi as never, {
@@ -296,7 +310,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('does not let a completed-while-offline pane exhaust concurrency', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-offline-capacity-'));
+    const root = await temporaryDirectory('tmux-offline-capacity-');
     const events = new EventBus();
     const context = fakeContext();
     const fakeTmux = managedTmux('@97');
@@ -415,7 +429,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('does not let passive list reconciliation consume a next-turn completion', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-passive-completion-'));
+    const root = await temporaryDirectory('tmux-passive-completion-');
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
     const context = fakeContext();
@@ -481,7 +495,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('reconciles a sentinel before kill without transitioning the completed run to killed', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-kill-completion-race-'));
+    const root = await temporaryDirectory('tmux-kill-completion-race-');
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
     const context = fakeContext();
@@ -531,7 +545,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('contains an actual watcher error event and keeps monitor fallback active', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-watcher-emitter-error-'));
+    const root = await temporaryDirectory('tmux-watcher-emitter-error-');
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
     const context = fakeContext();
@@ -571,7 +585,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('contains invalid-sentinel observer failures, terminates the run, and releases its gate', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-observer-failure-'));
+    const root = await temporaryDirectory('tmux-observer-failure-');
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
     const context = fakeContext();
@@ -616,7 +630,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('terminates a foreground run when an existing exit sentinel is malformed', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-foreground-invalid-sentinel-'));
+    const root = await temporaryDirectory('tmux-foreground-invalid-sentinel-');
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
     const context = fakeContext();
@@ -704,7 +718,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('protects terminal artifacts while completion delivery is pending retry', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-retry-cleanup-'));
+    const root = await temporaryDirectory('tmux-retry-cleanup-');
     const events = new EventBus();
     let attempts = 0;
     const pi = {
@@ -813,7 +827,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('preserves pending completion artifacts for same-session adoption during shutdown', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-shutdown-pending-'));
+    const root = await temporaryDirectory('tmux-shutdown-pending-');
     const events = new EventBus();
     let attempts = 0;
     const pi = {
@@ -1050,7 +1064,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('rejects interactive input for a completed managed window before invoking tmux input', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-completed-input-'));
+    const root = await temporaryDirectory('tmux-completed-input-');
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn() };
     const execute = vi.fn<TmuxExecutor>(async (_binary, args) => ({
@@ -1278,7 +1292,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('reacquires adopted live gates before publishing the authoritative snapshot', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-adoption-runtime-'));
+    const root = await temporaryDirectory('tmux-adoption-runtime-');
     const events = new EventBus();
     const context = fakeContext();
     const fakeTmux = managedTmux('@98');
@@ -1345,7 +1359,7 @@ describe('TmuxBashRuntime', () => {
   });
 
   it('delivers a completed-while-offline run once without reconstructing its gate', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'tmux-offline-runtime-'));
+    const root = await temporaryDirectory('tmux-offline-runtime-');
     const events = new EventBus();
     const context = fakeContext();
     const fakeTmux = managedTmux('@99');
@@ -1356,6 +1370,7 @@ describe('TmuxBashRuntime', () => {
       adoptionPolicy: 'same-pi-session' as const,
       autoCloseWindowsOnCompletion: false,
       completionDeliveryRetryBaseMs: 25,
+      preserveOutputFiles: true,
       statusbarEnabled: false,
     };
     const firstController = createContinuationGateController({ events } as never, {
@@ -1388,6 +1403,12 @@ describe('TmuxBashRuntime', () => {
     const secondController = createContinuationGateController({ events } as never, {
       source: 'pi-tmux-bash',
     });
+    const unavailableDiscovery = vi.fn<TmuxExecutor>(async (binary, args, signal) => {
+      if (args[0] === 'list-windows') {
+        return { stdout: '', stderr: 'permission denied', code: 1 };
+      }
+      return fakeTmux.execute(binary, args, signal);
+    });
     const second = new TmuxBashRuntime(
       {
         events,
@@ -1396,10 +1417,10 @@ describe('TmuxBashRuntime', () => {
       } as never,
       config,
       secondController,
-      new TmuxClient('tmux', fakeTmux.execute),
+      new TmuxClient('tmux', unavailableDiscovery),
     );
     activeRuntimes.push(second);
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['clearTimeout', 'setTimeout'] });
     try {
       await second.startSession(context as never);
       expect(messages).toHaveLength(0);
