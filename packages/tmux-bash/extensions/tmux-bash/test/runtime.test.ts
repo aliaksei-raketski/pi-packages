@@ -163,7 +163,17 @@ describe('TmuxBashRuntime', () => {
     const pollText = polls.content[0]?.type === 'text' ? polls.content[0].text : '';
     expect(Buffer.byteLength(pollText)).toBeLessThanOrEqual(64 * 1024);
     expect(pollText).toContain('additional line(s) omitted');
+
+    clearInterval(sharedTimer);
+    runtime.state.pollers.clear();
+    for (const runId of [...runtime.state.commands.keys()]) {
+      if (runId.startsWith('bounded-')) runtime.state.commands.delete(runId);
+    }
+    base.killed = true;
+    base.endedAt = Date.now();
+    await runtime.shutdown(context as never);
     controller.dispose();
+    await rm(root, { recursive: true, force: true });
   });
 
   it('removes this session artifacts on shutdown when preservation is disabled', async () => {
@@ -1345,6 +1355,7 @@ describe('TmuxBashRuntime', () => {
       durableOutputDir: root,
       adoptionPolicy: 'same-pi-session' as const,
       autoCloseWindowsOnCompletion: false,
+      completionDeliveryRetryBaseMs: 25,
       statusbarEnabled: false,
     };
     const firstController = createContinuationGateController({ events } as never, {
@@ -1370,6 +1381,8 @@ describe('TmuxBashRuntime', () => {
     firstController.dispose();
     await writeFile(offlineRun.outputFile, '$ sleep 10\noffline done\n');
     await writeFile(offlineRun.exitCodeFile, '0\n');
+    const claimPath = offlineRun.manifestPath.replace(/\.manifest\.json$/, '.completion.claim');
+    await writeFile(claimPath, `${process.pid} ${Date.now()}\n`);
 
     const messages: unknown[] = [];
     const secondController = createContinuationGateController({ events } as never, {
@@ -1387,6 +1400,8 @@ describe('TmuxBashRuntime', () => {
     );
     activeRuntimes.push(second);
     await second.startSession(context as never);
+    expect(messages).toHaveLength(0);
+    await rm(claimPath, { force: true });
     await vi.waitFor(() => expect(messages).toHaveLength(1), { timeout: 5_000 });
     expect(messages[0]).toMatchObject({ content: expect.stringContaining('offline done') });
     expect(secondController.list('session-1')).toHaveLength(0);
@@ -1416,7 +1431,7 @@ describe('TmuxBashRuntime', () => {
     await third.shutdown(context as never);
     thirdController.dispose();
     await rm(root, { recursive: true, force: true });
-  });
+  }, 10_000);
 
   it('delivers completion once when a poller and completion observer race', async () => {
     const events = new EventBus();

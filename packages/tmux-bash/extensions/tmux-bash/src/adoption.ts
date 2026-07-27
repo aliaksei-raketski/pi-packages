@@ -316,9 +316,11 @@ export async function discoverAndReconcileRuns(input: {
         run.endedAt ??= Date.now();
         run.state = exitCode === 0 ? 'completed' : 'failed';
         run.backgroundReady = false;
-        if (await input.store.claimCompletion(run.runId)) {
-          result.completed.push(run);
-        }
+        // Keep a completed run in the active runtime even when another scanner
+        // temporarily owns its delivery claim. The supervisor will retry the
+        // claim instead of silently dropping an undelivered completion.
+        await input.store.claimCompletion(run.runId);
+        result.completed.push(run);
         continue;
       }
 
