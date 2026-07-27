@@ -1,3 +1,14 @@
+## 0.3.18 (2026-07-27)
+
+### 🩹 Fixes
+
+- **goal:** bound get goal TUI output ([112e2ea](https://github.com/aliaksei-raketski/pi-packages/commit/112e2ea))
+- **tmux-bash:** keep idle status visible ([b7ecf85](https://github.com/aliaksei-raketski/pi-packages/commit/b7ecf85))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.17 (2026-07-27)
 
 ### 🩹 Fixes
