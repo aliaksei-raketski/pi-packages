@@ -5,7 +5,7 @@ import type { TmuxBashRuntime } from './runtime.js';
 export function registerTmuxCleanupCommands(pi: ExtensionAPI, runtime: TmuxBashRuntime): void {
   if (runtime.config.enabledTmuxActions.includes('cleanup-preview')) {
     pi.registerCommand('tmux-cleanup-preview', {
-      description: 'Preview validated completed tmux-bash artifacts eligible for cleanup',
+      description: 'Preview validated inactive tmux-bash artifacts eligible for cleanup',
       handler: async (_args, ctx) => {
         const result = await runtime.cleanupPreview(ctx);
         const text = result.content[0]?.type === 'text' ? result.content[0].text : 'No preview.';
@@ -21,7 +21,7 @@ export function registerTmuxCleanupCommands(pi: ExtensionAPI, runtime: TmuxBashR
         const candidates = preview.details.cleanup ?? [];
         const summary = preview.details.cleanupSummary;
         if ((summary?.candidateCount ?? candidates.length) === 0) {
-          ctx.ui.notify('No completed tmux-bash artifacts are available for cleanup.', 'info');
+          ctx.ui.notify('No inactive tmux-bash artifacts are available for cleanup.', 'info');
           return;
         }
         if (!ctx.hasUI) {
@@ -33,7 +33,7 @@ export function registerTmuxCleanupCommands(pi: ExtensionAPI, runtime: TmuxBashR
           summary?.reclaimableBytes ??
           candidates.reduce((total, candidate) => total + candidate.bytes, 0);
         const confirmed = await ctx.ui.confirm(
-          `Remove ${count} completed tmux run(s)?`,
+          `Remove ${count} inactive tmux run(s)?`,
           `This will reclaim approximately ${bytes} bytes. Live and unowned resources are always protected.`,
         );
         if (!confirmed) return;

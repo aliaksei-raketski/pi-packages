@@ -222,8 +222,15 @@ describe('durable run store and adoption', () => {
       scope: run.scope,
     });
     expect(adopted.live).toEqual([]);
-    expect(adopted.orphaned).toHaveLength(1);
-    expect(adopted.diagnostics.join('\n')).toMatch(/unavailable|orphaned/);
+    expect(adopted.completed).toEqual([]);
+    expect(adopted.orphaned).toEqual([]);
+    expect(adopted.diagnostics.join('\n')).toMatch(/discovery unavailable/);
+    const persisted = JSON.parse(await readFile(run.manifestPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(persisted).toMatchObject({ state: 'running' });
+    expect(persisted).not.toHaveProperty('endedAt');
   });
 });
 
@@ -289,6 +296,7 @@ describe('completion delivery policies', () => {
     );
     expect(outcome.wake).toBe('none');
     expect(entries.some((entry) => entry.customType === TMUX_BASH_PENDING_COMPLETION)).toBe(true);
+    expect(service.isCompletionRecorded(ctx as never, run.completionId)).toBe(true);
     expect(service.consumePending(ctx as never)).toMatch(/next natural turn/);
     expect(entries.some((entry) => entry.customType === TMUX_BASH_CONSUMED_COMPLETION)).toBe(true);
     expect(service.consumePending(ctx as never)).toBeUndefined();
@@ -479,6 +487,31 @@ describe('resource reservations and cleanup', () => {
       isActiveRun: vi.fn(async (manifest) => manifest.runId === live.runId),
     });
     expect(usage.activeRuns).toBe(1);
+  });
+
+  it('makes inactive crash leftovers cleanable when restart adoption is disabled', async () => {
+    const { root, config } = await fixtureConfig({ adoptionPolicy: 'off' });
+    const store = new RunStore(root);
+    await store.initialize();
+    const stale = await createRun(root, config, 'run-crash-stale', {
+      startedAt: Date.now() - 20_000,
+    });
+    await store.persist(stale);
+    const resources = new ResourceManager(root, config);
+
+    const preview = await resources.preview({
+      includeYoung: true,
+      isActiveRun: vi.fn(async () => false),
+    });
+    expect(preview.map((candidate) => candidate.runId)).toEqual([stale.runId]);
+
+    const removed = await resources.cleanup({
+      includeYoung: true,
+      isActiveRun: vi.fn(async () => false),
+      isLiveOwnedWindow: vi.fn(async () => false),
+    });
+    expect(removed.map((candidate) => candidate.runId)).toEqual([stale.runId]);
+    await expect(readFile(stale.manifestPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('reserves total artifact headroom across concurrent processes', async () => {

@@ -213,6 +213,11 @@ export class TmuxBashSupervisor {
           !run.killed &&
           !run.endedAt &&
           (run.state === 'running' || run.state === 'starting');
+        if (isLive && this.config.adoptionPolicy === 'same-pi-session') {
+          // Durable manifests and exit sentinels must survive while Pi is offline so
+          // same-session adoption can reconcile and deliver the eventual completion.
+          continue;
+        }
         if (isLive) {
           await scheduleRunArtifactCleanup(runDir, runId).catch(() => undefined);
         } else {
@@ -345,10 +350,12 @@ export class TmuxBashSupervisor {
         void this.completeIfReady(run, true);
         return running;
       } catch (error) {
-        if (!signal?.aborted) throw error;
-        await this.terminateForeground(run, 'cancelled');
+        await this.failLaunchedRun(run, signal?.aborted ? 'cancelled' : 'failed', runStore).catch(
+          () => undefined,
+        );
         this.state.commands.delete(runId);
-        throw cancelledError();
+        if (signal?.aborted) throw cancelledError();
+        throw error;
       }
     }
 
@@ -553,7 +560,13 @@ export class TmuxBashSupervisor {
       await this.closeCompletedWindow(run);
       return { exitCode: exitCode ?? null };
     } catch (error) {
-      if (run && !run.windowId) {
+      if (run?.windowId) {
+        await this.failLaunchedRun(
+          run,
+          options.signal?.aborted ? 'cancelled' : 'failed',
+          store,
+        ).catch(() => undefined);
+      } else if (run) {
         this.state.commands.delete(run.runId);
         await removeUncommittedArtifacts(runDir, runId).catch(() => undefined);
         this.sessionArtifacts.delete(runId);
@@ -636,6 +649,7 @@ export class TmuxBashSupervisor {
       'await',
       [run],
       `Awaiting ${windowId}. Synthetic continuation is suspended until completion or unawait.`,
+      true,
     );
   }
 
@@ -757,7 +771,10 @@ export class TmuxBashSupervisor {
     this.assertReady(ctx);
     const resources = this.resources;
     if (!resources) throw new Error('tmux-bash resource manager is unavailable.');
-    const candidates = await resources.preview({ includeYoung });
+    const candidates = await resources.preview({
+      includeYoung,
+      isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest),
+    });
     const listedCandidates = candidates.slice(0, 100);
     const text = candidates.length
       ? [
@@ -768,7 +785,7 @@ export class TmuxBashSupervisor {
             ? [`… ${candidates.length - listedCandidates.length} additional candidate(s) omitted.`]
             : []),
         ].join('\n')
-      : 'No completed or orphaned tmux artifacts are eligible for cleanup.';
+      : 'No completed, orphaned, or inactive crash-leftover tmux artifacts are eligible for cleanup.';
     const result = this.tmuxResult('cleanup-preview', [], text);
     result.details.cleanup = listedCandidates.map((candidate) => ({
       runId: candidate.runId,
@@ -797,13 +814,14 @@ export class TmuxBashSupervisor {
     const removed = await resources.cleanup({
       includeYoung,
       isLiveOwnedWindow: (manifest) => this.isLiveOwnedManifest(manifest),
+      isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest),
     });
     for (const candidate of removed) this.state.commands.delete(candidate.runId);
     const result = this.tmuxResult(
       'cleanup',
       [],
       removed.length
-        ? `Removed ${removed.length} validated completed run(s), reclaiming ${removed.reduce((sum, item) => sum + item.bytes, 0)} bytes.`
+        ? `Removed ${removed.length} validated inactive run(s), reclaiming ${removed.reduce((sum, item) => sum + item.bytes, 0)} bytes.`
         : 'No eligible artifacts were removed.',
     );
     const listedRemoved = removed.slice(0, 100);
@@ -913,6 +931,27 @@ export class TmuxBashSupervisor {
     this.stopPoll(run.runId);
     this.releaseGate(run, outcome, 'current-turn');
     await store?.transition(run, 'killed');
+    this.publishStatus();
+  }
+
+  private async failLaunchedRun(
+    run: CommandRun,
+    outcome: 'cancelled' | 'failed',
+    store: RunStore,
+  ): Promise<void> {
+    const ownedWindow = run.windowId ? await this.isOwnedWindow(run).catch(() => false) : false;
+    if (run.windowId && ownedWindow) {
+      await this.tmux.killWindow(run.windowId).catch(() => undefined);
+    }
+    run.killed = outcome === 'cancelled';
+    run.endedAt = Date.now();
+    run.state = outcome === 'cancelled' ? 'killed' : 'failed';
+    run.backgroundReady = false;
+    run.deliveryState = 'failed';
+    run.completionClaimed = true;
+    this.stopPoll(run.runId);
+    await store.persist(run).catch(() => undefined);
+    this.releaseGate(run, outcome, 'current-turn');
     this.publishStatus();
   }
 
@@ -1137,6 +1176,7 @@ export class TmuxBashSupervisor {
     return {
       content: [{ type: 'text', text: message }],
       details: this.details(run, formatted.truncation),
+      ...(run.gateId ? { terminate: true } : {}),
     };
   }
 
@@ -1271,9 +1311,11 @@ export class TmuxBashSupervisor {
     action: TmuxToolDetails['action'],
     runs: CommandRun[],
     text: string,
+    terminate = false,
   ): AgentToolResult<TmuxToolDetails> {
     return {
       content: [{ type: 'text', text: sanitizeTerminalText(text) }],
+      ...(terminate ? { terminate: true } : {}),
       details: {
         action,
         runs: runs.map((run) => ({
@@ -1497,9 +1539,22 @@ export class TmuxBashSupervisor {
   private async isLiveOwnedManifest(manifest: ManagedRunManifest): Promise<boolean> {
     if (!manifest.windowId) return false;
     try {
-      // Cleanup fails closed for both an owned preserved pane and a stable ID that
-      // has been reused by an unowned pane. Neither may be deleted as collateral.
-      return await this.tmux.hasWindow(manifest.windowId);
+      if (!(await this.tmux.hasWindow(manifest.windowId))) return false;
+      if (!(await this.tmux.isPaneDead(manifest.windowId))) return true;
+      const manifestPath =
+        this.runStore?.manifestPath(manifest.runId) ??
+        join(dirname(manifest.outputFile), `${manifest.runId}.manifest.json`);
+      // An exited pane owned by this exact manifest is no longer live and can be
+      // cleaned. A reused/unowned stable ID remains protected as collateral.
+      return !(await this.tmux.isOwnedWindow(manifest.windowId, {
+        owner: TMUX_BASH_OWNERSHIP_MARKER,
+        scope: manifest.scope,
+        piSessionId: manifest.piSessionId,
+        runId: manifest.runId,
+        manifestPath,
+        completionId: manifest.completionId,
+        completionDelivery: manifest.completionDelivery,
+      }));
     } catch {
       return true;
     }

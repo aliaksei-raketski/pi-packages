@@ -36,7 +36,7 @@ export async function discoverAndReconcileRuns(input: {
     result.diagnostics.push(
       ...loaded.diagnostics.map((item) => boundedDiagnostic(`${item.path}: ${item.reason}`)),
     );
-    let windows = new Map<string, Awaited<ReturnType<TmuxClient['listManaged']>>[number]>();
+    let windows: Map<string, Awaited<ReturnType<TmuxClient['listManaged']>>[number]>;
     try {
       const discovered = await input.tmux.listManaged({
         scope: input.scope,
@@ -48,6 +48,7 @@ export async function discoverAndReconcileRuns(input: {
       result.diagnostics.push(
         boundedDiagnostic(`tmux discovery unavailable: ${errorMessage(error)}`),
       );
+      return result;
     }
 
     const newest = new Map<string, { manifest: ManagedRunManifest; path: string }>();

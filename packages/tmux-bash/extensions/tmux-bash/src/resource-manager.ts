@@ -186,13 +186,29 @@ export class ResourceManager {
     return { artifactBytes, activeRuns, completedRuns, reservations };
   }
 
-  async preview(options: { includeYoung?: boolean } = {}): Promise<CleanupCandidate[]> {
+  async preview(
+    options: {
+      includeYoung?: boolean;
+      isActiveRun?: (manifest: ManagedRunManifest) => Promise<boolean>;
+    } = {},
+  ): Promise<CleanupCandidate[]> {
     await this.initialize();
     const names = await this.readRootNames();
     const manifests: ManagedRunManifest[] = [];
     for (const name of names.filter((candidate) => candidate.endsWith('.manifest.json'))) {
       const manifest = await this.readManifest(join(this.root, name), name).catch(() => undefined);
-      if (manifest && isCleanupState(manifest.state)) manifests.push(manifest);
+      if (!manifest) continue;
+      if (isCleanupState(manifest.state)) {
+        manifests.push(manifest);
+        continue;
+      }
+      const canReconcileCrashLeftover =
+        this.config.adoptionPolicy === 'off' &&
+        (manifest.state === 'running' || manifest.state === 'starting') &&
+        options.isActiveRun;
+      if (canReconcileCrashLeftover && !(await options.isActiveRun?.(manifest))) {
+        manifests.push(manifest);
+      }
     }
     manifests.sort(
       (left, right) => (left.endedAt ?? left.updatedAt) - (right.endedAt ?? right.updatedAt),
@@ -239,7 +255,10 @@ export class ResourceManager {
       additionalRuns?: number;
     } = {},
   ): Promise<CleanupCandidate[]> {
-    const candidates = await this.preview({ includeYoung: options.includeYoung });
+    const candidates = await this.preview({
+      includeYoung: options.includeYoung,
+      isActiveRun: options.isActiveRun,
+    });
     const removed: CleanupCandidate[] = [];
     for (const candidate of candidates) {
       if (

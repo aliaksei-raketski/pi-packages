@@ -116,7 +116,8 @@ export class CompletionDeliveryService {
       if (entry.type === 'custom') {
         if (
           (entry.customType === TMUX_BASH_CONSUMED_COMPLETION ||
-            entry.customType === TMUX_BASH_DISPLAY_COMPLETION) &&
+            entry.customType === TMUX_BASH_DISPLAY_COMPLETION ||
+            entry.customType === TMUX_BASH_PENDING_COMPLETION) &&
           completionIdFromData(entry.data) === completionId
         ) {
           return true;
