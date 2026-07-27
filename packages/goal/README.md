@@ -145,6 +145,8 @@ The skill returns one pasteable `/goal` command, includes token and/or wall-time
 - `update_goal_evidence`: performs strict goal-bound, revision-checked ledger mutations;
 - `update_goal`: accepts only `status: "complete"` after ledger-backed verification.
 
+`get_goal` keeps its complete bounded model payload while using a compact TUI summary by default and a capped expanded details view. Its transcript label is `Get Goal`.
+
 `create_goal` stays active. The other three tools are active only while the goal status is `active`. Paused, complete, cleared, and budget-limited goals cannot be mutated by model goal tools.
 
 ## Persistence and structural compatibility

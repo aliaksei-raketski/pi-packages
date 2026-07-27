@@ -3,6 +3,7 @@ import { StringEnum } from '@earendil-works/pi-ai';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { remainingWallTime } from './goal-clock.ts';
+import { getGoalToolRenderers } from './goal-tool-renderer.ts';
 import {
   completionEvidenceErrors,
   createGoalEvidenceLedger,
@@ -37,7 +38,7 @@ import {
   type GoalStatus,
 } from './goal-state.ts';
 
-export const ACTIVE_GOAL_TOOL_NAMES = ['get_goal', 'update_goal', 'update_goal_evidence'] as const;
+const ACTIVE_GOAL_TOOL_NAMES = ['get_goal', 'update_goal', 'update_goal_evidence'] as const;
 
 const MAX_GOAL_TOOL_RESULT_BYTES = 50 * 1_024;
 const COMPACT_OBJECTIVE_BYTES = 4 * 1_024;
@@ -162,6 +163,7 @@ export function registerGoalTools(pi: ExtensionAPI, controller: GoalToolControll
       if (controller.runtime.goal?.status !== 'active') throw new Error('No active goal is set.');
       return goalToolResult(controller.runtime, controller.gates(), now());
     },
+    ...getGoalToolRenderers,
   });
 
   pi.registerTool({

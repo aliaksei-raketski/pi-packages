@@ -241,6 +241,14 @@ describe('goal extension', () => {
       ['update_goal_evidence', expect.any(Object)],
       ['update_goal', expect.any(Object)],
     ]);
+    expect(harness.pi.registerTool).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'get_goal',
+        label: 'Get Goal',
+        renderCall: expect.any(Function),
+        renderResult: expect.any(Function),
+      }),
+    );
     for (const event of [
       'session_start',
       'session_before_tree',
