@@ -1,3 +1,28 @@
+## 0.3.16 (2026-07-27)
+
+### 🚀 Features
+
+- **goal:** add lifecycle safeguards and evidence tracking ([0fb7d7f](https://github.com/aliaksei-raketski/pi-packages/commit/0fb7d7f))
+- **goal:** add lifecycle safeguards and evidence tracking ([54d2f83](https://github.com/aliaksei-raketski/pi-packages/commit/54d2f83))
+- **tmux-bash:** implement tmux enhancements ([85667a3](https://github.com/aliaksei-raketski/pi-packages/commit/85667a3))
+
+### 🩹 Fixes
+
+- **goal:** preserve runtime budget invariants ([cc0ea8f](https://github.com/aliaksei-raketski/pi-packages/commit/cc0ea8f))
+- **goal:** address lifecycle review findings ([8c09f4d](https://github.com/aliaksei-raketski/pi-packages/commit/8c09f4d))
+- **goal:** address lifecycle review findings ([c8a7ea5](https://github.com/aliaksei-raketski/pi-packages/commit/c8a7ea5))
+- **goal:** address review findings ([45cc71a](https://github.com/aliaksei-raketski/pi-packages/commit/45cc71a))
+- **tmux-bash:** address lifecycle review findings ([1d80dbf](https://github.com/aliaksei-raketski/pi-packages/commit/1d80dbf))
+- **tmux-bash:** harden lifecycle recovery ([bab7200](https://github.com/aliaksei-raketski/pi-packages/commit/bab7200))
+- **tmux-bash:** harden run lifecycle and artifact handling ([cce0ba7](https://github.com/aliaksei-raketski/pi-packages/commit/cce0ba7))
+- **tmux-bash:** retry contended adoption delivery ([f80f5cf](https://github.com/aliaksei-raketski/pi-packages/commit/f80f5cf))
+- **tmux-bash:** isolate integration test environments ([802e79e](https://github.com/aliaksei-raketski/pi-packages/commit/802e79e))
+- **tmux-bash:** reconcile offline completions reliably ([7b58492](https://github.com/aliaksei-raketski/pi-packages/commit/7b58492))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.15 (2026-07-26)
 
 ### 🩹 Fixes

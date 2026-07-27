@@ -1,6 +1,6 @@
 {
   "name": "@aliaksei-raketski/pi-tmux-bash-core",
-  "version": "0.3.14",
+  "version": "0.3.16",
   "type": "module",
   "description": "Read-only helpers for discovering and inspecting Pi tmux-bash resources.",
   "keywords": [
