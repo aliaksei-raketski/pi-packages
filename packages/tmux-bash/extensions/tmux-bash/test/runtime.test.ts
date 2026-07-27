@@ -813,12 +813,13 @@ describe('TmuxBashRuntime', () => {
     await writeFile(run.outputFile, '$ echo done\ndone\n');
     await writeFile(run.exitCodeFile, '0\n');
 
-    await vi.waitFor(() => expect(attempts).toBe(3));
+    await vi.waitFor(() => {
+      expect(attempts).toBe(3);
+      expect(context.ui.notify).toHaveBeenCalledTimes(1);
+    });
 
-    expect(attempts).toBe(3);
     expect(run.completionDeliveryFailed).toBe(true);
     expect(run.completionRetryTimer).toBeUndefined();
-    expect(context.ui.notify).toHaveBeenCalledTimes(1);
     expect(context.ui.notify).toHaveBeenCalledWith(
       expect.stringContaining('after 3 attempts'),
       'error',
