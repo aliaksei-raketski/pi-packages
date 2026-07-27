@@ -1,6 +1,7 @@
 import {
   CONTINUATION_GATE_ACQUIRE_EVENT,
   CONTINUATION_GATE_RELEASE_EVENT,
+  CONTINUATION_GATE_RESUME_COMMIT_EVENT,
   CONTINUATION_GATE_WAKE_COMMITTED_EVENT,
   CONTINUATION_GATE_WAKE_PENDING_EVENT,
 } from '@aliaksei-raketski/pi-continuation-gate-protocol';
@@ -10,6 +11,12 @@ import {
   STATUSLINE_STATUS_SNAPSHOT_REQUEST_EVENT,
 } from '@aliaksei-raketski/pi-statusline-protocol';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  createGoalEvidenceLedger,
+  goalEvidenceLedgerByteLength,
+  mutateGoalEvidence,
+  type GoalEvidenceLedger,
+} from '../src/goal-evidence.ts';
 import { goal } from '../src/goal.ts';
 import { createGoalState } from '../src/goal-state.ts';
 
@@ -136,12 +143,36 @@ async function createActiveGoal(harness: Harness): Promise<void> {
   harness.sendMessage.mockClear();
 }
 
+async function acknowledgeBudgetSummary(
+  harness: Harness,
+  message: unknown = harness.sendMessage.mock.calls.at(-1)?.[0],
+): Promise<void> {
+  await emit(harness, 'message_start', { message });
+}
+
+async function acknowledgeContinuation(harness: Harness): Promise<void> {
+  await emit(harness, 'message_start', {
+    message: harness.sendMessage.mock.calls.at(-1)?.[0] as Record<string, unknown>,
+  });
+}
+
+async function activeGoalId(harness: Harness): Promise<string> {
+  const result = (await harness.tools
+    .get('get_goal')
+    ?.execute('get-active-goal', {}, undefined, undefined, harness.ctx)) as {
+    details: { goal: { id: string } };
+  };
+  return result.details.goal.id;
+}
+
 async function verifySingleRequirement(harness: Harness): Promise<void> {
   const updateEvidence = harness.tools.get('update_goal_evidence');
+  const goalId = await activeGoalId(harness);
   await updateEvidence?.execute(
     'call-1',
     {
       action: 'initialize_requirements',
+      goalId,
       expectedRevision: 0,
       requirements: [{ id: 'ship', requirement: 'Ship with direct evidence' }],
     },
@@ -153,6 +184,7 @@ async function verifySingleRequirement(harness: Harness): Promise<void> {
     'call-2',
     {
       action: 'add_evidence',
+      goalId,
       expectedRevision: 1,
       requirementId: 'ship',
       evidence: {
@@ -170,6 +202,7 @@ async function verifySingleRequirement(harness: Harness): Promise<void> {
     'call-3',
     {
       action: 'set_requirement_status',
+      goalId,
       expectedRevision: 2,
       requirementId: 'ship',
       status: 'verified',
@@ -213,6 +246,7 @@ describe('goal extension', () => {
       'session_before_tree',
       'session_tree',
       'before_agent_start',
+      'message_start',
       'turn_start',
       'turn_end',
       'agent_settled',
@@ -262,18 +296,100 @@ describe('goal extension', () => {
     expect(rendered).toContain('No-progress streak: 2');
   });
 
+  it('renders legacy goal-event details with safe structural defaults', () => {
+    const registerRenderer = harness.pi.registerMessageRenderer as ReturnType<typeof vi.fn>;
+    const renderer = registerRenderer.mock.calls[0]?.[1] as
+      | ((
+          message: unknown,
+          options: { expanded: boolean },
+          theme: unknown,
+        ) => { render(width: number): string[] })
+      | undefined;
+    const component = renderer?.(
+      {
+        details: {
+          kind: 'active',
+          goal: {
+            id: 'legacy-goal',
+            objective: 'legacy objective',
+            status: 'active',
+            tokenBudget: 100,
+            tokensUsed: 10,
+            timeUsedSeconds: 2,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
+      },
+      { expanded: true },
+      (harness.ctx.ui as { theme: unknown }).theme,
+    );
+    const rendered = component?.render(200).join('\n') ?? '';
+
+    expect(rendered).toContain('Usage: 10/100 tokens; 0s active wall; 2s turn time');
+    expect(rendered).toContain('Budgets: tokens=100, wall=none');
+    expect(rendered).toContain('No-progress streak: 0');
+    expect(rendered).not.toMatch(/NaN|undefined/);
+  });
+
+  it('does not throw on malformed nested historical event details', () => {
+    const registerRenderer = harness.pi.registerMessageRenderer as ReturnType<typeof vi.fn>;
+    const renderer = registerRenderer.mock.calls[0]?.[1] as
+      | ((
+          message: unknown,
+          options: { expanded: boolean },
+          theme: unknown,
+        ) => { render(width: number): string[] })
+      | undefined;
+    const component = renderer?.(
+      {
+        details: {
+          kind: 'unknown',
+          goal: { objective: 'malformed', status: 'active' },
+          gates: [null, { source: 'valid', gateId: 'gate-1' }],
+          evidenceSummary: { revision: 'bad', verified: undefined },
+          ledger: { requirements: null },
+        },
+      },
+      { expanded: true },
+      (harness.ctx.ui as { theme: unknown }).theme,
+    );
+    const rendered = component?.render(200).join('\n') ?? '';
+
+    expect(rendered).toContain('Status: continuing');
+    expect(rendered).toContain('Gates: valid/gate-1');
+    expect(rendered).toContain('Evidence: revision 0; 0/0 verified');
+    expect(rendered).not.toMatch(/NaN|undefined/);
+  });
+
   it('bounds aggregate goal tool results and reports omitted data', async () => {
     await emit(harness, 'session_start', { reason: 'startup' });
     const objective = '界'.repeat(20_000);
     const createResult = (await harness.tools
       .get('create_goal')
       ?.execute('create-large', { objective }, undefined, undefined, harness.ctx)) as {
-      details: { truncation: { truncated: boolean } | null };
+      details: { goal: { id: string }; truncation: { truncated: boolean } | null };
     };
     expect(new TextEncoder().encode(JSON.stringify(createResult)).byteLength).toBeLessThanOrEqual(
       50 * 1_024,
     );
     expect(createResult.details.truncation).toMatchObject({ truncated: true });
+
+    await harness.tools.get('update_goal_evidence')?.execute(
+      'initialize-large-ledger',
+      {
+        action: 'initialize_requirements',
+        goalId: createResult.details.goal.id,
+        expectedRevision: 0,
+        requirements: Array.from({ length: 8 }, (_, index) => ({
+          id: `large-requirement-${index}`,
+          requirement: 'direct evidence requirement '.padEnd(1_800, String(index)),
+        })),
+      },
+      undefined,
+      undefined,
+      harness.ctx,
+    );
 
     for (let index = 0; index < 32; index += 1) {
       harness.events.emit(CONTINUATION_GATE_ACQUIRE_EVENT, {
@@ -290,21 +406,76 @@ describe('goal extension', () => {
       .get('get_goal')
       ?.execute('get-large', {}, undefined, undefined, harness.ctx)) as {
       details: {
-        truncation: { truncated: boolean; gates: { total: number; included: number } } | null;
+        ledger: { requirements: Array<{ id: string }> };
+        truncation: {
+          truncated: boolean;
+          ledgerRequirements: { total: number; included: number };
+          gates: { total: number; included: number };
+        } | null;
       };
     };
     expect(new TextEncoder().encode(JSON.stringify(getResult)).byteLength).toBeLessThanOrEqual(
       50 * 1_024,
     );
+    expect(getResult.details.ledger.requirements).toHaveLength(8);
     expect(getResult.details.truncation).toMatchObject({
       truncated: true,
-      gates: { total: 32, included: 8 },
+      ledgerRequirements: { total: 8, included: 8 },
+      gates: { total: 32 },
     });
   });
 
-  it('queues at most one continuation after Pi settles', async () => {
+  it('keeps escape-heavy recovery payloads within 50 KiB without omitting the ledger', async () => {
+    const goalId = '\\'.repeat(128);
+    const state = createGoalState('\\'.repeat(20_000), null, 1, () => goalId);
+    let ledger: GoalEvidenceLedger | null = null;
+    for (let length = 2_000; length >= 1_000 && ledger === null; length -= 10) {
+      try {
+        ledger = mutateGoalEvidence(
+          createGoalEvidenceLedger(goalId, 1),
+          goalId,
+          {
+            action: 'initialize_requirements',
+            expectedRevision: 0,
+            requirements: Array.from({ length: 4 }, (_, index) => ({
+              id: `escaped-${index}`,
+              requirement: '\\'.repeat(length),
+            })),
+          },
+          2,
+        );
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes('serialized bytes')) throw error;
+      }
+    }
+    expect(ledger).not.toBeNull();
+    expect(goalEvidenceLedgerByteLength(ledger as GoalEvidenceLedger)).toBeGreaterThan(15_000);
+    harness.branch.push({
+      type: 'custom',
+      customType: 'pi-goal',
+      data: { goal: state, ledger, statusBarEnabled: true },
+    });
+    await emit(harness, 'session_start', { reason: 'resume' });
+
+    const result = (await harness.tools
+      .get('get_goal')
+      ?.execute('get-escaped', {}, undefined, undefined, harness.ctx)) as {
+      content: Array<{ type: 'text'; text: string }>;
+      details?: unknown;
+    };
+    expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThanOrEqual(
+      50 * 1_024,
+    );
+    const payload = JSON.parse(result.content[0]?.text ?? '{}') as {
+      ledger: { requirements: unknown[] };
+      truncation: { ledgerRequirements: { total: number; included: number } };
+    };
+    expect(payload.ledger.requirements).toHaveLength(4);
+    expect(payload.truncation.ledgerRequirements).toEqual({ total: 4, included: 4 });
+  });
+
+  it('queues one continuation after Pi settles', async () => {
     await createActiveGoal(harness);
-    await emit(harness, 'agent_settled');
     await emit(harness, 'agent_settled');
     await Promise.resolve();
     expect(harness.sendMessage).toHaveBeenCalledTimes(1);
@@ -312,6 +483,153 @@ describe('goal extension', () => {
       expect.objectContaining({ customType: 'pi-goal-event' }),
       { triggerTurn: true, deliverAs: 'followUp' },
     );
+  });
+
+  it('does not consume an unacknowledged continuation for an unrelated turn', async () => {
+    await createActiveGoal(harness);
+    await harness.commands.get('goal')?.handler('no-progress on', harness.ctx as never);
+    await emit(harness, 'agent_settled');
+    await Promise.resolve();
+    expect(harness.sendMessage).toHaveBeenCalledOnce();
+
+    await emit(harness, 'turn_start');
+    await emit(harness, 'turn_end', {
+      message: {
+        content: [{ type: 'text', text: 'Unrelated user turn.' }],
+        usage: { totalTokens: 1 },
+      },
+      toolResults: [],
+    });
+    expect(harness.appendEntry.mock.calls.at(-1)?.[1]).toMatchObject({ progress: null });
+
+    await emit(harness, 'agent_settled');
+    await Promise.resolve();
+    expect(harness.sendMessage).toHaveBeenCalledTimes(2);
+    await acknowledgeContinuation(harness);
+  });
+
+  it('keeps /goal resume retryable when continuation delivery throws', async () => {
+    await createActiveGoal(harness);
+    await harness.commands.get('goal')?.handler('pause', harness.ctx as never);
+    harness.sendMessage.mockClear();
+    harness.sendMessage.mockImplementation(() => {
+      throw new Error('resume provider unavailable');
+    });
+
+    await harness.commands.get('goal')?.handler('resume', harness.ctx as never);
+
+    expect(harness.sendMessage).toHaveBeenCalledOnce();
+    expect(harness.appendEntry.mock.calls.at(-1)?.[1]).toMatchObject({
+      goal: { status: 'paused', pauseReason: 'delivery_failure' },
+    });
+    expect((harness.ctx.ui as { notify: ReturnType<typeof vi.fn> }).notify).toHaveBeenCalledWith(
+      expect.stringContaining('Goal resume delivery failed: resume provider unavailable'),
+      'error',
+    );
+  });
+
+  it('retries an unacknowledged synthetic continuation on the final settle', async () => {
+    await createActiveGoal(harness);
+    await emit(harness, 'agent_settled');
+    await Promise.resolve();
+    expect(harness.sendMessage).toHaveBeenCalledOnce();
+
+    await emit(harness, 'agent_settled');
+    await Promise.resolve();
+    expect(harness.sendMessage).toHaveBeenCalledTimes(2);
+    await emit(harness, 'message_start', {
+      message: harness.sendMessage.mock.calls.at(-1)?.[0] as Record<string, unknown>,
+    });
+  });
+
+  it('bounds continuation turns that settle without completing', async () => {
+    await createActiveGoal(harness);
+    await emit(harness, 'agent_settled');
+    await Promise.resolve();
+    await emit(harness, 'message_start', {
+      message: harness.sendMessage.mock.calls.at(-1)?.[0] as Record<string, unknown>,
+    });
+    await emit(harness, 'turn_start');
+
+    await emit(harness, 'agent_settled');
+    await Promise.resolve();
+    expect(harness.sendMessage).toHaveBeenCalledTimes(2);
+    await emit(harness, 'message_start', {
+      message: harness.sendMessage.mock.calls.at(-1)?.[0] as Record<string, unknown>,
+    });
+    await emit(harness, 'turn_start');
+    await emit(harness, 'agent_settled');
+
+    expect(harness.appendEntry.mock.calls.at(-1)?.[1]).toMatchObject({
+      goal: { status: 'paused', pauseReason: 'delivery_failure' },
+    });
+  });
+
+  it('bounds continuation delivery after terminal provider failures', async () => {
+    await createActiveGoal(harness);
+    await emit(harness, 'agent_settled');
+    await Promise.resolve();
+    await emit(harness, 'message_start', {
+      message: harness.sendMessage.mock.calls.at(-1)?.[0] as Record<string, unknown>,
+    });
+    await emit(harness, 'turn_start');
+    await emit(harness, 'turn_end', {
+      message: { stopReason: 'error', usage: { totalTokens: 1 } },
+      toolResults: [],
+    });
+    await emit(harness, 'agent_settled');
+    await Promise.resolve();
+    expect(harness.sendMessage).toHaveBeenCalledTimes(2);
+
+    await emit(harness, 'message_start', {
+      message: harness.sendMessage.mock.calls.at(-1)?.[0] as Record<string, unknown>,
+    });
+    await emit(harness, 'turn_start');
+    await emit(harness, 'turn_end', {
+      message: { stopReason: 'aborted', usage: { totalTokens: 1 } },
+      toolResults: [],
+    });
+    await emit(harness, 'agent_settled');
+
+    expect(harness.appendEntry.mock.calls.at(-1)?.[1]).toMatchObject({
+      goal: { status: 'paused', pauseReason: 'delivery_failure' },
+    });
+  });
+
+  it('contains synthetic continuation queue failures and permits a later retry', async () => {
+    await createActiveGoal(harness);
+    harness.sendMessage.mockImplementationOnce(() => {
+      throw {
+        toString: () => {
+          throw new Error('unsafe coercion');
+        },
+      };
+    });
+
+    await emit(harness, 'agent_settled');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(harness.sendMessage).toHaveBeenCalledTimes(2);
+    expect((harness.ctx.ui as { notify: ReturnType<typeof vi.fn> }).notify).toHaveBeenCalledWith(
+      'Failed to deliver goal continuation: Unknown delivery error',
+      'error',
+    );
+  });
+
+  it('pauses safely after bounded continuation delivery failures', async () => {
+    await createActiveGoal(harness);
+    harness.sendMessage.mockImplementation(() => {
+      throw new Error('provider unavailable');
+    });
+
+    await emit(harness, 'agent_settled');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(harness.sendMessage).toHaveBeenCalledTimes(2);
+    expect(harness.appendEntry.mock.calls.at(-1)?.[1]).toMatchObject({
+      goal: { status: 'paused', pauseReason: 'delivery_failure' },
+    });
   });
 
   it('suppresses continuation while gated and invalidates an already queued microtask', async () => {
@@ -440,6 +758,41 @@ describe('goal extension', () => {
     });
   });
 
+  it('cancels stale goal replacement confirmation after a concurrent replacement', async () => {
+    await createActiveGoal(harness);
+    let resolveConfirmation: ((confirmed: boolean) => void) | undefined;
+    harness.confirm.mockImplementationOnce(
+      () => new Promise<boolean>((resolve) => (resolveConfirmation = resolve)),
+    );
+    const pendingReplacement = harness.commands
+      .get('goal')
+      ?.handler('stale replacement', harness.ctx as never);
+    await Promise.resolve();
+
+    await harness.tools
+      .get('create_goal')
+      ?.execute(
+        'concurrent-replacement',
+        { objective: 'concurrent goal' },
+        undefined,
+        undefined,
+        harness.ctx,
+      );
+    resolveConfirmation?.(true);
+    await pendingReplacement;
+
+    const current = (await harness.tools
+      .get('get_goal')
+      ?.execute('current-goal', {}, undefined, undefined, harness.ctx)) as {
+      details: { goal: { objective: string } };
+    };
+    expect(current.details.goal.objective).toBe('concurrent goal');
+    expect((harness.ctx.ui as { notify: ReturnType<typeof vi.fn> }).notify).toHaveBeenCalledWith(
+      'Goal changed while replacement confirmation was open; replacement was cancelled.',
+      'warning',
+    );
+  });
+
   it('publishes snapshots and clears status when disabled or shut down', async () => {
     const snapshots: unknown[] = [];
     const clears: unknown[] = [];
@@ -509,31 +862,88 @@ describe('goal extension', () => {
     });
   });
 
-  it('keeps a budget summary pending when queueing fails', async () => {
+  it('keeps an unacknowledged queued summary durable and retries on a natural turn', async () => {
+    await emit(harness, 'session_start', { reason: 'startup' });
+    await harness.commands
+      .get('goal')
+      ?.handler('--tokens 10 budgeted objective', harness.ctx as never);
+    harness.sendMessage.mockClear();
+    await emit(harness, 'turn_start');
+    await emit(harness, 'turn_end', { message: { usage: { totalTokens: 10 } } });
+
+    expect(harness.sendMessage).toHaveBeenCalledOnce();
+    expect(harness.appendEntry.mock.calls.at(-1)?.[1]).toMatchObject({
+      pendingBudgetSummary: true,
+    });
+    await emit(harness, 'agent_settled');
+    expect(harness.sendMessage).toHaveBeenCalledOnce();
+
+    const beforeStart = harness.handlers.get('before_agent_start')?.[0];
+    const injected = beforeStart?.({}, harness.ctx as never) as
+      | { message: Record<string, unknown> }
+      | undefined;
+    expect(injected?.message).toMatchObject({
+      customType: 'pi-goal-event',
+      details: { kind: 'budget_limited' },
+    });
+    expect(harness.appendEntry.mock.calls.at(-1)?.[1]).toMatchObject({
+      pendingBudgetSummary: true,
+    });
+    const forgedMessage = {
+      ...injected?.message,
+      details: {
+        ...((injected?.message.details as Record<string, unknown> | undefined) ?? {}),
+        deliveryId: 'forged-delivery-id',
+      },
+    };
+    await acknowledgeBudgetSummary(harness, forgedMessage);
+    expect(harness.appendEntry.mock.calls.at(-1)?.[1]).toMatchObject({
+      pendingBudgetSummary: true,
+    });
+
+    await acknowledgeBudgetSummary(harness, injected?.message);
+    expect(harness.appendEntry.mock.calls.at(-1)?.[1]).toMatchObject({
+      pendingBudgetSummary: false,
+    });
+  });
+
+  it('keeps a budget summary pending without escaping queue failures', async () => {
     await emit(harness, 'session_start', { reason: 'startup' });
     await harness.commands
       .get('goal')
       ?.handler('--tokens 10 budgeted objective', harness.ctx as never);
     harness.sendMessage.mockClear();
     harness.sendMessage.mockImplementationOnce(() => {
-      throw new Error('queue failed');
+      throw {
+        toString: () => {
+          throw new Error('unsafe coercion');
+        },
+      };
     });
     await emit(harness, 'turn_start');
     await expect(
       emit(harness, 'turn_end', { message: { usage: { totalTokens: 10 } } }),
-    ).rejects.toThrow('queue failed');
+    ).resolves.toBeUndefined();
 
-    const pending = harness.appendEntry.mock.calls.at(-1)?.[1] as {
-      pendingBudgetSummary: boolean;
-    };
-    expect(pending.pendingBudgetSummary).toBe(true);
+    expect(harness.appendEntry.mock.calls.at(-1)?.[1]).toMatchObject({
+      pendingBudgetSummary: true,
+    });
+    expect((harness.ctx.ui as { notify: ReturnType<typeof vi.fn> }).notify).toHaveBeenCalledWith(
+      'Failed to deliver goal budget summary: Unknown delivery error',
+      'error',
+    );
 
     await emit(harness, 'agent_settled');
-    expect(harness.sendMessage).toHaveBeenCalledTimes(2);
-    const delivered = harness.appendEntry.mock.calls.at(-1)?.[1] as {
-      pendingBudgetSummary: boolean;
-    };
-    expect(delivered.pendingBudgetSummary).toBe(false);
+    expect(harness.sendMessage).toHaveBeenCalledOnce();
+    const beforeStart = harness.handlers.get('before_agent_start')?.[0];
+    const injected = beforeStart?.({}, harness.ctx as never) as
+      | { message: Record<string, unknown> }
+      | undefined;
+    expect(injected?.message).toMatchObject({ details: { kind: 'budget_limited' } });
+    await acknowledgeBudgetSummary(harness, injected?.message);
+    expect(harness.appendEntry.mock.calls.at(-1)?.[1]).toMatchObject({
+      pendingBudgetSummary: false,
+    });
   });
 
   it('restores branch-local state on session_tree', async () => {
@@ -553,10 +963,12 @@ describe('goal extension', () => {
   it('restores branch-local evidence and settings on session_tree', async () => {
     await createActiveGoal(harness);
     const updateEvidence = harness.tools.get('update_goal_evidence');
+    const goalId = await activeGoalId(harness);
     await updateEvidence?.execute(
       'call',
       {
         action: 'initialize_requirements',
+        goalId,
         expectedRevision: 0,
         requirements: [{ id: 'branch', requirement: 'Branch-local requirement' }],
       },
@@ -609,6 +1021,142 @@ describe('goal extension', () => {
         .get('update_goal')
         ?.execute('call', { status: 'complete' }, undefined, undefined, harness.ctx),
     ).resolves.toBeDefined();
+  });
+
+  it('binds public evidence mutations to the active goal and cannot replace the ledger', async () => {
+    await createActiveGoal(harness);
+    const originalGoalId = await activeGoalId(harness);
+    const evidenceTool = harness.tools.get('update_goal_evidence') as unknown as {
+      parameters: {
+        properties: Record<string, { maximum?: number }>;
+      };
+      execute: (...args: unknown[]) => Promise<unknown>;
+    };
+    expect(evidenceTool.parameters.properties).toHaveProperty('goalId');
+    expect(evidenceTool.parameters.properties).not.toHaveProperty('replace');
+    expect(evidenceTool.parameters.properties.expectedRevision?.maximum).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+
+    await evidenceTool.execute(
+      'initialize-original',
+      {
+        action: 'initialize_requirements',
+        goalId: originalGoalId,
+        expectedRevision: 0,
+        requirements: [{ id: 'one', requirement: 'Keep the original requirement' }],
+      },
+      undefined,
+      undefined,
+      harness.ctx,
+    );
+    await expect(
+      evidenceTool.execute(
+        'replace-original',
+        {
+          action: 'initialize_requirements',
+          goalId: originalGoalId,
+          expectedRevision: 1,
+          requirements: [{ id: 'two', requirement: 'Erase the original requirement' }],
+          replace: true,
+        },
+        undefined,
+        undefined,
+        harness.ctx,
+      ),
+    ).rejects.toThrow(/user-confirmed evidence reset/);
+
+    await harness.tools
+      .get('create_goal')
+      ?.execute(
+        'replace-goal',
+        { objective: 'replacement goal' },
+        undefined,
+        undefined,
+        harness.ctx,
+      );
+    const replacementGoalId = await activeGoalId(harness);
+    expect(replacementGoalId).not.toBe(originalGoalId);
+    await expect(
+      evidenceTool.execute(
+        'stale-goal-update',
+        {
+          action: 'initialize_requirements',
+          goalId: originalGoalId,
+          expectedRevision: 0,
+          requirements: [{ id: 'stale', requirement: 'Mutate the replacement goal' }],
+        },
+        undefined,
+        undefined,
+        harness.ctx,
+      ),
+    ).rejects.toThrow(/different goal/);
+  });
+
+  it('cancels evidence reset when the confirmed ledger changes concurrently', async () => {
+    await createActiveGoal(harness);
+    const goalId = await activeGoalId(harness);
+    const evidenceTool = harness.tools.get('update_goal_evidence');
+    await evidenceTool?.execute(
+      'initialize-before-reset',
+      {
+        action: 'initialize_requirements',
+        goalId,
+        expectedRevision: 0,
+        requirements: [{ id: 'one', requirement: 'Preserve concurrent evidence' }],
+      },
+      undefined,
+      undefined,
+      harness.ctx,
+    );
+    harness.confirm.mockImplementationOnce(async () => {
+      await evidenceTool?.execute(
+        'concurrent-update',
+        {
+          action: 'upsert_requirement',
+          goalId,
+          expectedRevision: 1,
+          requirementId: 'two',
+          requirement: 'Added while confirmation was open',
+        },
+        undefined,
+        undefined,
+        harness.ctx,
+      );
+      return true;
+    });
+
+    await harness.commands.get('goal')?.handler('evidence reset', harness.ctx as never);
+    const result = (await harness.tools
+      .get('get_goal')
+      ?.execute('after-cancelled-reset', {}, undefined, undefined, harness.ctx)) as {
+      details: { ledger: { revision: number; requirements: unknown[] } };
+    };
+    expect(result.details.ledger).toMatchObject({ revision: 2 });
+    expect(result.details.ledger.requirements).toHaveLength(2);
+    expect((harness.ctx.ui as { notify: ReturnType<typeof vi.fn> }).notify).toHaveBeenCalledWith(
+      'Goal evidence changed while confirmation was open; reset was cancelled.',
+      'warning',
+    );
+  });
+
+  it('rejects evidence reset for completed goals to preserve the audit record', async () => {
+    await createActiveGoal(harness);
+    await verifySingleRequirement(harness);
+    await harness.tools
+      .get('update_goal')
+      ?.execute('complete-before-reset', { status: 'complete' }, undefined, undefined, harness.ctx);
+    harness.confirm.mockClear();
+    const persistedEntries = harness.appendEntry.mock.calls.length;
+
+    await harness.commands.get('goal')?.handler('evidence reset', harness.ctx as never);
+
+    expect(harness.confirm).not.toHaveBeenCalled();
+    expect(harness.appendEntry.mock.calls).toHaveLength(persistedEntries);
+    expect((harness.ctx.ui as { notify: ReturnType<typeof vi.fn> }).notify).toHaveBeenCalledWith(
+      'Evidence can only be reset for an active or paused goal.',
+      'warning',
+    );
   });
 
   it('supports combined command budgets and exposes them through get_goal', async () => {
@@ -685,7 +1233,14 @@ describe('goal extension', () => {
         wake: 'none',
         releasedAt: Date.now(),
       });
+      await Promise.resolve();
+      await Promise.resolve();
       expect(harness.sendMessage).toHaveBeenCalledOnce();
+      const queued = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+        pendingBudgetSummary: boolean;
+      };
+      expect(queued.pendingBudgetSummary).toBe(true);
+      await acknowledgeBudgetSummary(harness);
       const delivered = harness.appendEntry.mock.calls.at(-1)?.[1] as {
         pendingBudgetSummary: boolean;
       };
@@ -715,7 +1270,31 @@ describe('goal extension', () => {
     expect(harness.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('cleans up a failed auto-resume delivery so later continuation can proceed', async () => {
+  it('queues auto-resume delivery before committing the winning claim', async () => {
+    await createActiveGoal(harness);
+    acquireGate(harness);
+    const order: string[] = [];
+    harness.sendMessage.mockImplementation(() => order.push('queue'));
+    harness.events.on(CONTINUATION_GATE_RESUME_COMMIT_EVENT, () => order.push('commit'));
+
+    harness.events.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'release-ordered-auto-resume',
+      sessionId: 'session-1',
+      source: 'producer',
+      gateId: 'tests',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: Date.now(),
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(order).toEqual(['queue', 'commit']);
+  });
+
+  it('aborts a failed auto-resume claim and pauses instead of burning the transition', async () => {
     await createActiveGoal(harness);
     acquireGate(harness);
     harness.sendMessage.mockImplementationOnce(() => {
@@ -733,16 +1312,16 @@ describe('goal extension', () => {
       releasedAt: Date.now(),
     });
     await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
     expect((harness.ctx.ui as { notify: ReturnType<typeof vi.fn> }).notify).toHaveBeenCalledWith(
       expect.stringContaining('auto-resume queue failed'),
       'error',
     );
 
-    await emit(harness, 'agent_settled');
-    await Promise.resolve();
-    expect(harness.sendMessage).toHaveBeenCalledTimes(2);
-    expect(harness.sendMessage.mock.calls[1]?.[0]).toMatchObject({
-      details: { kind: 'continuation' },
+    expect(harness.sendMessage).toHaveBeenCalledOnce();
+    expect(harness.appendEntry.mock.calls.at(-1)?.[1]).toMatchObject({
+      goal: { status: 'paused', pauseReason: 'delivery_failure' },
     });
   });
 
@@ -940,6 +1519,8 @@ describe('goal extension', () => {
       releasedAt: Date.now(),
     });
     await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
     expect(harness.sendMessage).toHaveBeenCalledOnce();
   });
 
@@ -961,6 +1542,7 @@ describe('goal extension', () => {
     for (let index = 0; index < 4; index += 1) {
       await emit(harness, 'agent_settled');
       await Promise.resolve();
+      await acknowledgeContinuation(harness);
       await emit(harness, 'turn_start');
       await emit(harness, 'turn_end', {
         message: {
@@ -983,6 +1565,7 @@ describe('goal extension', () => {
     await harness.commands.get('goal')?.handler('no-progress on', harness.ctx as never);
     await emit(harness, 'agent_settled');
     await Promise.resolve();
+    await acknowledgeContinuation(harness);
     await emit(harness, 'turn_start');
     await emit(harness, 'turn_end', {
       message: {
@@ -1031,6 +1614,7 @@ describe('goal extension', () => {
     for (let index = 0; index < 4; index += 1) {
       await emit(harness, 'agent_settled');
       await Promise.resolve();
+      await acknowledgeContinuation(harness);
       await emit(harness, 'turn_start');
       await emit(harness, 'turn_end', {
         message: {
@@ -1074,6 +1658,14 @@ describe('goal extension', () => {
         },
       });
       await Promise.resolve();
+      const stillPending = harness.appendEntry.mock.calls.at(-1)?.[1] as {
+        pendingBudgetSummary: boolean;
+      };
+      expect(stillPending.pendingBudgetSummary).toBe(true);
+      await acknowledgeBudgetSummary(
+        harness,
+        (injected as { message: unknown } | undefined)?.message,
+      );
       const delivered = harness.appendEntry.mock.calls.at(-1)?.[1] as {
         pendingBudgetSummary: boolean;
       };

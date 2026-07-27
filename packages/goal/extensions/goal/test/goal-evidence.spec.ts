@@ -118,6 +118,37 @@ describe('goal evidence ledger', () => {
     ).toThrow(/last evidence/);
   });
 
+  it('does not advance the revision for semantic no-op mutations', () => {
+    const ledger = initialized();
+    const unchangedRequirement = mutateGoalEvidence(
+      ledger,
+      'goal-1',
+      {
+        action: 'upsert_requirement',
+        expectedRevision: ledger.revision,
+        requirementId: 'one',
+        requirement: 'Verify the artifact directly',
+      },
+      3,
+    );
+    expect(unchangedRequirement).toBe(ledger);
+    expect(unchangedRequirement.revision).toBe(1);
+
+    const unchangedStatus = mutateGoalEvidence(
+      ledger,
+      'goal-1',
+      {
+        action: 'set_requirement_status',
+        expectedRevision: ledger.revision,
+        requirementId: 'one',
+        status: 'pending',
+      },
+      3,
+    );
+    expect(unchangedStatus).toBe(ledger);
+    expect(unchangedStatus.revision).toBe(1);
+  });
+
   it('requires fresh evidence when requirement text changes', () => {
     let ledger = initialized();
     ledger = mutateGoalEvidence(
@@ -299,6 +330,90 @@ describe('goal evidence ledger', () => {
         'goal-1',
       ),
     ).toBeNull();
+  });
+
+  it('rejects unsafe persisted, input, and incremented revisions', () => {
+    const ledger = initialized();
+    expect(
+      parseGoalEvidenceLedger({ ...ledger, revision: Number.MAX_SAFE_INTEGER + 1 }, 'goal-1'),
+    ).toBeNull();
+    expect(
+      parseGoalEvidenceLedger({ ...ledger, updatedAt: Number.MAX_VALUE }, 'goal-1'),
+    ).toBeNull();
+    expect(() =>
+      mutateGoalEvidence(
+        ledger,
+        'goal-1',
+        {
+          action: 'upsert_requirement',
+          expectedRevision: Number.MAX_SAFE_INTEGER + 1,
+          requirementId: 'two',
+          requirement: 'unsafe input revision',
+        },
+        3,
+      ),
+    ).toThrow(/Stale evidence revision/);
+    expect(() =>
+      mutateGoalEvidence(
+        { ...ledger, revision: Number.MAX_SAFE_INTEGER },
+        'goal-1',
+        {
+          action: 'upsert_requirement',
+          expectedRevision: Number.MAX_SAFE_INTEGER,
+          requirementId: 'two',
+          requirement: 'would overflow revision',
+        },
+        3,
+      ),
+    ).toThrow(/cannot be incremented safely/);
+  });
+
+  it('rejects persisted blockers on non-blocked requirements', () => {
+    const evidence = [
+      { id: 'evidence', kind: 'test', reference: 'tests', claim: 'verified', recordedAt: 1 },
+    ];
+    for (const status of ['pending', 'in_progress', 'verified'] as const) {
+      expect(
+        parseGoalEvidenceLedger(
+          {
+            goalId: 'goal-1',
+            revision: 0,
+            requirements: [
+              {
+                id: 'one',
+                requirement: 'x',
+                status,
+                evidence: status === 'verified' ? evidence : [],
+                blocker: 'contradictory persisted blocker',
+                updatedAt: 1,
+              },
+            ],
+            updatedAt: 1,
+          },
+          'goal-1',
+        ),
+      ).toBeNull();
+    }
+    expect(
+      parseGoalEvidenceLedger(
+        {
+          goalId: 'goal-1',
+          revision: 0,
+          requirements: [
+            {
+              id: 'one',
+              requirement: 'x',
+              status: 'blocked',
+              evidence: [],
+              blocker: 'valid blocker',
+              updatedAt: 1,
+            },
+          ],
+          updatedAt: 1,
+        },
+        'goal-1',
+      ),
+    ).not.toBeNull();
   });
 
   it('drops malformed persisted ledgers and never stores raw output fields', () => {

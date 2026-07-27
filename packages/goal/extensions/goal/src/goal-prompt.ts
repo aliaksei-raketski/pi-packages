@@ -30,13 +30,13 @@ Budget:
 - Token budget: ${tokenBudget}
 - Tokens remaining: ${tokensRemaining === null ? 'n/a' : tokensRemaining}
 
-Evidence ledger: ${formatGoalEvidenceSummary(options.ledger ?? null)}.
+Evidence ledger for goal ${state.id}: ${formatGoalEvidenceSummary(options.ledger ?? null)}.
 
 Do not repeat completed work. Inspect the current state and choose the next concrete action that most directly advances an unmet requirement.
 
 Before deciding that the goal is achieved, perform this strict evidence-based completion audit:
 - Initialize the evidence ledger requirements before claiming completion.
-- Inspect the current ledger revision before every evidence mutation and record concise evidence only after verification.
+- Inspect the current goal ID and ledger revision before every evidence mutation and record concise evidence only after verification.
 - Restate the objective as concrete requirements, deliverables, and success criteria.
 - Build a prompt-to-artifact checklist mapping every explicit requirement, numbered item, named file, command, test, gate, and deliverable to real evidence.
 - Inspect the relevant artifacts, diffs, command output, test results, logs, screenshots, PR state, or other direct evidence for every checklist item.
@@ -65,7 +65,7 @@ Budget:
 - Token budget: ${state.tokenBudget ?? 'none'}
 - Limit reason: ${state.budgetLimitReason ?? 'unknown'}
 
-Evidence ledger: ${formatGoalEvidenceSummary(options.ledger ?? null)}.
+Evidence ledger for goal ${state.id}: ${formatGoalEvidenceSummary(options.ledger ?? null)}.
 
 The goal is budget_limited. Do not begin new substantive work. Give a concise evidence-backed summary of progress, remaining requirements or blockers, uncertainty, and the next input or action needed. Do not call update_goal unless the objective is actually complete.`;
 }

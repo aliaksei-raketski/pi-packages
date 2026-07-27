@@ -27,12 +27,14 @@ import {
   MAX_DIAGNOSTIC_COUNT,
   MAX_HANDOFFS,
   MAX_RESUME_CLAIMS,
+  MAX_GENERATION,
   parseBoundedString,
   parseContinuationGateAcquire,
   parseContinuationGateRelease,
   parseContinuationGateResumeClaim,
   parseContinuationGateSnapshot,
   parseContinuationGateSnapshotRequest,
+  parseContinuationGateUnblocked,
   parseContinuationGateWakeHandoff,
 } from './validation.js';
 import { hashContinuationGateValue } from './telemetry.js';
@@ -50,6 +52,7 @@ export interface ContinuationGateRegistryChange {
   wakeDisposition?: ContinuationGateWakeDisposition;
   handoffId?: string;
   autoResumeAllowed?: boolean;
+  generation?: number;
 }
 
 export interface ContinuationGateRegistryDiagnostic {
@@ -78,6 +81,7 @@ export interface ContinuationGateRegistry {
     sessionId: string;
     domain: string;
     consumerId: string;
+    generation: number;
   }): ContinuationGateResumeClaim | undefined;
   commitAutoResume(claim: ContinuationGateResumeClaim): boolean;
   abortAutoResume(claim: ContinuationGateResumeClaim): boolean;
@@ -110,6 +114,7 @@ interface PendingSnapshot {
 interface TransitionState extends ContinuationGateUnblocked {
   key: string;
   autoResumeAllowed: boolean;
+  autoResumeCommitted: boolean;
 }
 interface ClaimState {
   claim: ContinuationGateResumeClaim;
@@ -164,6 +169,7 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
       host.events.on(CONTINUATION_GATE_ACQUIRE_EVENT, this.handleAcquire),
       host.events.on(CONTINUATION_GATE_RELEASE_EVENT, this.handleRelease),
       host.events.on(CONTINUATION_GATE_SNAPSHOT_EVENT, this.handleSnapshot),
+      host.events.on(CONTINUATION_GATE_UNBLOCKED_EVENT, this.handleUnblocked),
       host.events.on(CONTINUATION_GATE_WAKE_PENDING_EVENT, this.handleWakePending),
       host.events.on(CONTINUATION_GATE_WAKE_COMMITTED_EVENT, this.handleWakeCommitted),
       host.events.on(CONTINUATION_GATE_WAKE_ABORTED_EVENT, this.handleWakeAborted),
@@ -265,25 +271,43 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
     sessionId: string;
     domain: string;
     consumerId: string;
+    generation: number;
   }): ContinuationGateResumeClaim | undefined {
     const transitionId = parseBoundedString(input.transitionId, MAX_ID_LENGTH);
     const sessionId = parseBoundedString(input.sessionId, MAX_ID_LENGTH);
     const domain = parseBoundedString(input.domain, MAX_DOMAIN_LENGTH);
     const consumerId = parseBoundedString(input.consumerId, MAX_ID_LENGTH);
-    if (!transitionId || !sessionId || !domain || !consumerId) return undefined;
+    const generation = input.generation;
+    if (
+      !transitionId ||
+      !sessionId ||
+      !domain ||
+      !consumerId ||
+      !Number.isSafeInteger(generation) ||
+      generation < 0 ||
+      generation > MAX_GENERATION
+    )
+      return undefined;
     const transition = this.transitions.get(this.transitionKey(sessionId, domain, transitionId));
     if (
       !transition ||
+      transition.generation !== generation ||
+      this.generations.get(this.domainGenerationKey(sessionId, domain)) !== generation ||
       !transition.autoResumeAllowed ||
+      transition.autoResumeCommitted ||
       transition.sessionId !== sessionId ||
       transition.domain !== domain ||
       this.isBlocked(sessionId, { domains: [domain] })
     )
       return undefined;
-    const existing = this.claims.get(transition.key);
-    if (existing && existing.state === 'pending' && existing.claim.expiresAt > this.now())
+    const claimKey = this.claimKey({ sessionId, domain, transitionId, generation });
+    const existing = this.claims.get(claimKey);
+    if (
+      existing?.state === 'committed' ||
+      (existing?.state === 'pending' && existing.claim.expiresAt > this.now())
+    )
       return undefined;
-    if (existing) this.claims.delete(transition.key);
+    if (existing) this.claims.delete(claimKey);
     const expiresAt =
       this.now() +
       Math.min(60_000, Math.max(1, this.options.resumeClaimTtlMs ?? DEFAULT_RESUME_CLAIM_TTL));
@@ -303,7 +327,7 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
       expiresAt,
     });
     if (!claim) return undefined;
-    this.claims.set(transition.key, { claim, state: 'pending' });
+    this.claims.set(this.claimKey(claim), { claim, state: 'pending' });
     while (this.claims.size > MAX_RESUME_CLAIMS)
       this.claims.delete(this.claims.keys().next().value as string);
     this.emitTelemetry({
@@ -320,9 +344,20 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
 
   commitAutoResume(claim: ContinuationGateResumeClaim): boolean {
     const parsed = parseContinuationGateResumeClaim(claim);
+    const transition =
+      parsed &&
+      this.transitions.get(
+        this.transitionKey(parsed.sessionId, parsed.domain, parsed.transitionId),
+      );
     const state = parsed && this.claims.get(this.claimKey(parsed));
     if (
       !parsed ||
+      !transition ||
+      !transition.autoResumeAllowed ||
+      transition.autoResumeCommitted ||
+      transition.generation !== parsed.generation ||
+      this.generations.get(this.domainGenerationKey(parsed.sessionId, parsed.domain)) !==
+        parsed.generation ||
       !state ||
       state.state !== 'pending' ||
       state.claim.claimId !== parsed.claimId ||
@@ -331,6 +366,7 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
     )
       return false;
     state.state = 'committed';
+    transition.autoResumeCommitted = true;
     this.emitTelemetry({
       kind: 'resume_committed',
       timestamp: this.now(),
@@ -484,11 +520,40 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
     });
     const requestTransition = snapshot.requestId
       ? `snapshot-${snapshot.requestId}`
-      : `snapshot-${++this.transitionCounter}`;
+      : this.requestlessSnapshotTransitionId(snapshot);
     this.emitUnblockedTransitions(snapshot.sessionId, before, this.domainSet(snapshot.sessionId), {
       wakeDisposition: 'none',
       transitionId: requestTransition,
     });
+  };
+
+  private readonly handleUnblocked = (payload: unknown): void => {
+    const unblocked = parseContinuationGateUnblocked(payload);
+    if (!unblocked) return;
+    const key = this.transitionKey(unblocked.sessionId, unblocked.domain, unblocked.transitionId);
+    const current = this.transitions.get(key);
+    const latestGeneration = this.generations.get(
+      this.domainGenerationKey(unblocked.sessionId, unblocked.domain),
+    );
+    if (
+      !current ||
+      unblocked.generation <= current.generation ||
+      (latestGeneration !== undefined && unblocked.generation < latestGeneration)
+    )
+      return;
+    this.generations.set(
+      this.domainGenerationKey(unblocked.sessionId, unblocked.domain),
+      unblocked.generation,
+    );
+    const transition: TransitionState = {
+      ...current,
+      ...unblocked,
+      key,
+      handoffId: unblocked.handoffId,
+      autoResumeCommitted: false,
+    };
+    this.transitions.set(key, transition);
+    this.queueUnblockedNotification(transition, true);
   };
 
   private readonly handleWakePending = (payload: unknown): void => {
@@ -519,24 +584,30 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
   private readonly handleResumeClaim = (payload: unknown): void => {
     const claim = parseContinuationGateResumeClaim(payload);
     if (!claim || claim.expiresAt <= this.now()) return;
-    const transition = this.transitions.get(this.claimKey(claim));
+    const transition = this.transitions.get(
+      this.transitionKey(claim.sessionId, claim.domain, claim.transitionId),
+    );
     if (
       !transition ||
       transition.generation !== claim.generation ||
+      this.generations.get(this.domainGenerationKey(claim.sessionId, claim.domain)) !==
+        claim.generation ||
+      !transition.autoResumeAllowed ||
+      transition.autoResumeCommitted ||
       this.isBlocked(claim.sessionId, { domains: [claim.domain] })
     )
       return;
-    const current = this.claims.get(transition.key);
+    const current = this.claims.get(this.claimKey(claim));
+    if (current?.state === 'committed') return;
     if (
-      !current ||
-      current.claim.claimId === claim.claimId ||
-      current.state !== 'pending' ||
-      current.claim.expiresAt <= this.now()
-    ) {
-      this.claims.set(transition.key, { claim, state: 'pending' });
-      while (this.claims.size > MAX_RESUME_CLAIMS)
-        this.claims.delete(this.claims.keys().next().value as string);
-    }
+      current?.state === 'pending' &&
+      current.claim.claimId !== claim.claimId &&
+      current.claim.expiresAt > this.now()
+    )
+      return;
+    this.claims.set(this.claimKey(claim), { claim, state: 'pending' });
+    while (this.claims.size > MAX_RESUME_CLAIMS)
+      this.claims.delete(this.claims.keys().next().value as string);
   };
   private readonly handleResumeCommit = (payload: unknown): void => {
     this.updateClaimState(payload, 'committed');
@@ -548,9 +619,23 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
   private updateClaimState(payload: unknown, state: 'committed' | 'aborted'): void {
     const claim = parseContinuationGateResumeClaim(payload);
     if (!claim) return;
-    const current = this.claims.get(this.claimKey(claim));
-    if (current?.claim.claimId === claim.claimId && current.state === 'pending')
-      current.state = state;
+    const key = this.claimKey(claim);
+    const current = this.claims.get(key);
+    if (current?.claim.claimId !== claim.claimId) return;
+    if (state === 'committed') {
+      const transition = this.transitions.get(
+        this.transitionKey(claim.sessionId, claim.domain, claim.transitionId),
+      );
+      if (
+        transition?.generation !== claim.generation ||
+        this.generations.get(this.domainGenerationKey(claim.sessionId, claim.domain)) !==
+          claim.generation ||
+        !transition.autoResumeAllowed
+      )
+        return;
+      transition.autoResumeCommitted = true;
+    }
+    if (current.state === 'pending') current.state = state;
   }
 
   private emitUnblockedTransitions(
@@ -570,38 +655,81 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
       if (!after.has(domain)) {
         const transitionId =
           release?.transitionId ?? `snapshot-${++this.transitionCounter}:${domain}`;
+        const generation = this.nextGeneration(this.domainGenerationKey(sessionId, domain));
+        if (generation === undefined) {
+          this.recordDiagnostic({
+            code: 'generation-exhausted',
+            timestamp: this.now(),
+            sessionId,
+            domain,
+          });
+          continue;
+        }
         const corrected: ContinuationGateUnblocked = {
           transitionId,
           sessionId,
           domain,
           wakeDisposition: release?.wakeDisposition ?? 'none',
           ...(release?.handoffId ? { handoffId: release.handoffId } : {}),
-          generation: this.nextGeneration(this.domainGenerationKey(sessionId, domain)),
+          generation,
         };
         const autoResumeAllowed = release?.autoResumeAllowed ?? true;
         const transition: TransitionState = {
           ...corrected,
           key: this.transitionKey(sessionId, domain, transitionId),
           autoResumeAllowed,
+          autoResumeCommitted: false,
         };
         this.transitions.set(transition.key, transition);
-        this.notifyChange({
-          kind: 'unblocked',
-          sessionId,
-          domain,
-          transitionId,
-          wakeDisposition: corrected.wakeDisposition,
-          ...(corrected.handoffId ? { handoffId: corrected.handoffId } : {}),
-          autoResumeAllowed,
+        queueMicrotask(() => {
+          if (
+            this.disposed ||
+            this.transitions.get(transition.key) !== transition ||
+            this.generations.get(this.domainGenerationKey(sessionId, domain)) !==
+              corrected.generation ||
+            this.isBlocked(sessionId, { domains: [domain] })
+          )
+            return;
+          this.host.events.emit(CONTINUATION_GATE_UNBLOCKED_EVENT, { ...corrected });
+          this.queueUnblockedNotification(transition);
         });
-        this.host.events.emit(CONTINUATION_GATE_UNBLOCKED_EVENT, { ...corrected });
       }
   }
 
-  private nextGeneration(key: string): number {
-    const generation = (this.generations.get(key) ?? 0) + 1;
-    this.generations.set(key, generation);
-    return generation;
+  private queueUnblockedNotification(transition: TransitionState, defer = false): void {
+    const notify = (): void => {
+      const current = this.transitions.get(transition.key);
+      if (
+        this.disposed ||
+        current !== transition ||
+        this.generations.get(this.domainGenerationKey(transition.sessionId, transition.domain)) !==
+          transition.generation ||
+        this.isBlocked(transition.sessionId, { domains: [transition.domain] })
+      )
+        return;
+      this.notifyChange({
+        kind: 'unblocked',
+        sessionId: current.sessionId,
+        domain: current.domain,
+        transitionId: current.transitionId,
+        generation: current.generation,
+        wakeDisposition: current.wakeDisposition,
+        ...(current.handoffId ? { handoffId: current.handoffId } : {}),
+        autoResumeAllowed: current.autoResumeAllowed,
+      });
+    };
+    if (defer) queueMicrotask(() => queueMicrotask(notify));
+    else queueMicrotask(notify);
+  }
+
+  private nextGeneration(key: string): number | undefined {
+    const generation = this.generations.get(key) ?? 0;
+    if (generation >= MAX_GENERATION - 1) {
+      return undefined;
+    }
+    const next = generation + 1;
+    this.generations.set(key, next);
+    return next;
   }
   private domainSet(sessionId: string): Set<string> {
     const result = new Set<string>();
@@ -674,6 +802,20 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
       handoff.domain === gate.domain
     );
   }
+  private requestlessSnapshotTransitionId(snapshot: {
+    sessionId: string;
+    source: string;
+    gates: readonly ContinuationGate[];
+  }): string {
+    const fingerprint = [
+      snapshot.sessionId,
+      snapshot.source,
+      ...snapshot.gates.map((gate) =>
+        [gate.gateId, gate.domain, gate.acquiredAt, gate.updatedAt].join('\0'),
+      ),
+    ].join('\0');
+    return `snapshot-${hashContinuationGateValue(fingerprint)}`;
+  }
   private transitionKey(sessionId: string, domain: string, transitionId: string): string {
     return `${sessionId}\0${domain}\0${transitionId}`;
   }
@@ -681,9 +823,12 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
     return `${sessionId}\0${domain}`;
   }
   private claimKey(
-    claim: Pick<ContinuationGateResumeClaim, 'sessionId' | 'domain' | 'transitionId'>,
+    claim: Pick<
+      ContinuationGateResumeClaim,
+      'sessionId' | 'domain' | 'transitionId' | 'generation'
+    >,
   ): string {
-    return this.transitionKey(claim.sessionId, claim.domain, claim.transitionId);
+    return `${this.transitionKey(claim.sessionId, claim.domain, claim.transitionId)}\0${claim.generation}`;
   }
   private markProviderAnswered(sessionId: string, source: string): void {
     const pending = this.pendingSnapshots.get(sessionId);

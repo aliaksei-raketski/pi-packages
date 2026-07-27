@@ -2,7 +2,7 @@ import type { GoalEvidenceLedger } from './goal-evidence.ts';
 import type { GoalProgressState } from './goal-progress.ts';
 
 export type GoalStatus = 'active' | 'paused' | 'budget_limited' | 'complete';
-export type GoalPauseReason = 'user' | 'reload' | 'no_progress' | null;
+export type GoalPauseReason = 'user' | 'reload' | 'no_progress' | 'delivery_failure' | null;
 export type GoalBudgetLimitReason = 'tokens' | 'wall_time' | 'tokens_and_wall_time' | null;
 export type GoalRestartPolicy = 'pause' | 'restore-idle' | 'resume';
 

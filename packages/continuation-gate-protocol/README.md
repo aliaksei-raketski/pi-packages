@@ -71,9 +71,11 @@ registry.requestSnapshot(sessionId);
 const waiting = registry.list(sessionId, { domains: ['autonomous-continuation'] });
 ```
 
-On an eligible `unblocked` transition, opt-in consumers use
-`claimAutoResume()`, then validate workflow/session identity, idle state,
-pending messages, live gates, claim ownership, and generation in a microtask.
+On an eligible `unblocked` transition, opt-in consumers use its
+`transitionId` and `generation` with `claimAutoResume()`, then validate
+workflow/session identity, idle state, pending messages, live gates, claim
+ownership, and the latest generation in a microtask. Claim identity includes
+the generation, so a reused transition ID cannot revive an older transition.
 Queue first and call `commitAutoResume()` second. Abort failed final checks.
 The first synchronous claim owns the transition; auto-resume remains off unless
 a consumer explicitly implements this policy.

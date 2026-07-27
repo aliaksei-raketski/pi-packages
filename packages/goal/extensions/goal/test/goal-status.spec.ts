@@ -40,6 +40,9 @@ describe('goal status and diagnostics', () => {
     expect(
       collectGoalStatus({ ...active, status: 'paused', pauseReason: 'no_progress' }, 0, 1),
     ).toMatchObject({ text: 'goal paused (no progress)', state: 'paused' });
+    expect(
+      collectGoalStatus({ ...active, status: 'paused', pauseReason: 'delivery_failure' }, 0, 1),
+    ).toMatchObject({ text: 'goal paused (delivery failure)', state: 'paused' });
     expect(collectGoalStatus({ ...active, status: 'complete' }, 0, 1)).toMatchObject({
       text: 'goal achieved',
       state: 'complete',
@@ -58,5 +61,14 @@ describe('goal status and diagnostics', () => {
     expect(formatGates([gate], 31_000)).toContain(
       'tmux/tests: test process is running; age=30s; resource=process:pane-1 (unit tests)',
     );
+  });
+
+  it('does not throw for an out-of-range lease timestamp', () => {
+    const extreme = {
+      ...gate,
+      lease: { expiresAt: Number.MAX_SAFE_INTEGER, policy: 'diagnose' as const },
+    };
+    expect(() => formatGates([extreme], 0)).not.toThrow();
+    expect(formatGates([extreme], 0)).toContain('expires=invalid');
   });
 });

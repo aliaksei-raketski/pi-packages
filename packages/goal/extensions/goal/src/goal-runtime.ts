@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   CONTINUATION_GATE_DEFAULT_DOMAIN,
   createContinuationGateRegistry,
@@ -51,6 +52,7 @@ import { tokenDeltaFromUsage, type UsageSnapshot } from './usage.ts';
 
 const GOAL_GATE_DOMAINS = [CONTINUATION_GATE_DEFAULT_DOMAIN] as const;
 const GOAL_RESUME_CONSUMER_ID = 'pi-goal';
+const MAX_CONTINUATION_DELIVERY_ATTEMPTS = 2;
 
 function createStatusContext(ctx: ExtensionContext) {
   return {
@@ -65,6 +67,20 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
   });
   const runtime: GoalRuntime = createGoalRuntime(gateRegistry);
   let deferBudgetSummaryUntilNaturalTurn = false;
+  let budgetSummaryInFlight: { goalId: string; deliveryId: string } | null = null;
+  let continuationInFlight: {
+    goalId: string;
+    deliveryId: string;
+    origin: GoalTurnOrigin;
+    attempt: number;
+    acknowledged: boolean;
+  } | null = null;
+  let activeContinuationDeliveryAttempt = 0;
+  let pendingContinuationTurnFailure: {
+    goalId: string;
+    origin: GoalTurnOrigin;
+    attempt: number;
+  } | null = null;
 
   const currentGates = (): readonly ContinuationGate[] =>
     runtime.sessionId
@@ -123,6 +139,10 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     runtime.restartContinuationPending = false;
     runtime.goal = next;
     runtime.pendingBudgetSummary = false;
+    budgetSummaryInFlight = null;
+    continuationInFlight = null;
+    activeContinuationDeliveryAttempt = 0;
+    pendingContinuationTurnFailure = null;
     persist(ctx);
   };
 
@@ -134,6 +154,10 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     runtime.ledger = null;
     runtime.progress = null;
     runtime.pendingBudgetSummary = false;
+    budgetSummaryInFlight = null;
+    continuationInFlight = null;
+    activeContinuationDeliveryAttempt = 0;
+    pendingContinuationTurnFailure = null;
     persist(ctx);
   };
 
@@ -156,7 +180,15 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
       cancelGoalDeadline(runtime);
     }
     runtime.goal = next;
-    if (status === 'budget_limited') runtime.pendingBudgetSummary = true;
+    continuationInFlight = null;
+    activeContinuationDeliveryAttempt = 0;
+    pendingContinuationTurnFailure = null;
+    if (status === 'budget_limited') {
+      runtime.pendingBudgetSummary = true;
+      budgetSummaryInFlight = null;
+    } else {
+      budgetSummaryInFlight = null;
+    }
     persist(ctx);
     return next;
   };
@@ -167,6 +199,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     options?: { triggerTurn?: boolean; deliverAs?: 'steer' | 'followUp' | 'nextTurn' },
     origin: GoalTurnOrigin = 'other',
     contentOverride?: string,
+    deliveryId?: string,
   ): void => {
     if (options?.triggerTurn) runtime.pendingTurnOrigin = origin;
     const details: GoalEventDetails = {
@@ -176,6 +209,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
       evidenceSummary: summarizeGoalEvidence(runtime.ledger),
       noProgressStreak: runtime.progress?.stagnationStreak ?? 0,
       timestamp: runtime.now(),
+      ...(deliveryId ? { deliveryId } : {}),
     };
     pi.sendMessage(
       {
@@ -200,7 +234,23 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
       activeGates: currentGates(),
     });
 
-  const queueContinuation = (ctx: ExtensionContext, origin: GoalTurnOrigin): void => {
+  const pauseForContinuationDeliveryFailure = (
+    ctx: ExtensionContext,
+    goalId: string,
+    reason: string,
+  ): void => {
+    continuationInFlight = null;
+    runtime.continuationQueued = false;
+    runtime.pendingTurnOrigin = 'other';
+    if (runtime.goal?.id !== goalId || runtime.goal.status !== 'active') return;
+    transition(ctx, 'paused', { pauseReason: 'delivery_failure' });
+    ctx.ui.notify(
+      `Goal paused after repeated continuation delivery failures: ${reason}. Use /goal resume to retry.`,
+      'error',
+    );
+  };
+
+  const queueContinuation = (ctx: ExtensionContext, origin: GoalTurnOrigin, attempt = 1): void => {
     if (!eligible(ctx)) return;
     const capture = captureContinuation(runtime);
     if (!capture) return;
@@ -211,17 +261,32 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
       if (!eligible(ctx, false) || !runtime.goal || enforceBudgetLimit(ctx)) return;
       runtime.continuationQueued = true;
       if (origin === 'restart') runtime.restartContinuationPending = false;
+      const delivery = {
+        goalId: runtime.goal.id,
+        deliveryId: randomUUID(),
+        origin,
+        attempt,
+        acknowledged: false,
+      };
+      continuationInFlight = delivery;
       try {
         emitGoalEvent(
           'continuation',
           runtime.goal,
           { triggerTurn: true, deliverAs: 'followUp' },
           origin,
+          undefined,
+          delivery.deliveryId,
         );
       } catch (error) {
+        if (continuationInFlight?.deliveryId === delivery.deliveryId) continuationInFlight = null;
         runtime.continuationQueued = false;
         runtime.pendingTurnOrigin = 'other';
-        throw error;
+        const message = safeErrorMessage(error);
+        ctx.ui.notify(`Failed to deliver goal continuation: ${message}`, 'error');
+        if (attempt < MAX_CONTINUATION_DELIVERY_ATTEMPTS)
+          queueContinuation(ctx, origin, attempt + 1);
+        else pauseForContinuationDeliveryFailure(ctx, delivery.goalId, message);
       }
     });
   };
@@ -231,19 +296,28 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
       deferBudgetSummaryUntilNaturalTurn ||
       !runtime.pendingBudgetSummary ||
       runtime.goal?.status !== 'budget_limited' ||
+      budgetSummaryInFlight?.goalId === runtime.goal.id ||
       !ctx.isIdle() ||
       ctx.hasPendingMessages() ||
       currentGates().length > 0
     )
       return;
-    emitGoalEvent(
-      'budget_limited',
-      runtime.goal,
-      { triggerTurn: true, deliverAs: 'followUp' },
-      'other',
-    );
-    runtime.pendingBudgetSummary = false;
-    persist(ctx);
+    const delivery = { goalId: runtime.goal.id, deliveryId: randomUUID() };
+    budgetSummaryInFlight = delivery;
+    try {
+      emitGoalEvent(
+        'budget_limited',
+        runtime.goal,
+        { triggerTurn: true, deliverAs: 'followUp' },
+        'other',
+        undefined,
+        delivery.deliveryId,
+      );
+    } catch (error) {
+      if (budgetSummaryInFlight?.deliveryId === delivery.deliveryId) budgetSummaryInFlight = null;
+      deferBudgetSummaryUntilNaturalTurn = true;
+      ctx.ui.notify(`Failed to deliver goal budget summary: ${safeErrorMessage(error)}`, 'error');
+    }
   };
 
   function enforceBudgetLimit(ctx: ExtensionContext): boolean {
@@ -273,6 +347,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
       change.wakeDisposition !== 'none' ||
       change.autoResumeAllowed !== true ||
       !change.transitionId ||
+      change.generation === undefined ||
       !runtime.sessionId ||
       !eligible(ctx)
     )
@@ -282,6 +357,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
       sessionId: runtime.sessionId,
       domain: CONTINUATION_GATE_DEFAULT_DOMAIN,
       consumerId: GOAL_RESUME_CONSUMER_ID,
+      generation: change.generation,
     });
     if (!claim) return;
     runtime.activeResumeClaim = claim;
@@ -311,26 +387,45 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
         runtime.continuationQueued = false;
         return;
       }
-      if (!runtime.gateRegistry.commitAutoResume(claim)) {
-        runtime.activeResumeClaim = undefined;
-        runtime.continuationQueued = false;
-        return;
-      }
-      runtime.activeResumeClaim = undefined;
       const origin: GoalTurnOrigin = runtime.restartContinuationPending ? 'restart' : 'synthetic';
       runtime.restartContinuationPending = false;
+      const delivery = {
+        goalId: runtime.goal.id,
+        deliveryId: randomUUID(),
+        origin,
+        attempt: 1,
+        acknowledged: false,
+      };
+      continuationInFlight = delivery;
       try {
         emitGoalEvent(
           'continuation',
           runtime.goal,
           { triggerTurn: true, deliverAs: 'followUp' },
           origin,
+          undefined,
+          delivery.deliveryId,
         );
       } catch (error) {
+        runtime.gateRegistry.abortAutoResume(claim);
+        runtime.activeResumeClaim = undefined;
+        if (continuationInFlight?.deliveryId === delivery.deliveryId) continuationInFlight = null;
         runtime.continuationQueued = false;
         runtime.pendingTurnOrigin = 'other';
-        ctx.ui.notify(`Failed to deliver goal continuation: ${String(error)}`, 'error');
+        const message = safeErrorMessage(error);
+        ctx.ui.notify(`Failed to deliver goal continuation: ${message}`, 'error');
+        pauseForContinuationDeliveryFailure(ctx, delivery.goalId, message);
+        return;
       }
+      if (!runtime.gateRegistry.commitAutoResume(claim)) {
+        runtime.activeResumeClaim = undefined;
+        ctx.ui.notify(
+          'Goal continuation was queued, but its auto-resume claim could not be committed.',
+          'warning',
+        );
+        return;
+      }
+      runtime.activeResumeClaim = undefined;
     });
   }
 
@@ -366,6 +461,10 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     runtime.activeTurnOrigin = 'other';
     invalidateContinuation(runtime);
     cancelGoalDeadline(runtime);
+    budgetSummaryInFlight = null;
+    continuationInFlight = null;
+    activeContinuationDeliveryAttempt = 0;
+    pendingContinuationTurnFailure = null;
 
     restoreGoalRuntimeState(runtime, ctx.sessionManager.getBranch());
     deferBudgetSummaryUntilNaturalTurn =
@@ -421,6 +520,10 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     cancelGoalDeadline(runtime);
     runtime.restartContinuationPending = false;
     deferBudgetSummaryUntilNaturalTurn = false;
+    budgetSummaryInFlight = null;
+    continuationInFlight = null;
+    activeContinuationDeliveryAttempt = 0;
+    pendingContinuationTurnFailure = null;
     restoreGoalRuntimeState(runtime, ctx.sessionManager.getBranch());
     if (runtime.goal?.status === 'active')
       runtime.goal = restoreActiveWithoutOfflineGap(runtime.goal, runtime.now());
@@ -429,10 +532,17 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     maybeDeliverBudgetSummary(ctx);
   });
 
-  pi.on('before_agent_start', (_event, ctx) => {
+  pi.on('before_agent_start', () => {
     deferBudgetSummaryUntilNaturalTurn = false;
-    if (!runtime.pendingBudgetSummary || runtime.goal?.status !== 'budget_limited') return;
+    if (
+      !runtime.pendingBudgetSummary ||
+      runtime.goal?.status !== 'budget_limited' ||
+      budgetSummaryInFlight?.goalId === runtime.goal.id
+    )
+      return;
     const state = runtime.goal;
+    const delivery = { goalId: state.id, deliveryId: randomUUID() };
+    budgetSummaryInFlight = delivery;
     const injection = {
       message: {
         customType: GOAL_EVENT_CUSTOM_TYPE,
@@ -445,21 +555,46 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
           evidenceSummary: summarizeGoalEvidence(runtime.ledger),
           noProgressStreak: runtime.progress?.stagnationStreak ?? 0,
           timestamp: runtime.now(),
+          deliveryId: delivery.deliveryId,
         } satisfies GoalEventDetails,
       },
     };
-    runtime.pendingBudgetSummary = false;
-    // Clear the durable marker only after the host receives the injected message.
-    queueMicrotask(() => persist(ctx));
     return injection;
+  });
+
+  pi.on('message_start', (event, ctx) => {
+    if (
+      continuationInFlight &&
+      isGoalDeliveryMessage(event.message, continuationInFlight, 'continuation')
+    )
+      continuationInFlight.acknowledged = true;
+    const goal = runtime.goal;
+    if (
+      !runtime.pendingBudgetSummary ||
+      goal?.status !== 'budget_limited' ||
+      !budgetSummaryInFlight ||
+      !isGoalDeliveryMessage(event.message, budgetSummaryInFlight, 'budget_limited')
+    )
+      return;
+    runtime.pendingBudgetSummary = false;
+    budgetSummaryInFlight = null;
+    persist(ctx);
   });
 
   pi.on('turn_start', () => {
     deferBudgetSummaryUntilNaturalTurn = false;
+    const acknowledgedContinuation = continuationInFlight?.acknowledged
+      ? continuationInFlight
+      : null;
+    if (acknowledgedContinuation) continuationInFlight = null;
+    if (continuationInFlight) runtime.pendingTurnOrigin = 'other';
+    activeContinuationDeliveryAttempt = acknowledgedContinuation?.attempt ?? 0;
     runtime.continuationQueued = false;
     runtime.activeTurnStartedAt = runtime.now();
     runtime.activeGoalThisTurnId = runtime.goal?.status === 'active' ? runtime.goal.id : null;
-    runtime.activeTurnOrigin = runtime.pendingTurnOrigin;
+    runtime.activeTurnOrigin =
+      acknowledgedContinuation?.origin ??
+      (continuationInFlight ? 'other' : runtime.pendingTurnOrigin);
     runtime.pendingTurnOrigin = 'other';
     runtime.restartContinuationPending = false;
   });
@@ -470,7 +605,19 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     const origin = runtime.activeTurnOrigin;
     runtime.activeTurnStartedAt = null;
     runtime.activeGoalThisTurnId = null;
+    const failedContinuationTurn =
+      capturedGoalId &&
+      activeContinuationDeliveryAttempt > 0 &&
+      isTerminalContinuationFailure(event.message)
+        ? {
+            goalId: capturedGoalId,
+            origin,
+            attempt: activeContinuationDeliveryAttempt,
+          }
+        : null;
+    pendingContinuationTurnFailure = failedContinuationTurn;
     runtime.activeTurnOrigin = 'other';
+    if (!failedContinuationTurn) activeContinuationDeliveryAttempt = 0;
     if (!runtime.goal || capturedGoalId !== runtime.goal.id) return;
 
     const usage = (event.message as { usage?: UsageSnapshot } | undefined)?.usage;
@@ -510,8 +657,76 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
   });
 
   pi.on('agent_settled', (_event, ctx) => {
-    if (runtime.goal?.status === 'active') queueContinuation(ctx, 'synthetic');
-    else maybeDeliverBudgetSummary(ctx);
+    const failedContinuationTurn = pendingContinuationTurnFailure;
+    if (failedContinuationTurn) {
+      pendingContinuationTurnFailure = null;
+      activeContinuationDeliveryAttempt = 0;
+      if (runtime.goal?.status !== 'active' || runtime.goal.id !== failedContinuationTurn.goalId)
+        return;
+      if (failedContinuationTurn.attempt < MAX_CONTINUATION_DELIVERY_ATTEMPTS)
+        queueContinuation(ctx, failedContinuationTurn.origin, failedContinuationTurn.attempt + 1);
+      else
+        pauseForContinuationDeliveryFailure(
+          ctx,
+          failedContinuationTurn.goalId,
+          'continuation turn ended with a provider failure',
+        );
+      return;
+    }
+    if (
+      runtime.goal?.status === 'active' &&
+      runtime.activeTurnStartedAt !== null &&
+      activeContinuationDeliveryAttempt > 0
+    ) {
+      const failedGoalId = runtime.goal.id;
+      const failedOrigin = runtime.activeTurnOrigin;
+      const failedAttempt = activeContinuationDeliveryAttempt;
+      runtime.activeTurnStartedAt = null;
+      runtime.activeGoalThisTurnId = null;
+      runtime.activeTurnOrigin = 'other';
+      activeContinuationDeliveryAttempt = 0;
+      if (failedAttempt < MAX_CONTINUATION_DELIVERY_ATTEMPTS)
+        queueContinuation(ctx, failedOrigin, failedAttempt + 1);
+      else
+        pauseForContinuationDeliveryFailure(
+          ctx,
+          failedGoalId,
+          'continuation turn settled without completing',
+        );
+      return;
+    }
+    if (runtime.goal?.status === 'active') {
+      if (continuationInFlight) {
+        const failed = continuationInFlight;
+        continuationInFlight = null;
+        runtime.continuationQueued = false;
+        runtime.pendingTurnOrigin = 'other';
+        if (failed.attempt < MAX_CONTINUATION_DELIVERY_ATTEMPTS)
+          queueContinuation(ctx, failed.origin, failed.attempt + 1);
+        else
+          pauseForContinuationDeliveryFailure(
+            ctx,
+            failed.goalId,
+            failed.acknowledged
+              ? 'acknowledged continuation did not start'
+              : 'queued continuation was not acknowledged',
+          );
+        return;
+      }
+      if (runtime.continuationQueued) {
+        runtime.continuationQueued = false;
+        runtime.pendingTurnOrigin = 'other';
+        return;
+      }
+      queueContinuation(ctx, 'synthetic');
+      return;
+    }
+    if (runtime.pendingBudgetSummary && budgetSummaryInFlight) {
+      budgetSummaryInFlight = null;
+      deferBudgetSummaryUntilNaturalTurn = true;
+      return;
+    }
+    maybeDeliverBudgetSummary(ctx);
   });
 
   pi.on('session_shutdown', (_event, ctx) => {
@@ -527,6 +742,38 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     runtime.gateRegistry.dispose();
     runtime.statusContext = null;
   });
+}
+
+function isGoalDeliveryMessage(
+  message: unknown,
+  expected: { goalId: string; deliveryId: string },
+  kind: 'budget_limited' | 'continuation',
+): boolean {
+  if (!isRecord(message) || message.customType !== GOAL_EVENT_CUSTOM_TYPE) return false;
+  const details = message.details;
+  if (!isRecord(details) || details.kind !== kind || details.deliveryId !== expected.deliveryId)
+    return false;
+  const goal = details.goal;
+  return isRecord(goal) && goal.id === expected.goalId;
+}
+
+function isTerminalContinuationFailure(message: unknown): boolean {
+  if (!isRecord(message)) return false;
+  return message.stopReason === 'error' || message.stopReason === 'aborted';
+}
+
+function safeErrorMessage(error: unknown): string {
+  try {
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : 'Unknown delivery error';
+    return message.slice(0, 512);
+  } catch {
+    return 'Unknown delivery error';
+  }
 }
 
 function assistantText(message: unknown): string {

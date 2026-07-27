@@ -22,6 +22,7 @@ export const GOAL_STAGNATION_THRESHOLD = 3;
 const MAX_SUMMARY_TOKENS = 512;
 const MIN_STAGNATION_SUMMARY_TOKENS = 3;
 const FINGERPRINT_PATTERN = /^[0-9a-f]{16}$/;
+const MAX_COUNTER = Number.MAX_SAFE_INTEGER;
 
 export interface GoalProgressInput {
   goalId: string;
@@ -37,11 +38,11 @@ export interface GoalProgressResult {
 }
 
 export function createGoalProgressState(now: number): GoalProgressState {
-  return { observations: [], stagnationStreak: 0, lastProgressAt: Math.max(0, now) };
+  return { observations: [], stagnationStreak: 0, lastProgressAt: boundedCounter(now) };
 }
 
 export function resetGoalProgress(now: number): GoalProgressState {
-  return { observations: [], stagnationStreak: 0, lastProgressAt: Math.max(0, now) };
+  return { observations: [], stagnationStreak: 0, lastProgressAt: boundedCounter(now) };
 }
 
 export function resumeGoalProgress(
@@ -51,7 +52,7 @@ export function resumeGoalProgress(
   return {
     ...(state ?? createGoalProgressState(now)),
     stagnationStreak: 0,
-    lastProgressAt: Math.max(0, now),
+    lastProgressAt: boundedCounter(now),
     pausedAt: undefined,
   };
 }
@@ -64,25 +65,27 @@ export function observeGoalProgress(
   const summary = normalizeSummary(input.assistantText);
   const observation: GoalProgressObservation = {
     goalId: input.goalId,
-    observedAt: Math.max(0, input.observedAt),
+    observedAt: boundedCounter(input.observedAt),
     summaryFingerprint: simHash64(summary.tokens),
     summaryTokenCount: summary.tokens.length,
     toolPattern: hash64(
       input.tools.map((tool) => `${tool.name}:${tool.isError ? 'error' : 'success'}`).join('|'),
     ),
-    evidenceRevision: Math.max(0, Math.floor(input.evidenceRevision)),
+    evidenceRevision: boundedSafeInteger(input.evidenceRevision),
   };
-  const repeated = state.observations.some(
-    (recent) =>
-      recent.goalId === input.goalId &&
-      recent.evidenceRevision === observation.evidenceRevision &&
-      recent.toolPattern === observation.toolPattern &&
-      recent.summaryTokenCount >= MIN_STAGNATION_SUMMARY_TOKENS &&
-      observation.summaryTokenCount >= MIN_STAGNATION_SUMMARY_TOKENS &&
-      fingerprintSimilarity(recent.summaryFingerprint, observation.summaryFingerprint) >=
-        GOAL_PROGRESS_SIMILARITY,
-  );
-  const stagnationStreak = repeated ? state.stagnationStreak + 1 : 0;
+  const recent = state.observations.at(-1);
+  const repeated =
+    recent !== undefined &&
+    recent.goalId === input.goalId &&
+    recent.evidenceRevision === observation.evidenceRevision &&
+    recent.toolPattern === observation.toolPattern &&
+    recent.summaryTokenCount >= MIN_STAGNATION_SUMMARY_TOKENS &&
+    observation.summaryTokenCount >= MIN_STAGNATION_SUMMARY_TOKENS &&
+    fingerprintSimilarity(recent.summaryFingerprint, observation.summaryFingerprint) >=
+      GOAL_PROGRESS_SIMILARITY;
+  const stagnationStreak = repeated
+    ? Math.min(GOAL_STAGNATION_THRESHOLD, state.stagnationStreak + 1)
+    : 0;
   const observations = [...state.observations, observation].slice(-GOAL_PROGRESS_WINDOW);
   const shouldPause = stagnationStreak >= GOAL_STAGNATION_THRESHOLD;
   return {
@@ -149,21 +152,25 @@ export function hash64(value: string): string {
 export function parseGoalProgressState(value: unknown, goalId: string): GoalProgressState | null {
   if (!isRecord(value) || !Array.isArray(value.observations)) return null;
   if (value.observations.length > GOAL_PROGRESS_WINDOW) return null;
-  if (!nonNegativeInteger(value.stagnationStreak) || !nonNegativeNumber(value.lastProgressAt))
+  if (
+    !nonNegativeSafeInteger(value.stagnationStreak) ||
+    value.stagnationStreak > GOAL_STAGNATION_THRESHOLD ||
+    !boundedNonNegativeNumber(value.lastProgressAt)
+  )
     return null;
-  if (value.pausedAt !== undefined && !nonNegativeNumber(value.pausedAt)) return null;
+  if (value.pausedAt !== undefined && !boundedNonNegativeNumber(value.pausedAt)) return null;
   const observations: GoalProgressObservation[] = [];
   for (const raw of value.observations) {
     if (!isRecord(raw) || raw.goalId !== goalId) return null;
     if (
-      !nonNegativeNumber(raw.observedAt) ||
+      !boundedNonNegativeNumber(raw.observedAt) ||
       typeof raw.summaryFingerprint !== 'string' ||
       !FINGERPRINT_PATTERN.test(raw.summaryFingerprint) ||
-      !nonNegativeInteger(raw.summaryTokenCount) ||
+      !nonNegativeSafeInteger(raw.summaryTokenCount) ||
       raw.summaryTokenCount > MAX_SUMMARY_TOKENS ||
       typeof raw.toolPattern !== 'string' ||
       !FINGERPRINT_PATTERN.test(raw.toolPattern) ||
-      !nonNegativeInteger(raw.evidenceRevision)
+      !nonNegativeSafeInteger(raw.evidenceRevision)
     )
       return null;
     observations.push({
@@ -186,9 +193,16 @@ export function parseGoalProgressState(value: unknown, goalId: string): GoalProg
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
-function nonNegativeNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+function boundedNonNegativeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_COUNTER;
 }
-function nonNegativeInteger(value: unknown): value is number {
-  return nonNegativeNumber(value) && Number.isInteger(value);
+function nonNegativeSafeInteger(value: unknown): value is number {
+  return boundedNonNegativeNumber(value) && Number.isSafeInteger(value);
+}
+function boundedCounter(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(MAX_COUNTER, value);
+}
+function boundedSafeInteger(value: number): number {
+  return Math.floor(boundedCounter(value));
 }

@@ -5,14 +5,20 @@ import type {
   GoalStatus,
 } from './goal-types.ts';
 
+const MAX_COUNTER = Number.MAX_SAFE_INTEGER;
+
 export function activeWallTimeAt(goal: GoalState, now: number): number {
   if (goal.status !== 'active' || goal.activeSince === null) return goal.activeWallTimeSeconds;
-  return goal.activeWallTimeSeconds + Math.max(0, now - goal.activeSince) / 1_000;
+  return Math.min(
+    MAX_COUNTER,
+    goal.activeWallTimeSeconds + Math.max(0, boundedCounter(now) - goal.activeSince) / 1_000,
+  );
 }
 
 export function startActiveClock(goal: GoalState, now: number): GoalState {
   if (goal.status !== 'active' || goal.activeSince !== null) return goal;
-  return { ...goal, activeSince: Math.max(0, now), updatedAt: Math.max(0, now) };
+  const timestamp = boundedCounter(now);
+  return { ...goal, activeSince: timestamp, updatedAt: timestamp };
 }
 
 export function checkpointActiveClock(goal: GoalState, now: number): GoalState {
@@ -21,7 +27,7 @@ export function checkpointActiveClock(goal: GoalState, now: number): GoalState {
     ...goal,
     activeWallTimeSeconds: activeWallTimeAt(goal, now),
     activeSince: null,
-    updatedAt: Math.max(0, now),
+    updatedAt: boundedCounter(now),
   };
 }
 
@@ -63,7 +69,7 @@ export function transitionGoal(
     pauseReason: status === 'paused' ? (options.pauseReason ?? next.pauseReason ?? 'user') : null,
     budgetLimitReason:
       status === 'budget_limited' ? (options.budgetLimitReason ?? next.budgetLimitReason) : null,
-    updatedAt: Math.max(0, now),
+    updatedAt: boundedCounter(now),
   };
   return status === 'active' ? startActiveClock({ ...next, activeSince: null }, now) : next;
 }
@@ -72,4 +78,9 @@ export function transitionGoal(
 export function checkpointAndRestartActiveClock(goal: GoalState, now: number): GoalState {
   if (goal.status !== 'active') return goal;
   return startActiveClock(checkpointActiveClock(goal, now), now);
+}
+
+function boundedCounter(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(MAX_COUNTER, value);
 }

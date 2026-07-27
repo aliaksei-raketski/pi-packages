@@ -65,7 +65,7 @@ A deadline never releases or bypasses continuation gates. If Pi is idle and unbl
 
 ## Evidence ledger and completion
 
-Every new goal receives an empty, branch-local evidence ledger. The model uses `update_goal_evidence` with an `expectedRevision` to:
+Every new goal receives an empty, branch-local evidence ledger. The model uses `update_goal_evidence` with the current `goalId` and `expectedRevision` to:
 
 1. `initialize_requirements` with stable IDs;
 2. `upsert_requirement` when the checklist changes;
@@ -85,7 +85,7 @@ The ledger is bounded to 50 requirements and 20 evidence items per requirement. 
 
 Ledger references are claims the model must inspect. The deterministic precondition supplements rather than replaces the strict prompt-to-artifact audit. Green tests and manifests remain proxy evidence unless they directly cover a requirement.
 
-Use `/goal evidence` for a readable checklist. `/goal evidence reset` requires interactive confirmation and exists for user-owned recovery; the model tool cannot reset the ledger.
+Use `/goal evidence` for a readable checklist. `/goal evidence reset` requires interactive confirmation, is restricted to active or paused goals, and exists for user-owned recovery; it aborts if the confirmed session, goal, or ledger changes. Terminal-goal audit records cannot be reset, and the model tool cannot reset the ledger.
 
 ## Conservative no-progress detection
 
@@ -115,7 +115,9 @@ The branch-local restart policy controls only restoration of a persisted active 
 
 Normal `/goal resume`, new/fork/session-switch lifecycle paths, and `/tree` navigation use their explicit lifecycle behavior and never reuse old session-bound contexts. `/tree` restores the policy, ledger, detector state, settings, and goal state from the selected branch.
 
-A gated `resume` policy remains active/waiting and never bypasses the gate. For a valid `wake: none` last-gate transition, the goal runtime uses the continuation-gate protocol's single-winner auto-resume claim. Producer-message handoffs wake Pi through the producer result and are not duplicated.
+A gated `resume` policy remains active/waiting and never bypasses the gate. For a valid `wake: none` last-gate transition, the goal runtime uses the continuation-gate protocol's single-winner auto-resume claim and queues delivery before committing the claim. Producer-message handoffs wake Pi through the producer result and are not duplicated.
+
+Automatic continuation delivery is acknowledged by lifecycle events and retried at most twice. Repeated queue or turn-delivery failures pause the goal with `pauseReason: delivery_failure`; `/goal resume` explicitly retries after the underlying provider or session issue is resolved. If a manual `/goal resume` queue fails synchronously, the runtime restores the same paused recovery state instead of leaving an idle active goal.
 
 ## Wait diagnostics and manual continuation
 
@@ -140,7 +142,7 @@ The skill returns one pasteable `/goal` command, includes token and/or wall-time
 
 - `create_goal`: creates or replaces a goal after explicit user intent; optional `tokenBudget` and `timeBudgetSeconds` can be combined;
 - `get_goal`: returns the full bounded ledger, summary counts, progress diagnostics, settings, remaining budgets, and gates;
-- `update_goal_evidence`: performs strict revision-checked ledger mutations;
+- `update_goal_evidence`: performs strict goal-bound, revision-checked ledger mutations;
 - `update_goal`: accepts only `status: "complete"` after ledger-backed verification.
 
 `create_goal` stays active. The other three tools are active only while the goal status is `active`. Paused, complete, cleared, and budget-limited goals cannot be mutated by model goal tools.
@@ -161,7 +163,7 @@ Malformed nested ledger or progress data is dropped without discarding an otherw
 
 ## Continuation gates
 
-Automatic continuation runs only after `agent_settled`, when no messages are pending and the default gate domain is unblocked. An active goal can display `waiting` while wall time continues to accrue.
+Automatic continuation normally runs after `agent_settled`, when no messages are pending and the default gate domain is unblocked. A valid `wake: none` last-gate transition may instead trigger the claim-based auto-resume path directly from the reconciled `unblocked` notification; it still requires an idle, unblocked goal and queues delivery before committing the claim. An active goal can display `waiting` while wall time continues to accrue.
 
 A producer should commit its wake handoff only after queueing its result message, then release a `producer-message` gate with that handoff ID. After the producer result turn settles, normal goal continuation may continue. Diagnose-only stale gates remain blocking.
 
@@ -175,6 +177,7 @@ The extension publishes the stable `goal` status through Pi's built-in footer AP
 | `waiting`        | `goal waiting (2) 12.3K/50K · 24m left` | warning        |
 | `paused`         | `goal paused`                           | muted          |
 | no progress      | `goal paused (no progress)`             | muted          |
+| delivery failure | `goal paused (delivery failure)`        | muted          |
 | `complete`       | `goal achieved`                         | success        |
 | `budget_limited` | `goal unmet 50K/50K · 0s left`          | error          |
 

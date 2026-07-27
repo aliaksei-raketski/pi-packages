@@ -5,6 +5,7 @@ import {
   createGoalState,
   formatElapsed,
   formatTokens,
+  MAX_GOAL_COUNTER,
   MAX_WALL_TIME_BUDGET_SECONDS,
   normalizeTokenBudget,
   normalizeWallTimeBudget,
@@ -72,6 +73,7 @@ describe('goal state', () => {
     expect(normalizeTokenBudget(undefined)).toEqual({ tokenBudget: null });
     expect(normalizeTokenBudget(10.6)).toEqual({ tokenBudget: 11 });
     expect(normalizeTokenBudget(Number.POSITIVE_INFINITY).error).toMatch(/positive/);
+    expect(normalizeTokenBudget(Number.MAX_SAFE_INTEGER + 1).error).toMatch(/positive/);
     expect(normalizeWallTimeBudget(10.6)).toEqual({ wallTimeBudgetSeconds: 11 });
     expect(normalizeWallTimeBudget(MAX_WALL_TIME_BUDGET_SECONDS + 1).error).toMatch(/one year/);
   });
@@ -100,6 +102,18 @@ describe('goal state', () => {
       timeUsedSeconds: 0,
       status: 'active',
       updatedAt: 50,
+    });
+    expect(
+      accountGoalTurn(
+        { ...create(), tokenBudget: null, tokensUsed: MAX_GOAL_COUNTER },
+        Number.MAX_VALUE,
+        Number.MAX_VALUE,
+        Number.MAX_VALUE,
+      ),
+    ).toMatchObject({
+      tokensUsed: MAX_GOAL_COUNTER,
+      timeUsedSeconds: MAX_GOAL_COUNTER,
+      updatedAt: MAX_GOAL_COUNTER,
     });
   });
 
@@ -193,6 +207,60 @@ describe('goal state', () => {
     ]);
     expect(restored.progress).toEqual(progress);
     expect(restored.noProgressEnabled).toBe(true);
+  });
+
+  it('rejects fractional persisted wall-time budgets', () => {
+    const state = create();
+    const restored = restoreGoalState([
+      {
+        type: 'custom',
+        customType: 'pi-goal',
+        data: {
+          goal: { ...state, wallTimeBudgetSeconds: 0.5 },
+          statusBarEnabled: true,
+        },
+      },
+    ]);
+    expect(restored.goal).toBeNull();
+  });
+
+  it('rejects unsafe persisted counters without restoring corrupt goal state', () => {
+    const state = create();
+    const restored = restoreGoalState([
+      {
+        type: 'custom',
+        customType: 'pi-goal',
+        data: {
+          goal: { ...state, tokensUsed: Number.MAX_VALUE },
+          statusBarEnabled: true,
+        },
+      },
+    ]);
+    expect(restored.goal).toBeNull();
+  });
+
+  it('drops an impossible active-goal stagnation threshold from persistence', () => {
+    const state = create();
+    const progress = observeGoalProgress(null, {
+      goalId: state.id,
+      observedAt: 50,
+      assistantText: 'bounded synthetic summary',
+      tools: [{ name: 'read', isError: false }],
+      evidenceRevision: 0,
+    }).state;
+    const restored = restoreGoalState([
+      {
+        type: 'custom',
+        customType: 'pi-goal',
+        data: {
+          goal: state,
+          progress: { ...progress, stagnationStreak: 3 },
+          noProgressEnabled: true,
+        },
+      },
+    ]);
+    expect(restored.goal).toEqual(state);
+    expect(restored.progress).toBeNull();
   });
 
   it('drops malformed nested state without losing a valid goal', () => {

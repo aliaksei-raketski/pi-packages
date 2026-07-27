@@ -55,6 +55,11 @@ export interface GoalStatusOptions {
   pendingBudgetSummary?: boolean;
 }
 
+function formatGateTimestamp(timestamp: number): string {
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? 'invalid' : date.toISOString();
+}
+
 export function formatGate(gate: ContinuationGate, now = Date.now()): string {
   const ageSeconds = Math.max(0, Math.floor((now - gate.acquiredAt) / 1000));
   let resource = '';
@@ -63,7 +68,7 @@ export function formatGate(gate: ContinuationGate, now = Date.now()): string {
     resource = `; resource=${gate.resource.kind}:${gate.resource.id}${label}`;
   }
   const lease = gate.lease
-    ? `; domain=${gate.domain}; lease=${gate.lease.policy} expires=${new Date(gate.lease.expiresAt).toISOString()}${gate.lease.expiresAt <= now ? ` stale-age=${formatElapsed(Math.floor((now - gate.lease.expiresAt) / 1000))}` : ''}`
+    ? `; domain=${gate.domain}; lease=${gate.lease.policy} expires=${formatGateTimestamp(gate.lease.expiresAt)}${gate.lease.expiresAt <= now ? ` stale-age=${formatElapsed(Math.floor((now - gate.lease.expiresAt) / 1000))}` : ''}`
     : `; domain=${gate.domain}; lease=none`;
   return `${gate.source}/${gate.gateId}: ${gate.reason}; age=${formatElapsed(ageSeconds)}${resource}${lease}`;
 }
@@ -240,12 +245,20 @@ async function handleGoalCommand(
     runtime.progress = resumeGoalProgress(runtime.progress, runtime.now());
     const next = controller.transition(ctx, 'active');
     if (controller.enforceBudgetLimit(ctx)) return;
-    controller.emitGoalEvent(
-      'resumed',
-      next,
-      { triggerTurn: true, deliverAs: 'followUp' },
-      'resume',
-    );
+    try {
+      controller.emitGoalEvent(
+        'resumed',
+        next,
+        { triggerTurn: true, deliverAs: 'followUp' },
+        'resume',
+      );
+    } catch (error) {
+      controller.transition(ctx, 'paused', { pauseReason: 'delivery_failure' });
+      ctx.ui.notify(
+        `Goal resume delivery failed: ${safeErrorMessage(error)}. Goal remains paused; use /goal resume to retry.`,
+        'error',
+      );
+    }
     return;
   }
   if (input === 'continue') {
@@ -255,25 +268,60 @@ async function handleGoalCommand(
   await createCommandGoal(input, ctx, controller);
 }
 
+function safeErrorMessage(error: unknown): string {
+  try {
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : 'Unknown delivery error';
+    return message.slice(0, 512);
+  } catch {
+    return 'Unknown delivery error';
+  }
+}
+
 async function resetEvidence(
   ctx: ExtensionContext,
   controller: GoalCommandController,
 ): Promise<void> {
   const { runtime } = controller;
-  if (!runtime.goal) {
+  const goal = runtime.goal;
+  if (!goal) {
     ctx.ui.notify('No goal is set.', 'info');
+    return;
+  }
+  if (goal.status !== 'active' && goal.status !== 'paused') {
+    ctx.ui.notify('Evidence can only be reset for an active or paused goal.', 'warning');
     return;
   }
   if (!ctx.hasUI) {
     ctx.ui.notify('Evidence reset requires interactive confirmation.', 'warning');
     return;
   }
+  const confirmedSessionId = runtime.sessionId;
+  const confirmedLedger = runtime.ledger;
+  const confirmedRevision = confirmedLedger?.revision ?? null;
   const confirmed = await ctx.ui.confirm(
     'Reset goal evidence?',
     'This removes every requirement and evidence reference for the current goal.',
   );
   if (!confirmed) return;
-  runtime.ledger = createGoalEvidenceLedger(runtime.goal.id, runtime.now());
+  if (
+    runtime.sessionId !== confirmedSessionId ||
+    runtime.goal?.id !== goal.id ||
+    runtime.goal.status !== goal.status ||
+    runtime.ledger !== confirmedLedger ||
+    (runtime.ledger?.revision ?? null) !== confirmedRevision
+  ) {
+    ctx.ui.notify(
+      'Goal evidence changed while confirmation was open; reset was cancelled.',
+      'warning',
+    );
+    return;
+  }
+  runtime.ledger = createGoalEvidenceLedger(goal.id, runtime.now());
   runtime.progress = resetGoalProgress(runtime.now());
   controller.persist(ctx);
   ctx.ui.notify('Goal evidence reset.', 'info');
@@ -352,12 +400,28 @@ async function createCommandGoal(
     ctx.ui.notify('Usage: /goal [--tokens 50k] [--time 30m] <objective>', 'warning');
     return;
   }
-  if (runtime.goal && runtime.goal.status !== 'complete' && ctx.hasUI) {
+  const confirmedSessionId = runtime.sessionId;
+  const confirmedGoal = runtime.goal;
+  const confirmedGoalId = confirmedGoal?.id;
+  const confirmedGoalStatus = confirmedGoal?.status;
+  if (confirmedGoal && confirmedGoal.status !== 'complete' && ctx.hasUI) {
     const confirmed = await ctx.ui.confirm(
       'Replace goal?',
-      `Current: ${runtime.goal.objective}\n\nNew: ${parsed.objective}`,
+      `Current: ${confirmedGoal.objective}\n\nNew: ${parsed.objective}`,
     );
     if (!confirmed) return;
+    if (
+      runtime.sessionId !== confirmedSessionId ||
+      runtime.goal !== confirmedGoal ||
+      runtime.goal?.id !== confirmedGoalId ||
+      runtime.goal?.status !== confirmedGoalStatus
+    ) {
+      ctx.ui.notify(
+        'Goal changed while replacement confirmation was open; replacement was cancelled.',
+        'warning',
+      );
+      return;
+    }
   }
   const timestamp = runtime.now();
   const next = createGoalState(

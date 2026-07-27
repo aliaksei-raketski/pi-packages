@@ -30,13 +30,17 @@ export function collectGoalStatus(
         state: 'active',
         fallbackColor: 'accent',
       };
-    case 'paused':
+    case 'paused': {
+      let text = 'goal paused';
+      if (goal.pauseReason === 'no_progress') text = 'goal paused (no progress)';
+      else if (goal.pauseReason === 'delivery_failure') text = 'goal paused (delivery failure)';
       return {
         key: GOAL_STATUS_KEY,
-        text: goal.pauseReason === 'no_progress' ? 'goal paused (no progress)' : 'goal paused',
+        text,
         state: 'paused',
         fallbackColor: 'muted',
       };
+    }
     case 'complete':
       return {
         key: GOAL_STATUS_KEY,

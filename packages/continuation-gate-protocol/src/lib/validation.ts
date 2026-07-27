@@ -23,6 +23,8 @@ export const MAX_SNAPSHOT_GATES = 512;
 export const MAX_DIAGNOSTIC_COUNT = 128;
 export const MAX_HANDOFFS = 256;
 export const MAX_RESUME_CLAIMS = 256;
+export const MAX_TIMESTAMP = 8_640_000_000_000_000;
+export const MAX_GENERATION = Number.MAX_SAFE_INTEGER - 1;
 
 const RELEASE_OUTCOMES = new Set<ContinuationGateReleaseOutcome>([
   'completed',
@@ -67,7 +69,9 @@ export function parseBoundedString(value: unknown, maximumLength: number): strin
 }
 
 export function parseTimestamp(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_TIMESTAMP
+    ? value
+    : undefined;
 }
 
 function parseIdentity(
@@ -229,9 +233,18 @@ export function parseContinuationGateSnapshot(
       if (!requestId) return undefined;
     }
     const gates: ContinuationGate[] = [];
+    const gateIds = new Set<string>();
     for (const candidate of payload.gates) {
       const gate = parseContinuationGateAcquire(candidate);
-      if (gate && gate.sessionId === sessionId && gate.source === source) gates.push(gate);
+      if (
+        !gate ||
+        gate.sessionId !== sessionId ||
+        gate.source !== source ||
+        gateIds.has(gate.gateId)
+      )
+        return undefined;
+      gateIds.add(gate.gateId);
+      gates.push(gate);
     }
     return { ...(requestId ? { requestId } : {}), sessionId, source, gates };
   } catch {
@@ -278,6 +291,7 @@ export function parseContinuationGateResumeClaim(
       typeof generation === 'number' &&
       Number.isSafeInteger(generation) &&
       generation >= 0 &&
+      generation < MAX_GENERATION &&
       expiresAt !== undefined
       ? { claimId, transitionId, sessionId, domain, consumerId, generation, expiresAt }
       : undefined;
@@ -309,7 +323,8 @@ export function parseContinuationGateUnblocked(
       (wakeDisposition === 'producer-message' && !handoffId) ||
       typeof generation !== 'number' ||
       !Number.isSafeInteger(generation) ||
-      generation < 0
+      generation < 0 ||
+      generation >= MAX_GENERATION
     )
       return undefined;
     return {

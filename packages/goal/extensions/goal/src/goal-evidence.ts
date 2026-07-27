@@ -63,7 +63,6 @@ export type GoalEvidenceMutation =
       action: 'initialize_requirements';
       expectedRevision: number;
       requirements: Array<{ id: string; requirement: string }>;
-      replace?: boolean;
     }
   | {
       action: 'upsert_requirement';
@@ -105,7 +104,7 @@ export function createGoalEvidenceLedger(goalId: string, now: number): GoalEvide
     goalId: bounded(goalId, MAX_GOAL_ID_LENGTH, 'goal id'),
     revision: 0,
     requirements: [],
-    updatedAt: Math.max(0, now),
+    updatedAt: boundedCounter(now),
   };
 }
 
@@ -165,17 +164,18 @@ export function mutateGoalEvidence(
   mutation: GoalEvidenceMutation,
   now: number,
 ): GoalEvidenceLedger {
-  const ledger = current ?? createGoalEvidenceLedger(goalId, now);
+  const timestamp = boundedCounter(now);
+  const ledger = current ?? createGoalEvidenceLedger(goalId, timestamp);
   if (ledger.goalId !== goalId) throw new Error('Evidence update targets a different goal.');
-  if (!Number.isInteger(mutation.expectedRevision) || mutation.expectedRevision !== ledger.revision)
+  if (
+    !nonNegativeSafeInteger(mutation.expectedRevision) ||
+    mutation.expectedRevision !== ledger.revision
+  )
     throw new Error(`Stale evidence revision: expected ${ledger.revision}.`);
-
   let requirements = ledger.requirements.map(cloneRequirement);
   if (mutation.action === 'initialize_requirements') {
-    if (requirements.length > 0 && !mutation.replace)
-      throw new Error(
-        'Requirements are already initialized; set replace=true with the current revision.',
-      );
+    if (requirements.length > 0)
+      throw new Error('Requirements are already initialized; use user-confirmed evidence reset.');
     if (mutation.requirements.length === 0)
       throw new Error('At least one requirement is required.');
     if (mutation.requirements.length > MAX_GOAL_REQUIREMENTS)
@@ -190,7 +190,7 @@ export function mutateGoalEvidence(
         requirement: bounded(item.requirement, MAX_REQUIREMENT_LENGTH, 'requirement'),
         status: 'pending' as const,
         evidence: [],
-        updatedAt: now,
+        updatedAt: timestamp,
       };
     });
   } else if (mutation.action === 'upsert_requirement') {
@@ -200,20 +200,24 @@ export function mutateGoalEvidence(
     if (index < 0) {
       if (requirements.length >= MAX_GOAL_REQUIREMENTS)
         throw new Error(`At most ${MAX_GOAL_REQUIREMENTS} requirements are allowed.`);
-      requirements.push({ id, requirement, status: 'pending', evidence: [], updatedAt: now });
+      requirements.push({
+        id,
+        requirement,
+        status: 'pending',
+        evidence: [],
+        updatedAt: timestamp,
+      });
     } else {
       const currentRequirement = requirements[index];
       if (!currentRequirement) throw new Error(`Unknown requirement id: ${id}.`);
-      requirements[index] =
-        currentRequirement.requirement === requirement
-          ? { ...currentRequirement, updatedAt: now }
-          : {
-              id,
-              requirement,
-              status: 'pending',
-              evidence: [],
-              updatedAt: now,
-            };
+      if (currentRequirement.requirement === requirement) return ledger;
+      requirements[index] = {
+        id,
+        requirement,
+        status: 'pending',
+        evidence: [],
+        updatedAt: timestamp,
+      };
     }
   } else if (mutation.action === 'add_evidence') {
     const requirement = findRequirement(requirements, mutation.requirementId);
@@ -221,11 +225,11 @@ export function mutateGoalEvidence(
       throw new Error(
         `At most ${MAX_GOAL_EVIDENCE_PER_REQUIREMENT} evidence items are allowed per requirement.`,
       );
-    const evidence = normalizeEvidenceItem({ ...mutation.evidence, recordedAt: now });
+    const evidence = normalizeEvidenceItem({ ...mutation.evidence, recordedAt: timestamp });
     if (requirement.evidence.some((item) => item.id === evidence.id))
       throw new Error(`Duplicate evidence id: ${evidence.id}.`);
     requirement.evidence.push(evidence);
-    requirement.updatedAt = now;
+    requirement.updatedAt = timestamp;
   } else if (mutation.action === 'set_requirement_status') {
     const requirement = findRequirement(requirements, mutation.requirementId);
     if (!REQUIREMENT_STATUSES.has(mutation.status)) throw new Error('Unknown requirement status.');
@@ -234,10 +238,13 @@ export function mutateGoalEvidence(
       throw new Error('Verified requirements must have at least one evidence item.');
     if (mutation.status === 'blocked' && !blocker)
       throw new Error('Blocked requirements must include a blocker.');
-    requirement.status = mutation.status;
-    requirement.blocker =
+    const nextBlocker =
       mutation.status === 'blocked' ? bounded(blocker, MAX_BLOCKER_LENGTH, 'blocker') : undefined;
-    requirement.updatedAt = now;
+    if (requirement.status === mutation.status && requirement.blocker === nextBlocker)
+      return ledger;
+    requirement.status = mutation.status;
+    requirement.blocker = nextBlocker;
+    requirement.updatedAt = timestamp;
   } else if (mutation.action === 'remove_evidence') {
     const requirement = findRequirement(requirements, mutation.requirementId);
     const index = requirement.evidence.findIndex((item) => item.id === mutation.evidenceId);
@@ -245,16 +252,18 @@ export function mutateGoalEvidence(
     if (requirement.status === 'verified' && requirement.evidence.length === 1)
       throw new Error('Cannot remove the last evidence item from a verified requirement.');
     requirement.evidence.splice(index, 1);
-    requirement.updatedAt = now;
+    requirement.updatedAt = timestamp;
   } else {
     return assertNever(mutation);
   }
 
+  if (!nonNegativeSafeInteger(ledger.revision) || ledger.revision === Number.MAX_SAFE_INTEGER)
+    throw new Error('Evidence revision cannot be incremented safely.');
   const next = {
     goalId,
     revision: ledger.revision + 1,
     requirements,
-    updatedAt: Math.max(0, now),
+    updatedAt: timestamp,
   };
   if (goalEvidenceLedgerByteLength(next) > MAX_GOAL_EVIDENCE_LEDGER_BYTES)
     throw new Error(
@@ -268,12 +277,12 @@ export function parseGoalEvidenceLedger(value: unknown, goalId: string): GoalEvi
     !isRecord(value) ||
     value.goalId !== goalId ||
     !parseBounded(value.goalId, MAX_GOAL_ID_LENGTH) ||
-    !nonNegativeInteger(value.revision)
+    !nonNegativeSafeInteger(value.revision)
   )
     return null;
   if (!Array.isArray(value.requirements) || value.requirements.length > MAX_GOAL_REQUIREMENTS)
     return null;
-  if (!nonNegativeNumber(value.updatedAt)) return null;
+  if (!boundedNonNegativeNumber(value.updatedAt)) return null;
   const requirements: GoalRequirementEvidence[] = [];
   const ids = new Set<string>();
   for (const raw of value.requirements) {
@@ -309,9 +318,10 @@ function parseRequirement(value: unknown): GoalRequirementEvidence | null {
   const blocker =
     value.blocker === undefined ? undefined : parseBounded(value.blocker, MAX_BLOCKER_LENGTH);
   if (value.blocker !== undefined && !blocker) return null;
+  if (blocker && value.status !== 'blocked') return null;
   if (value.status === 'verified' && evidence.length === 0) return null;
   if (value.status === 'blocked' && !blocker) return null;
-  if (!nonNegativeNumber(value.updatedAt)) return null;
+  if (!boundedNonNegativeNumber(value.updatedAt)) return null;
   return {
     id,
     requirement,
@@ -329,7 +339,7 @@ function parseEvidenceItem(value: unknown): GoalEvidenceItem | null {
   const claim = parseBounded(value.claim, MAX_EVIDENCE_CLAIM_LENGTH);
   if (!id || !reference || !claim || !EVIDENCE_KINDS.has(value.kind as GoalEvidenceKind))
     return null;
-  if (!nonNegativeNumber(value.recordedAt)) return null;
+  if (!boundedNonNegativeNumber(value.recordedAt)) return null;
   return {
     id,
     kind: value.kind as GoalEvidenceKind,
@@ -346,7 +356,7 @@ function normalizeEvidenceItem(value: GoalEvidenceItem): GoalEvidenceItem {
     kind: value.kind,
     reference: bounded(value.reference, MAX_EVIDENCE_REFERENCE_LENGTH, 'evidence reference'),
     claim: bounded(value.claim, MAX_EVIDENCE_CLAIM_LENGTH, 'evidence claim'),
-    recordedAt: Math.max(0, value.recordedAt),
+    recordedAt: boundedCounter(value.recordedAt),
   };
 }
 
@@ -380,11 +390,20 @@ function parseBounded(value: unknown, maximum: number): string | null {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
-function nonNegativeNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+function boundedNonNegativeNumber(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= Number.MAX_SAFE_INTEGER
+  );
 }
-function nonNegativeInteger(value: unknown): value is number {
-  return nonNegativeNumber(value) && Number.isInteger(value);
+function nonNegativeSafeInteger(value: unknown): value is number {
+  return boundedNonNegativeNumber(value) && Number.isSafeInteger(value);
+}
+function boundedCounter(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(Number.MAX_SAFE_INTEGER, value);
 }
 function assertNever(value: never): never {
   throw new Error(`Unknown evidence action: ${JSON.stringify(value)}`);

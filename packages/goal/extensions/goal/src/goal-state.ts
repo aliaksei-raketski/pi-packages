@@ -5,7 +5,11 @@ import {
   transitionGoal,
 } from './goal-clock.ts';
 import { parseGoalEvidenceLedger, type GoalEvidenceLedger } from './goal-evidence.ts';
-import { parseGoalProgressState, type GoalProgressState } from './goal-progress.ts';
+import {
+  GOAL_STAGNATION_THRESHOLD,
+  parseGoalProgressState,
+  type GoalProgressState,
+} from './goal-progress.ts';
 import type {
   GoalBudgetLimitReason,
   GoalEventKind,
@@ -31,6 +35,7 @@ export const GOAL_STATE_CUSTOM_TYPE = 'pi-goal';
 export const GOAL_EVENT_CUSTOM_TYPE = 'pi-goal-event';
 export const MAX_WALL_TIME_BUDGET_SECONDS = 365 * 24 * 60 * 60;
 export const MAX_GOAL_OBJECTIVE_LENGTH = 20_000;
+export const MAX_GOAL_COUNTER = Number.MAX_SAFE_INTEGER;
 
 export interface ParsedGoalCommand {
   objective: string;
@@ -40,7 +45,13 @@ export interface ParsedGoalCommand {
 }
 
 const GOAL_STATUSES = new Set<GoalStatus>(['active', 'paused', 'budget_limited', 'complete']);
-const PAUSE_REASONS = new Set<GoalPauseReason>(['user', 'reload', 'no_progress', null]);
+const PAUSE_REASONS = new Set<GoalPauseReason>([
+  'user',
+  'reload',
+  'no_progress',
+  'delivery_failure',
+  null,
+]);
 const BUDGET_REASONS = new Set<GoalBudgetLimitReason>([
   'tokens',
   'wall_time',
@@ -97,8 +108,8 @@ export function normalizeTokenBudget(value: unknown): {
   error?: string;
 } {
   if (value === undefined || value === null) return { tokenBudget: null };
-  const tokenBudget = Math.round(Number(value));
-  if (!Number.isFinite(tokenBudget) || tokenBudget <= 0)
+  const tokenBudget = typeof value === 'number' ? Math.round(value) : Number.NaN;
+  if (!Number.isSafeInteger(tokenBudget) || tokenBudget <= 0)
     return { tokenBudget: null, error: 'tokenBudget must be a positive number when provided.' };
   return { tokenBudget };
 }
@@ -108,8 +119,8 @@ export function normalizeWallTimeBudget(value: unknown): {
   error?: string;
 } {
   if (value === undefined || value === null) return { wallTimeBudgetSeconds: null };
-  const wallTimeBudgetSeconds = Math.round(Number(value));
-  if (!Number.isFinite(wallTimeBudgetSeconds) || wallTimeBudgetSeconds <= 0)
+  const wallTimeBudgetSeconds = typeof value === 'number' ? Math.round(value) : Number.NaN;
+  if (!Number.isSafeInteger(wallTimeBudgetSeconds) || wallTimeBudgetSeconds <= 0)
     return {
       wallTimeBudgetSeconds: null,
       error: 'timeBudgetSeconds must be a positive number when provided.',
@@ -130,8 +141,19 @@ export function createGoalState(
     `${timestamp.toString(36)}-${Math.random().toString(36).slice(2)}`,
   wallTimeBudgetSeconds: number | null = null,
 ): GoalState {
+  if (tokenBudget !== null && !positiveSafeInteger(tokenBudget))
+    throw new TypeError('Goal token budget must be a positive safe integer.');
+  if (
+    wallTimeBudgetSeconds !== null &&
+    (!positiveSafeInteger(wallTimeBudgetSeconds) ||
+      wallTimeBudgetSeconds > MAX_WALL_TIME_BUDGET_SECONDS)
+  )
+    throw new TypeError('Goal wall-time budget must be a positive bounded safe integer.');
+  const timestamp = boundedCounter(now);
+  const id = boundedString(createId(timestamp), 128);
+  if (!id) throw new TypeError('Goal ID must be a non-empty string of at most 128 characters.');
   return {
-    id: createId(now),
+    id,
     objective: objective.trim().slice(0, MAX_GOAL_OBJECTIVE_LENGTH),
     status: 'active',
     tokenBudget,
@@ -139,11 +161,11 @@ export function createGoalState(
     tokensUsed: 0,
     timeUsedSeconds: 0,
     activeWallTimeSeconds: 0,
-    activeSince: Math.max(0, now),
+    activeSince: timestamp,
     pauseReason: null,
     budgetLimitReason: null,
-    createdAt: Math.max(0, now),
-    updatedAt: Math.max(0, now),
+    createdAt: timestamp,
+    updatedAt: timestamp,
   };
 }
 
@@ -155,9 +177,9 @@ export function accountGoalTurn(
 ): GoalState {
   let next: GoalState = {
     ...state,
-    tokensUsed: state.tokensUsed + Math.max(0, tokenDelta),
-    timeUsedSeconds: state.timeUsedSeconds + Math.max(0, elapsedSeconds),
-    updatedAt: Math.max(0, now),
+    tokensUsed: saturatingAdd(state.tokensUsed, tokenDelta),
+    timeUsedSeconds: saturatingAdd(state.timeUsedSeconds, elapsedSeconds),
+    updatedAt: boundedCounter(now),
   };
   const reason = evaluateBudgetLimit(next, now);
   if (reason) return transitionGoal(next, 'budget_limited', now, { budgetLimitReason: reason });
@@ -235,21 +257,21 @@ export function normalizeGoalState(value: unknown): GoalState | null {
   const id = boundedString(value.id, 128);
   const objective = boundedString(value.objective, MAX_GOAL_OBJECTIVE_LENGTH);
   if (!id || !objective || !GOAL_STATUSES.has(value.status as GoalStatus)) return null;
-  if (value.tokenBudget !== null && !positiveNumber(value.tokenBudget)) return null;
+  if (value.tokenBudget !== null && !positiveSafeInteger(value.tokenBudget)) return null;
   const wallBudget = value.wallTimeBudgetSeconds ?? null;
   if (
     wallBudget !== null &&
-    (!positiveNumber(wallBudget) || wallBudget > MAX_WALL_TIME_BUDGET_SECONDS)
+    (!positiveSafeInteger(wallBudget) || wallBudget > MAX_WALL_TIME_BUDGET_SECONDS)
   )
     return null;
   for (const counter of [value.tokensUsed, value.timeUsedSeconds, value.createdAt, value.updatedAt])
-    if (!nonNegativeNumber(counter)) return null;
+    if (!boundedNonNegativeNumber(counter)) return null;
   const activeWallTimeSeconds = value.activeWallTimeSeconds ?? 0;
   const activeSince = value.activeSince ?? null;
   const pauseReason = value.pauseReason ?? null;
   const budgetLimitReason = value.budgetLimitReason ?? null;
-  if (!nonNegativeNumber(activeWallTimeSeconds)) return null;
-  if (activeSince !== null && !nonNegativeNumber(activeSince)) return null;
+  if (!boundedNonNegativeNumber(activeWallTimeSeconds)) return null;
+  if (activeSince !== null && !boundedNonNegativeNumber(activeSince)) return null;
   if (!PAUSE_REASONS.has(pauseReason as GoalPauseReason)) return null;
   if (!BUDGET_REASONS.has(budgetLimitReason as GoalBudgetLimitReason)) return null;
   return {
@@ -281,10 +303,17 @@ export function restoreGoalState(
     const data = entry.data;
     if (!isRecord(data)) continue;
     const goal = normalizeGoalState(data.goal);
+    const parsedProgress = goal ? parseGoalProgressState(data.progress, goal.id) : null;
+    const progress =
+      goal?.status === 'active' &&
+      parsedProgress &&
+      parsedProgress.stagnationStreak >= GOAL_STAGNATION_THRESHOLD
+        ? null
+        : parsedProgress;
     return {
       goal,
       ledger: goal ? parseGoalEvidenceLedger(data.ledger, goal.id) : null,
-      progress: goal ? parseGoalProgressState(data.progress, goal.id) : null,
+      progress,
       statusBarEnabled:
         typeof data.statusBarEnabled === 'boolean'
           ? data.statusBarEnabled
@@ -348,7 +377,7 @@ function parseTokenValue(value: string | undefined): number | null {
   const match = value ? TOKEN_VALUE_PATTERN.exec(value) : null;
   if (!match) return null;
   const budget = Math.round(Number(match[1]) * tokenMultiplier(match[2]));
-  return Number.isFinite(budget) && budget > 0 ? budget : null;
+  return Number.isSafeInteger(budget) && budget > 0 ? budget : null;
 }
 
 function parseTimeValue(value: string | undefined): { seconds: number | null; error?: string } {
@@ -398,6 +427,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function positiveNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
-function nonNegativeNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+function positiveSafeInteger(value: unknown): value is number {
+  return positiveNumber(value) && Number.isSafeInteger(value);
+}
+function boundedNonNegativeNumber(value: unknown): value is number {
+  return (
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_GOAL_COUNTER
+  );
+}
+function boundedCounter(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(MAX_GOAL_COUNTER, value);
+}
+function saturatingAdd(left: number, right: number): number {
+  return Math.min(MAX_GOAL_COUNTER, boundedCounter(left) + boundedCounter(right));
 }

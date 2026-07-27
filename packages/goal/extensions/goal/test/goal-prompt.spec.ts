@@ -21,7 +21,7 @@ describe('goal prompts', () => {
       'Do not repeat completed work',
       'Do not claim completion because a budget is nearly exhausted',
       'Active wall time:',
-      'Evidence ledger:',
+      'Evidence ledger for goal goal-1:',
       'every ledger requirement is verified with evidence',
     ]) {
       expect(prompt).toContain(phrase);
@@ -32,6 +32,7 @@ describe('goal prompts', () => {
     const prompt = budgetLimitPrompt(state);
     expect(prompt).toContain('Do not begin new substantive work');
     expect(prompt).toContain('remaining requirements or blockers');
+    expect(prompt).toContain('Evidence ledger for goal goal-1:');
     expect(prompt).toContain('<untrusted_objective>');
   });
 });

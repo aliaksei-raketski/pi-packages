@@ -3,8 +3,10 @@ import { createContinuationGateController } from './controller.js';
 import {
   CONTINUATION_GATE_ACQUIRE_EVENT,
   CONTINUATION_GATE_RELEASE_EVENT,
+  CONTINUATION_GATE_RESUME_CLAIM_EVENT,
   CONTINUATION_GATE_SNAPSHOT_EVENT,
   CONTINUATION_GATE_SNAPSHOT_REQUEST_EVENT,
+  CONTINUATION_GATE_UNBLOCKED_EVENT,
   type ContinuationGate,
   type ContinuationGateProtocolHost,
 } from './protocol.js';
@@ -14,6 +16,8 @@ import {
   parseContinuationGateRelease,
   parseContinuationGateSnapshot,
   parseContinuationGateSnapshotRequest,
+  parseContinuationGateUnblocked,
+  MAX_GENERATION,
 } from './validation.js';
 
 class FakeEventBus {
@@ -96,13 +100,67 @@ describe('continuation gate payload validation', () => {
     ).toBeUndefined();
     expect(parseContinuationGateAcquire({ ...gate(), updatedAt: 99 })).toBeUndefined();
     expect(
+      parseContinuationGateUnblocked({
+        transitionId: 'transition-1',
+        sessionId: 'session-1',
+        domain: 'autonomous-continuation',
+        wakeDisposition: 'none',
+        generation: MAX_GENERATION,
+      }),
+    ).toBeUndefined();
+    expect(
+      parseContinuationGateUnblocked({
+        transitionId: 'transition-1',
+        sessionId: 'session-1',
+        domain: 'autonomous-continuation',
+        wakeDisposition: 'none',
+        generation: Number.MAX_SAFE_INTEGER,
+      }),
+    ).toBeUndefined();
+    expect(
+      parseContinuationGateUnblocked({
+        transitionId: 'transition-1',
+        sessionId: 'session-1',
+        domain: 'autonomous-continuation',
+        wakeDisposition: 'none',
+        generation: MAX_GENERATION - 1,
+      }),
+    ).toMatchObject({ generation: MAX_GENERATION - 1 });
+    expect(
       parseContinuationGateAcquire({ ...gate(), lease: { expiresAt: 100, policy: 'diagnose' } }),
+    ).toBeUndefined();
+    expect(
+      parseContinuationGateAcquire({
+        ...gate(),
+        lease: { expiresAt: Number.MAX_SAFE_INTEGER, policy: 'diagnose' },
+      }),
     ).toBeUndefined();
     expect(
       parseContinuationGateSnapshot({
         sessionId: 's',
         source: 'p',
         gates: Array.from({ length: 513 }, () => gate()),
+      }),
+    ).toBeUndefined();
+    expect(
+      parseContinuationGateSnapshot({
+        sessionId: 'session-1',
+        source: 'tmux',
+        gates: [gate(), gate()],
+      }),
+    ).toBeUndefined();
+    expect(
+      parseContinuationGateSnapshot({
+        sessionId: 'session-1',
+        source: 'tmux',
+        gates: [{ ...gate(), source: 'other' }],
+      }),
+    ).toBeUndefined();
+    expect(
+      parseContinuationGateSnapshot({
+        sessionId: 'session-1',
+        source: 'tmux',
+        gates: [{ ...gate(), updatedAt: 99 }],
       }),
     ).toBeUndefined();
     const hostile = new Proxy(
@@ -198,7 +256,7 @@ describe('controller leases and snapshots', () => {
     registry.dispose();
     controller.dispose();
   });
-  it('commits producer wake before a producer-message unblock and scopes telemetry', () => {
+  it('commits producer wake before a producer-message unblock and scopes telemetry', async () => {
     const { host } = createHost();
     const telemetry: unknown[] = [];
     const controller = createContinuationGateController(host, {
@@ -227,6 +285,8 @@ describe('controller leases and snapshots', () => {
       wake: 'producer-message',
       handoffId: handoff.handoffId,
     });
+    await Promise.resolve();
+    await Promise.resolve();
     expect(changes.at(-1)).toMatchObject({
       wakeDisposition: 'producer-message',
       handoffId: handoff.handoffId,
@@ -236,11 +296,12 @@ describe('controller leases and snapshots', () => {
     registry.dispose();
     controller.dispose();
   });
-  it('rejects auto-resume claims for invalid producer-message handoffs', () => {
+  it('rejects auto-resume claims for invalid producer-message handoffs', async () => {
     const { bus, host } = createHost();
     const unblocked: Array<{
       transitionId?: string;
       domain?: string;
+      generation?: number;
       wakeDisposition?: string;
       autoResumeAllowed?: boolean;
     }> = [];
@@ -261,6 +322,8 @@ describe('controller leases and snapshots', () => {
       handoffId: 'not-committed',
       releasedAt: 200,
     });
+    await Promise.resolve();
+    await Promise.resolve();
 
     expect(unblocked.at(-1)).toMatchObject({
       wakeDisposition: 'none',
@@ -273,11 +336,24 @@ describe('controller leases and snapshots', () => {
         sessionId: 'session-1',
         domain: transition?.domain ?? '',
         consumerId: 'goal',
+        generation: transition?.generation ?? 0,
       }),
     ).toBeUndefined();
     expect(registry.diagnostics()).toContainEqual(
       expect.objectContaining({ code: 'wake-handoff-invalid', gateId: 'process-1' }),
     );
+
+    const forgedClaim = {
+      claimId: 'forged-invalid-handoff-claim',
+      transitionId: transition?.transitionId ?? '',
+      sessionId: 'session-1',
+      domain: transition?.domain ?? '',
+      consumerId: 'forged-consumer',
+      generation: 1,
+      expiresAt: Date.now() + 60_000,
+    };
+    bus.emit(CONTINUATION_GATE_RESUME_CLAIM_EVENT, forgedClaim);
+    expect(registry.commitAutoResume(forgedClaim)).toBe(false);
     registry.dispose();
   });
 
@@ -331,7 +407,26 @@ describe('controller leases and snapshots', () => {
 });
 
 describe('registry and resume claims', () => {
-  it('replaces one source, emits one domain unblock, and has a single winner', () => {
+  it('keeps live gates when a malformed snapshot is rejected', () => {
+    const { bus, host } = createHost();
+    const registry = createContinuationGateRegistry(host);
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate());
+    bus.emitted.length = 0;
+
+    bus.emit(CONTINUATION_GATE_SNAPSHOT_EVENT, {
+      sessionId: 'session-1',
+      source: 'tmux',
+      gates: [{ ...gate(), source: 'other' }],
+    });
+
+    expect(registry.list('session-1')).toEqual([gate()]);
+    expect(
+      bus.emitted.some(({ eventName }) => eventName === 'pi-continuation-gate:unblocked'),
+    ).toBe(false);
+    registry.dispose();
+  });
+
+  it('replaces one source, emits one domain unblock, and has a single winner', async () => {
     const { bus, host } = createHost();
     const changes: string[] = [];
     const registry = createContinuationGateRegistry(host, {
@@ -349,16 +444,19 @@ describe('registry and resume claims', () => {
       wake: 'none',
       releasedAt: 200,
     });
+    await Promise.resolve();
+    await Promise.resolve();
     expect(registry.list('session-1', { domains: ['one'] })).toEqual([]);
     const unblock = bus.emitted.find(
       ({ eventName }) => eventName === 'pi-continuation-gate:unblocked',
-    )?.payload as { transitionId: string; domain: string };
+    )?.payload as { transitionId: string; domain: string; generation: number };
     expect(unblock.domain).toBe('one');
     const first = registry.claimAutoResume({
       transitionId: unblock.transitionId,
       sessionId: 'session-1',
       domain: 'one',
       consumerId: 'first',
+      generation: unblock.generation,
     });
     expect(first).toBeDefined();
     expect(
@@ -367,11 +465,12 @@ describe('registry and resume claims', () => {
         sessionId: 'session-1',
         domain: 'one',
         consumerId: 'second',
+        generation: unblock.generation,
       }),
     ).toBeUndefined();
     expect(changes).toContain('unblocked');
   });
-  it('coordinates separately installed registry copies through the shared bus', () => {
+  it('coordinates separately installed registry copies through the shared bus', async () => {
     const { bus, host } = createHost();
     const controller = createContinuationGateController(host, {
       source: 'producer',
@@ -383,16 +482,18 @@ describe('registry and resume claims', () => {
     first.requestSnapshot('s');
     expect(second.isBlocked('s')).toBe(true);
     controller.release({ sessionId: 's', gateId: 'g', outcome: 'completed', wake: 'none' });
-    const transitionId = (
-      bus.emitted
-        .filter(({ eventName }) => eventName === 'pi-continuation-gate:unblocked')
-        .slice(-1)[0]?.payload as { transitionId: string }
-    ).transitionId;
+    await Promise.resolve();
+    const unblock = bus.emitted
+      .filter(({ eventName }) => eventName === 'pi-continuation-gate:unblocked')
+      .slice(-1)[0]?.payload as { transitionId: string; generation: number };
+    const transitionId = unblock.transitionId;
+    const generation = unblock.generation;
     const claim = first.claimAutoResume({
       transitionId,
       sessionId: 's',
       domain: 'autonomous-continuation',
       consumerId: 'consumer-a',
+      generation,
     });
     expect(claim).toBeDefined();
     expect(
@@ -401,14 +502,616 @@ describe('registry and resume claims', () => {
         sessionId: 's',
         domain: 'autonomous-continuation',
         consumerId: 'consumer-b',
+        generation,
       }),
     ).toBeUndefined();
     expect(claim && first.commitAutoResume(claim)).toBe(true);
     expect(claim && second.commitAutoResume(claim)).toBe(false);
+    expect(
+      first.claimAutoResume({
+        transitionId,
+        sessionId: 's',
+        domain: 'autonomous-continuation',
+        consumerId: 'consumer-c',
+        generation,
+      }),
+    ).toBeUndefined();
     first.dispose();
     second.dispose();
     controller.dispose();
   });
+  it('arbitrates synchronous onChange claimers across registry copies', async () => {
+    const { host } = createHost();
+    const controller = createContinuationGateController(host, {
+      source: 'producer',
+      now: () => 10,
+    });
+    const winners: string[] = [];
+    let transitionId = '';
+    let generation = 0;
+    const first: ReturnType<typeof createContinuationGateRegistry> = createContinuationGateRegistry(
+      host,
+      {
+        onChange: (change) => {
+          if (
+            change.kind !== 'unblocked' ||
+            !change.transitionId ||
+            !change.domain ||
+            change.generation === undefined
+          )
+            return;
+          transitionId = change.transitionId;
+          generation = change.generation;
+          const claim = first.claimAutoResume({
+            transitionId,
+            sessionId: change.sessionId,
+            domain: change.domain,
+            consumerId: 'first-consumer',
+            generation: change.generation,
+          });
+          if (claim && first.commitAutoResume(claim)) winners.push('first');
+        },
+      },
+    );
+    const second: ReturnType<typeof createContinuationGateRegistry> =
+      createContinuationGateRegistry(host, {
+        onChange: (change) => {
+          if (
+            change.kind !== 'unblocked' ||
+            !change.transitionId ||
+            !change.domain ||
+            change.generation === undefined
+          )
+            return;
+          transitionId = change.transitionId;
+          generation = change.generation;
+          const claim = second.claimAutoResume({
+            transitionId,
+            sessionId: change.sessionId,
+            domain: change.domain,
+            consumerId: 'second-consumer',
+            generation: change.generation,
+          });
+          if (claim && second.commitAutoResume(claim)) winners.push('second');
+        },
+      });
+
+    controller.acquire({ sessionId: 's', gateId: 'g', reason: 'waiting' });
+    controller.release({ sessionId: 's', gateId: 'g', outcome: 'completed', wake: 'none' });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(winners).toHaveLength(1);
+    expect(
+      first.claimAutoResume({
+        transitionId,
+        sessionId: 's',
+        domain: 'autonomous-continuation',
+        consumerId: 'retry-after-commit',
+        generation,
+      }),
+    ).toBeUndefined();
+    first.dispose();
+    second.dispose();
+    controller.dispose();
+  });
+
+  it('arbitrates a late registry copy with a divergent local history', async () => {
+    const { bus, host } = createHost();
+    const winners: string[] = [];
+    const first = createContinuationGateRegistry(host, {
+      onChange: (change) => {
+        if (
+          change.kind !== 'unblocked' ||
+          !change.transitionId ||
+          !change.domain ||
+          change.generation === undefined
+        )
+          return;
+        const claim = first.claimAutoResume({
+          transitionId: change.transitionId,
+          sessionId: change.sessionId,
+          domain: change.domain,
+          consumerId: 'first',
+          generation: change.generation,
+        });
+        if (claim && first.commitAutoResume(claim)) winners.push('first');
+      },
+    });
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ gateId: 'first-gate' }));
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'first-transition',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'first-gate',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 200,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    winners.length = 0;
+
+    const second = createContinuationGateRegistry(host, {
+      onChange: (change) => {
+        if (
+          change.kind !== 'unblocked' ||
+          !change.transitionId ||
+          !change.domain ||
+          change.generation === undefined
+        )
+          return;
+        const claim = second.claimAutoResume({
+          transitionId: change.transitionId,
+          sessionId: change.sessionId,
+          domain: change.domain,
+          consumerId: 'second',
+          generation: change.generation,
+        });
+        if (claim && second.commitAutoResume(claim)) winners.push('second');
+      },
+    });
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ gateId: 'second-gate' }));
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'second-transition',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'second-gate',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 202,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(winners).toEqual(['first']);
+    first.dispose();
+    second.dispose();
+  });
+
+  it('arbitrates divergent registries for requestless empty snapshots', async () => {
+    const { bus, host } = createHost();
+    const winners: string[] = [];
+    const first = createContinuationGateRegistry(host, {
+      onChange: (change) => {
+        if (
+          change.kind !== 'unblocked' ||
+          !change.transitionId ||
+          !change.domain ||
+          change.generation === undefined
+        )
+          return;
+        const claim = first.claimAutoResume({
+          transitionId: change.transitionId,
+          sessionId: change.sessionId,
+          domain: change.domain,
+          consumerId: 'first',
+          generation: change.generation,
+        });
+        if (claim && first.commitAutoResume(claim)) winners.push('first');
+      },
+    });
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ gateId: 'initial-gate' }));
+    bus.emit(CONTINUATION_GATE_SNAPSHOT_EVENT, {
+      sessionId: 'session-1',
+      source: 'tmux',
+      gates: [],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    winners.length = 0;
+
+    const second = createContinuationGateRegistry(host, {
+      onChange: (change) => {
+        if (
+          change.kind !== 'unblocked' ||
+          !change.transitionId ||
+          !change.domain ||
+          change.generation === undefined
+        )
+          return;
+        const claim = second.claimAutoResume({
+          transitionId: change.transitionId,
+          sessionId: change.sessionId,
+          domain: change.domain,
+          consumerId: 'second',
+          generation: change.generation,
+        });
+        if (claim && second.commitAutoResume(claim)) winners.push('second');
+      },
+    });
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ gateId: 'current-gate' }));
+    bus.emit(CONTINUATION_GATE_SNAPSHOT_EVENT, {
+      sessionId: 'session-1',
+      source: 'tmux',
+      gates: [],
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(winners).toEqual(['first']);
+    first.dispose();
+    second.dispose();
+  });
+
+  it('arbitrates when the first registry has a lower reset generation', async () => {
+    const { bus, host } = createHost();
+    const winners: string[] = [];
+    const first = createContinuationGateRegistry(host, {
+      onChange: (change) => {
+        if (
+          change.kind !== 'unblocked' ||
+          !change.transitionId ||
+          !change.domain ||
+          change.generation === undefined
+        )
+          return;
+        const claim = first.claimAutoResume({
+          transitionId: change.transitionId,
+          sessionId: change.sessionId,
+          domain: change.domain,
+          consumerId: 'first',
+          generation: change.generation,
+        });
+        if (claim && first.commitAutoResume(claim)) winners.push('first');
+      },
+    });
+    const second = createContinuationGateRegistry(host, {
+      onChange: (change) => {
+        if (
+          change.kind !== 'unblocked' ||
+          !change.transitionId ||
+          !change.domain ||
+          change.generation === undefined
+        )
+          return;
+        const claim = second.claimAutoResume({
+          transitionId: change.transitionId,
+          sessionId: change.sessionId,
+          domain: change.domain,
+          consumerId: 'second',
+          generation: change.generation,
+        });
+        if (claim && second.commitAutoResume(claim)) winners.push('second');
+      },
+    });
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ gateId: 'initial-gate' }));
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'initial-transition',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'initial-gate',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 200,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    winners.length = 0;
+    first.clear();
+
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ gateId: 'current-gate' }));
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'current-transition',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'current-gate',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 202,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(winners).toEqual(['second']);
+    first.dispose();
+    second.dispose();
+  });
+
+  it('notifies an active lower-generation registry after passive convergence', async () => {
+    const { bus, host } = createHost();
+    const winners: string[] = [];
+    const first = createContinuationGateRegistry(host, {
+      onChange: (change) => {
+        if (
+          change.kind !== 'unblocked' ||
+          !change.transitionId ||
+          !change.domain ||
+          change.generation === undefined
+        )
+          return;
+        const claim = first.claimAutoResume({
+          transitionId: change.transitionId,
+          sessionId: change.sessionId,
+          domain: change.domain,
+          consumerId: 'first',
+          generation: change.generation,
+        });
+        if (claim && first.commitAutoResume(claim)) winners.push('first');
+      },
+    });
+    const second = createContinuationGateRegistry(host);
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ gateId: 'initial-gate' }));
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'initial-transition',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'initial-gate',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 200,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    winners.length = 0;
+    first.clear();
+
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ gateId: 'current-gate' }));
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'current-transition',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'current-gate',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 202,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(winners).toEqual(['first']);
+    first.dispose();
+    second.dispose();
+  });
+
+  it('drops stale same-tick unblock generations after gate churn', async () => {
+    const { bus, host } = createHost();
+    const unblocked: Array<{ generation?: number; transitionId?: string }> = [];
+    const registry = createContinuationGateRegistry(host, {
+      onChange: (change) => {
+        if (change.kind === 'unblocked')
+          unblocked.push({ generation: change.generation, transitionId: change.transitionId });
+      },
+    });
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate());
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'first-release',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'process-1',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 200,
+    });
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ acquiredAt: 201, updatedAt: 201 }));
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'second-release',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'process-1',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 202,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(unblocked).toEqual([{ generation: 2, transitionId: 'second-release' }]);
+    registry.dispose();
+  });
+
+  it('allows a reused transition ID only for its newer generation', async () => {
+    const { bus, host } = createHost();
+    const registry = createContinuationGateRegistry(host);
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate());
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'reused-release',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'process-1',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 200,
+    });
+    await Promise.resolve();
+    const first = bus.emitted
+      .filter(({ eventName }) => eventName === 'pi-continuation-gate:unblocked')
+      .at(-1)?.payload as { transitionId: string; generation: number };
+    const firstClaim = registry.claimAutoResume({
+      transitionId: first.transitionId,
+      sessionId: 'session-1',
+      domain: 'autonomous-continuation',
+      consumerId: 'first',
+      generation: first.generation,
+    });
+    expect(firstClaim && registry.commitAutoResume(firstClaim)).toBe(true);
+
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ acquiredAt: 201, updatedAt: 201 }));
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'reused-release',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'process-1',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 202,
+    });
+    await Promise.resolve();
+    const second = bus.emitted
+      .filter(({ eventName }) => eventName === 'pi-continuation-gate:unblocked')
+      .at(-1)?.payload as { transitionId: string; generation: number };
+
+    expect(second.generation).toBe(2);
+    expect(
+      registry.claimAutoResume({
+        transitionId: second.transitionId,
+        sessionId: 'session-1',
+        domain: 'autonomous-continuation',
+        consumerId: 'stale',
+        generation: first.generation,
+      }),
+    ).toBeUndefined();
+    const secondClaim = registry.claimAutoResume({
+      transitionId: second.transitionId,
+      sessionId: 'session-1',
+      domain: 'autonomous-continuation',
+      consumerId: 'second',
+      generation: second.generation,
+    });
+    expect(secondClaim && registry.commitAutoResume(secondClaim)).toBe(true);
+    registry.dispose();
+  });
+
+  it('stops before the rejected generation boundary', async () => {
+    const { bus, host } = createHost();
+    const generations: number[] = [];
+    const registry = createContinuationGateRegistry(host, {
+      onChange: (change) => {
+        if (change.kind === 'unblocked' && change.generation !== undefined)
+          generations.push(change.generation);
+      },
+    });
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate());
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'initial-release',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'process-1',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 200,
+    });
+    bus.emit(CONTINUATION_GATE_UNBLOCKED_EVENT, {
+      transitionId: 'initial-release',
+      sessionId: 'session-1',
+      domain: 'autonomous-continuation',
+      wakeDisposition: 'none',
+      generation: MAX_GENERATION - 1,
+    });
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ acquiredAt: 201, updatedAt: 201 }));
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'current-release',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'process-1',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 202,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(generations).not.toContain(MAX_GENERATION);
+    expect(registry.diagnostics()).toContainEqual(
+      expect.objectContaining({ code: 'generation-exhausted' }),
+    );
+    registry.dispose();
+  });
+
+  it('resets committed state for a newer remote generation', async () => {
+    const { bus, host } = createHost();
+    const registry = createContinuationGateRegistry(host);
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate());
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'reused-release',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'process-1',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 200,
+    });
+    await Promise.resolve();
+    const first = bus.emitted
+      .filter(({ eventName }) => eventName === CONTINUATION_GATE_UNBLOCKED_EVENT)
+      .at(-1)?.payload as { transitionId: string; generation: number };
+    const firstClaim = registry.claimAutoResume({
+      transitionId: first.transitionId,
+      sessionId: 'session-1',
+      domain: 'autonomous-continuation',
+      consumerId: 'first',
+      generation: first.generation,
+    });
+    expect(firstClaim && registry.commitAutoResume(firstClaim)).toBe(true);
+
+    bus.emit(CONTINUATION_GATE_UNBLOCKED_EVENT, {
+      transitionId: first.transitionId,
+      sessionId: 'session-1',
+      domain: 'autonomous-continuation',
+      wakeDisposition: 'none',
+      generation: first.generation + 1,
+    });
+
+    const secondClaim = registry.claimAutoResume({
+      transitionId: first.transitionId,
+      sessionId: 'session-1',
+      domain: 'autonomous-continuation',
+      consumerId: 'second',
+      generation: first.generation + 1,
+    });
+    expect(secondClaim).toBeDefined();
+    registry.dispose();
+  });
+
+  it('ignores hostile high generations and preserves local advancement', async () => {
+    const { bus, host } = createHost();
+    const generations: number[] = [];
+    const registry = createContinuationGateRegistry(host, {
+      onChange: (change) => {
+        if (change.kind === 'unblocked' && change.generation !== undefined)
+          generations.push(change.generation);
+      },
+    });
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate());
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'initial-release',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'process-1',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 200,
+    });
+    bus.emit(CONTINUATION_GATE_UNBLOCKED_EVENT, {
+      transitionId: 'initial-release',
+      sessionId: 'session-1',
+      domain: 'autonomous-continuation',
+      wakeDisposition: 'none',
+      generation: Number.MAX_SAFE_INTEGER,
+    });
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate({ acquiredAt: 201, updatedAt: 201 }));
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'current-release',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'process-1',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'none',
+      releasedAt: 202,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(generations).toContain(2);
+    registry.dispose();
+  });
+
   it('returns defensive nested copies and disposes listeners', () => {
     const { bus, host } = createHost();
     const registry = createContinuationGateRegistry(host);

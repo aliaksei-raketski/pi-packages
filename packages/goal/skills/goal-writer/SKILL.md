@@ -83,9 +83,9 @@ waits count; paused, terminal, budget-limited, and process-offline time do not.
   manifests, and green checks are proxy evidence unless they directly cover
   every objective requirement.
 - Plan an evidence-ledger checklist: initialize stable requirement IDs, inspect
-  the current revision, add concise evidence references and claims, and mark a
-  requirement verified only after direct inspection. Completion is rejected
-  until every ledger requirement is verified with evidence.
+  the current goal ID and revision, add concise evidence references and claims,
+  and mark a requirement verified only after direct inspection. Completion is
+  rejected until every ledger requirement is verified with evidence.
 - Separate direct evidence, proxy evidence, blocked claims, and remaining
   uncertainty.
 - Name regressions and forbidden approaches when they matter.

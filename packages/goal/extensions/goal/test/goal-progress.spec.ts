@@ -84,7 +84,7 @@ describe('goal no-progress observations', () => {
     expect(changedLedger.state.stagnationStreak).toBe(0);
   });
 
-  it('detects alternating repetition across the rolling window', () => {
+  it('resets alternating patterns because only consecutive comparisons count', () => {
     let state: GoalProgressState | null = null;
     const patterns = [
       input({
@@ -105,9 +105,9 @@ describe('goal no-progress observations', () => {
         observedAt: index + 1,
       });
       state = result.state;
-      expect(result.shouldPause).toBe(index === GOAL_STAGNATION_THRESHOLD + 1);
+      expect(result.shouldPause).toBe(false);
+      expect(result.state.stagnationStreak).toBe(0);
     }
-    expect(state?.stagnationStreak).toBe(GOAL_STAGNATION_THRESHOLD);
   });
 
   it('normalizes volatile IDs without retaining source text and bounds storage', () => {
@@ -138,6 +138,20 @@ describe('goal no-progress observations', () => {
     expect(
       parseGoalProgressState(
         { ...state, observations: [{ ...state.observations[0], summaryFingerprint: 'raw text' }] },
+        'goal-1',
+      ),
+    ).toBeNull();
+    expect(
+      parseGoalProgressState({ ...state, stagnationStreak: Number.MAX_SAFE_INTEGER }, 'goal-1'),
+    ).toBeNull();
+    expect(
+      parseGoalProgressState(
+        {
+          ...state,
+          observations: [
+            { ...state.observations[0], evidenceRevision: Number.MAX_SAFE_INTEGER + 1 },
+          ],
+        },
         'goal-1',
       ),
     ).toBeNull();

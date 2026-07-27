@@ -10,6 +10,7 @@ import {
   MAX_BLOCKER_LENGTH,
   MAX_EVIDENCE_CLAIM_LENGTH,
   MAX_EVIDENCE_REFERENCE_LENGTH,
+  MAX_GOAL_ID_LENGTH,
   MAX_GOAL_REQUIREMENTS,
   MAX_REQUIREMENT_ID_LENGTH,
   MAX_REQUIREMENT_LENGTH,
@@ -171,7 +172,7 @@ export function registerGoalTools(pi: ExtensionAPI, controller: GoalToolControll
     promptSnippet: 'Record concise, inspected evidence against active goal requirements',
     promptGuidelines: [
       'Initialize update_goal_evidence requirements before attempting to complete an active goal.',
-      'Read the current ledger revision before each update_goal_evidence mutation and record only concise evidence references and claims.',
+      'Read the current goal ID and ledger revision before each update_goal_evidence mutation and record only concise evidence references and claims.',
       'Do not store raw prompts, command output, file contents, or logs in update_goal_evidence.',
     ],
     parameters: Type.Object(
@@ -183,7 +184,8 @@ export function registerGoalTools(pi: ExtensionAPI, controller: GoalToolControll
           'set_requirement_status',
           'remove_evidence',
         ] as const),
-        expectedRevision: Type.Integer({ minimum: 0 }),
+        goalId: Type.String({ minLength: 1, maxLength: MAX_GOAL_ID_LENGTH }),
+        expectedRevision: Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
         requirements: Type.Optional(
           Type.Array(
             Type.Object(
@@ -196,7 +198,6 @@ export function registerGoalTools(pi: ExtensionAPI, controller: GoalToolControll
             { maxItems: MAX_GOAL_REQUIREMENTS },
           ),
         ),
-        replace: Type.Optional(Type.Boolean()),
         requirementId: Type.Optional(
           Type.String({ minLength: 1, maxLength: MAX_REQUIREMENT_ID_LENGTH }),
         ),
@@ -238,20 +239,20 @@ export function registerGoalTools(pi: ExtensionAPI, controller: GoalToolControll
     async execute(...[, params, , , ctx]) {
       const goal = controller.runtime.goal;
       if (goal?.status !== 'active') throw new Error('No active goal is set.');
+      if (params.goalId !== goal.id) throw new Error('Evidence update targets a different goal.');
       const mutation = evidenceMutationFromParams(params);
-      controller.runtime.ledger = mutateGoalEvidence(
-        controller.runtime.ledger,
-        goal.id,
-        mutation,
-        now(),
-      );
-      controller.persist(ctx);
-      const summary = summarizeGoalEvidence(controller.runtime.ledger);
+      const current = controller.runtime.ledger;
+      const next = mutateGoalEvidence(current, goal.id, mutation, now());
+      if (next !== current) {
+        controller.runtime.ledger = next;
+        controller.persist(ctx);
+      }
+      const summary = summarizeGoalEvidence(next);
       return {
         content: [
           {
             type: 'text',
-            text: `Evidence updated: ${formatGoalEvidenceSummary(controller.runtime.ledger)}.`,
+            text: `Evidence ${next === current ? 'unchanged' : 'updated'}: ${formatGoalEvidenceSummary(next)}.`,
           },
         ],
         details: summary,
@@ -325,47 +326,42 @@ function goalToolResult(runtime: GoalRuntime, gates: readonly ContinuationGate[]
   }));
   const compactObjective = truncateUtf8(payload.goal.objective, COMPACT_OBJECTIVE_BYTES);
   const totalRequirements = runtime.ledger?.requirements.length ?? 0;
-  let includedRequirements = totalRequirements;
+  let includedGates = compactGates.length;
 
-  while (includedRequirements >= 0) {
-    const compactLedger = runtime.ledger
-      ? {
-          ...runtime.ledger,
-          requirements: runtime.ledger.requirements.slice(0, includedRequirements),
-        }
-      : null;
+  while (includedGates >= 0) {
     const compactPayload: GoalToolPayload = {
       ...payload,
       goal: { ...payload.goal, objective: compactObjective },
-      ledger: compactLedger,
+      ledger: runtime.ledger,
       progress: runtime.progress
         ? { ...runtime.progress, observations: runtime.progress.observations.slice(-2) }
         : null,
-      gates: compactGates,
+      gates: compactGates.slice(0, includedGates),
       truncation: {
         truncated: true,
-        notice: "Goal tool output was truncated to stay within Pi's 50 KiB result limit.",
+        notice:
+          "Goal objective, progress history, and gates were compacted to stay within Pi's 50 KiB result limit; the bounded evidence ledger is complete.",
         originalResultBytes,
         maxResultBytes: MAX_GOAL_TOOL_RESULT_BYTES,
         objective: {
           totalBytes: utf8Bytes(payload.goal.objective),
           includedBytes: utf8Bytes(compactObjective),
         },
-        ledgerRequirements: { total: totalRequirements, included: includedRequirements },
-        gates: { total: gates.length, included: compactGates.length },
+        ledgerRequirements: { total: totalRequirements, included: totalRequirements },
+        gates: { total: gates.length, included: includedGates },
       },
     };
     const compactResult = toolResult(compactPayload);
     if (serializedBytes(compactResult) <= MAX_GOAL_TOOL_RESULT_BYTES) return compactResult;
-    if (includedRequirements === 0) break;
-    includedRequirements = Math.floor(includedRequirements / 2);
+    if (includedGates === 0) break;
+    includedGates = Math.floor(includedGates / 2);
   }
 
   const minimalPayload: GoalToolPayload = {
     goal: { ...payload.goal, objective: '[objective omitted: output limit]' },
     remainingTokens: payload.remainingTokens,
     remainingWallTimeSeconds: payload.remainingWallTimeSeconds,
-    ledger: null,
+    ledger: runtime.ledger,
     evidenceSummary: payload.evidenceSummary,
     progress: null,
     noProgressEnabled: payload.noProgressEnabled,
@@ -375,20 +371,25 @@ function goalToolResult(runtime: GoalRuntime, gates: readonly ContinuationGate[]
     truncation: {
       truncated: true,
       notice:
-        "Goal objective, evidence ledger, progress, and gates were omitted to stay within Pi's 50 KiB result limit.",
+        "Goal objective, progress, gates, and if necessary duplicate tool details were omitted to stay within Pi's 50 KiB result limit; the bounded evidence ledger in content is complete.",
       originalResultBytes,
       maxResultBytes: MAX_GOAL_TOOL_RESULT_BYTES,
-      ledgerRequirements: { total: totalRequirements, included: 0 },
+      ledgerRequirements: { total: totalRequirements, included: totalRequirements },
       gates: { total: gates.length, included: 0 },
     },
   };
-  return toolResult(minimalPayload);
+  const minimalResult = toolResult(minimalPayload);
+  if (serializedBytes(minimalResult) <= MAX_GOAL_TOOL_RESULT_BYTES) return minimalResult;
+  const contentOnlyResult = toolResult(minimalPayload, false);
+  if (serializedBytes(contentOnlyResult) > MAX_GOAL_TOOL_RESULT_BYTES)
+    throw new Error('Bounded goal ledger exceeded the get_goal recovery payload limit.');
+  return contentOnlyResult;
 }
 
-function toolResult<T>(payload: T) {
+function toolResult<T>(payload: T, includeDetails = true) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-    details: payload,
+    details: includeDetails ? payload : undefined,
   };
 }
 
@@ -413,9 +414,9 @@ type EvidenceToolParams = {
     | 'add_evidence'
     | 'set_requirement_status'
     | 'remove_evidence';
+  goalId: string;
   expectedRevision: number;
   requirements?: Array<{ id: string; requirement: string }>;
-  replace?: boolean;
   requirementId?: string;
   requirement?: string;
   status?: GoalRequirementStatus;
@@ -432,7 +433,6 @@ function evidenceMutationFromParams(params: EvidenceToolParams): GoalEvidenceMut
       action: params.action,
       expectedRevision: params.expectedRevision,
       requirements: params.requirements,
-      ...(params.replace === undefined ? {} : { replace: params.replace }),
     };
   }
   if (!params.requirementId) throw new Error(`requirementId is required for ${params.action}.`);
