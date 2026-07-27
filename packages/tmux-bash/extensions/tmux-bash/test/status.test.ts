@@ -59,13 +59,22 @@ describe('tmux-bash status', () => {
     });
   });
 
-  it('ignores foreground, completed, and killed commands', () => {
+  it('keeps an idle indicator after ignoring foreground, completed, and killed commands', () => {
+    expect(collectTmuxBashStatus([])).toMatchObject({
+      text: '0 bg jobs',
+      state: 'idle',
+      fallbackColor: 'muted',
+    });
     expect(
       collectTmuxBashStatus([
         run({ mode: 'foreground' }),
         run({ endedAt: 2, exitCode: 0 }),
         run({ killed: true }),
       ]),
-    ).toBeUndefined();
+    ).toMatchObject({
+      text: '0 bg jobs',
+      state: 'idle',
+      fallbackColor: 'muted',
+    });
   });
 });

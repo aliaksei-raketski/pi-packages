@@ -13,9 +13,7 @@ import {
   type TmuxBashConfig,
 } from './types.js';
 
-export function collectTmuxBashStatus(
-  commands: Iterable<CommandRun>,
-): StatuslineStatus | undefined {
+export function collectTmuxBashStatus(commands: Iterable<CommandRun>): StatuslineStatus {
   let backgroundCount = 0;
   let awaitedCount = 0;
   for (const run of commands) {
@@ -23,15 +21,21 @@ export function collectTmuxBashStatus(
     backgroundCount += 1;
     if (run.gateId) awaitedCount += 1;
   }
-  if (backgroundCount === 0) return undefined;
-
   const jobs = `${backgroundCount} bg ${backgroundCount === 1 ? 'job' : 'jobs'}`;
   return {
     key: TMUX_BASH_STATUS_KEY,
     text: awaitedCount > 0 ? `${jobs} · ${awaitedCount} awaited` : jobs,
-    state: awaitedCount > 0 ? 'awaiting' : 'running',
-    fallbackColor: awaitedCount > 0 ? 'warning' : 'accent',
+    ...statusAppearance(backgroundCount, awaitedCount),
   };
+}
+
+function statusAppearance(
+  backgroundCount: number,
+  awaitedCount: number,
+): Pick<StatuslineStatus, 'state' | 'fallbackColor'> {
+  if (awaitedCount > 0) return { state: 'awaiting', fallbackColor: 'warning' };
+  if (backgroundCount > 0) return { state: 'running', fallbackColor: 'accent' };
+  return { state: 'idle', fallbackColor: 'muted' };
 }
 
 export function updateTmuxBashStatus(

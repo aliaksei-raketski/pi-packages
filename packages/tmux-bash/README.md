@@ -177,7 +177,7 @@ Opt in to a canonical cwd scope:
 
 The package depends only on the generic continuation-gate protocol, not Pi Goal. An awaited model completion queues its producer message before releasing its gate with the committed handoff. Display/next-turn persist first and release with `wake: "none"`. Gates use the protocol's default continuation domain.
 
-Statusline publication remains load-order-independent through `@aliaksei-raketski/pi-statusline-protocol`: `N bg job(s)` is running; `N bg jobs · M awaited` is awaiting. Zero live jobs clears status. Expanded list diagnostics can show adoption, completion policy, output rotation, pending completions, and quota usage without putting raw unbounded output into status.
+Statusline publication remains load-order-independent through `@aliaksei-raketski/pi-statusline-protocol`: `N bg job(s)` is running; `N bg jobs · M awaited` is awaiting. Zero live jobs publishes a muted `0 bg jobs` status so layouts that reference `tmux-bash` remain stable. Expanded list diagnostics can show adoption, completion policy, output rotation, pending completions, and quota usage without putting raw unbounded output into status.
 
 ## Public compiled helpers
 
