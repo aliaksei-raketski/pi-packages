@@ -271,6 +271,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     maybeDeliverBudgetSummary(ctx);
     if (
       change.wakeDisposition !== 'none' ||
+      change.autoResumeAllowed !== true ||
       !change.transitionId ||
       !runtime.sessionId ||
       !eligible(ctx)
@@ -401,6 +402,7 @@ export function registerGoalRuntime(pi: ExtensionAPI): void {
     runtime.restartContinuationPending = restartContinuation;
     runtime.gateRegistry.requestSnapshot(runtime.sessionId);
     maybeDeliverBudgetSummary(ctx);
+    deferBudgetSummaryUntilNaturalTurn = false;
     if (restartContinuation) {
       if (currentGates().length > 0) return;
       if (eligible(ctx)) queueContinuation(ctx, 'restart');

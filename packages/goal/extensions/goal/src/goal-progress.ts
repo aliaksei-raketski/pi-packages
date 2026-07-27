@@ -20,6 +20,7 @@ export const GOAL_PROGRESS_WINDOW = 4;
 export const GOAL_PROGRESS_SIMILARITY = 0.9;
 export const GOAL_STAGNATION_THRESHOLD = 3;
 const MAX_SUMMARY_TOKENS = 512;
+const MIN_STAGNATION_SUMMARY_TOKENS = 3;
 const FINGERPRINT_PATTERN = /^[0-9a-f]{16}$/;
 
 export interface GoalProgressInput {
@@ -76,6 +77,8 @@ export function observeGoalProgress(
       recent.goalId === input.goalId &&
       recent.evidenceRevision === observation.evidenceRevision &&
       recent.toolPattern === observation.toolPattern &&
+      recent.summaryTokenCount >= MIN_STAGNATION_SUMMARY_TOKENS &&
+      observation.summaryTokenCount >= MIN_STAGNATION_SUMMARY_TOKENS &&
       fingerprintSimilarity(recent.summaryFingerprint, observation.summaryFingerprint) >=
         GOAL_PROGRESS_SIMILARITY,
   );

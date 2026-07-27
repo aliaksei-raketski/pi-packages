@@ -49,6 +49,7 @@ export interface ContinuationGateRegistryChange {
   transitionId?: string;
   wakeDisposition?: ContinuationGateWakeDisposition;
   handoffId?: string;
+  autoResumeAllowed?: boolean;
 }
 
 export interface ContinuationGateRegistryDiagnostic {
@@ -108,6 +109,7 @@ interface PendingSnapshot {
 }
 interface TransitionState extends ContinuationGateUnblocked {
   key: string;
+  autoResumeAllowed: boolean;
 }
 interface ClaimState {
   claim: ContinuationGateResumeClaim;
@@ -272,6 +274,7 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
     const transition = this.transitions.get(this.transitionKey(sessionId, domain, transitionId));
     if (
       !transition ||
+      !transition.autoResumeAllowed ||
       transition.sessionId !== sessionId ||
       transition.domain !== domain ||
       this.isBlocked(sessionId, { domains: [domain] })
@@ -419,6 +422,7 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
     const before = this.domainSet(release.sessionId);
     let wakeDisposition = release.wake;
     let handoffId = release.handoffId;
+    let autoResumeAllowed = true;
     if (
       release.wake === 'producer-message' &&
       (!handoffId ||
@@ -435,6 +439,7 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
       });
       wakeDisposition = 'none';
       handoffId = undefined;
+      autoResumeAllowed = false;
     }
     gates?.delete(release.gateId);
     this.prune(release.sessionId, release.source);
@@ -451,6 +456,7 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
       wakeDisposition,
       handoffId,
       transitionId: release.releaseId,
+      autoResumeAllowed,
     });
   };
 
@@ -556,6 +562,7 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
           wakeDisposition: ContinuationGateWakeDisposition;
           handoffId?: string;
           transitionId: string;
+          autoResumeAllowed?: boolean;
         }
       | undefined,
   ): void {
@@ -571,9 +578,11 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
           ...(release?.handoffId ? { handoffId: release.handoffId } : {}),
           generation: this.nextGeneration(this.domainGenerationKey(sessionId, domain)),
         };
+        const autoResumeAllowed = release?.autoResumeAllowed ?? true;
         const transition: TransitionState = {
           ...corrected,
           key: this.transitionKey(sessionId, domain, transitionId),
+          autoResumeAllowed,
         };
         this.transitions.set(transition.key, transition);
         this.notifyChange({
@@ -583,6 +592,7 @@ class EventContinuationGateRegistry implements ContinuationGateRegistry {
           transitionId,
           wakeDisposition: corrected.wakeDisposition,
           ...(corrected.handoffId ? { handoffId: corrected.handoffId } : {}),
+          autoResumeAllowed,
         });
         this.host.events.emit(CONTINUATION_GATE_UNBLOCKED_EVENT, { ...corrected });
       }

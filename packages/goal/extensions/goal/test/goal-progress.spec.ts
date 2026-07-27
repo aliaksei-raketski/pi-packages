@@ -34,6 +34,23 @@ describe('goal no-progress observations', () => {
     expect(repeated.state.stagnationStreak).toBe(GOAL_STAGNATION_THRESHOLD);
   });
 
+  it('does not infer stagnation from empty or trivial summaries', () => {
+    let state: GoalProgressState | null = null;
+    for (let index = 0; index < GOAL_STAGNATION_THRESHOLD + 2; index += 1) {
+      const result = observeGoalProgress(
+        state,
+        input({
+          observedAt: index + 1,
+          assistantText: '',
+          tools: [{ name: 'read', isError: false }],
+        }),
+      );
+      state = result.state;
+      expect(result.shouldPause).toBe(false);
+      expect(result.state.stagnationStreak).toBe(0);
+    }
+  });
+
   it('recognizes near duplicates but resets for changed tools or evidence revision', () => {
     const first = observeGoalProgress(
       null,

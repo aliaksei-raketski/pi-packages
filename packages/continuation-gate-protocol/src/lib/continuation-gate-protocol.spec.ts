@@ -236,6 +236,51 @@ describe('controller leases and snapshots', () => {
     registry.dispose();
     controller.dispose();
   });
+  it('rejects auto-resume claims for invalid producer-message handoffs', () => {
+    const { bus, host } = createHost();
+    const unblocked: Array<{
+      transitionId?: string;
+      domain?: string;
+      wakeDisposition?: string;
+      autoResumeAllowed?: boolean;
+    }> = [];
+    const registry = createContinuationGateRegistry(host, {
+      onChange: (change) => {
+        if (change.kind === 'unblocked') unblocked.push(change);
+      },
+    });
+    bus.emit(CONTINUATION_GATE_ACQUIRE_EVENT, gate());
+    bus.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'invalid-handoff-release',
+      sessionId: 'session-1',
+      source: 'tmux',
+      gateId: 'process-1',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'producer-message',
+      handoffId: 'not-committed',
+      releasedAt: 200,
+    });
+
+    expect(unblocked.at(-1)).toMatchObject({
+      wakeDisposition: 'none',
+      autoResumeAllowed: false,
+    });
+    const transition = unblocked.at(-1);
+    expect(
+      registry.claimAutoResume({
+        transitionId: transition?.transitionId ?? '',
+        sessionId: 'session-1',
+        domain: transition?.domain ?? '',
+        consumerId: 'goal',
+      }),
+    ).toBeUndefined();
+    expect(registry.diagnostics()).toContainEqual(
+      expect.objectContaining({ code: 'wake-handoff-invalid', gateId: 'process-1' }),
+    );
+    registry.dispose();
+  });
+
   it('uses one disposable timer and isolates sessions/domains', () => {
     const { host } = createHost();
     const timers: Array<() => void> = [];

@@ -16,9 +16,12 @@ import {
   mutateGoalEvidence,
   summarizeGoalEvidence,
   type GoalEvidenceKind,
+  type GoalEvidenceLedger,
   type GoalEvidenceMutation,
+  type GoalEvidenceSummary,
   type GoalRequirementStatus,
 } from './goal-evidence.ts';
+import type { GoalProgressState } from './goal-progress.ts';
 import type { GoalRuntime } from './goal-runtime-core.ts';
 import {
   createGoalState,
@@ -28,11 +31,43 @@ import {
   normalizeWallTimeBudget,
   remainingTokens,
   type GoalEventKind,
+  type GoalRestartPolicy,
   type GoalState,
   type GoalStatus,
 } from './goal-state.ts';
 
 export const ACTIVE_GOAL_TOOL_NAMES = ['get_goal', 'update_goal', 'update_goal_evidence'] as const;
+
+const MAX_GOAL_TOOL_RESULT_BYTES = 50 * 1_024;
+const COMPACT_OBJECTIVE_BYTES = 4 * 1_024;
+const COMPACT_GATE_REASON_BYTES = 256;
+const COMPACT_GATE_LIMIT = 8;
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
+
+interface GoalPayloadTruncation {
+  truncated: true;
+  notice: string;
+  originalResultBytes: number;
+  maxResultBytes: number;
+  objective?: { totalBytes: number; includedBytes: number };
+  ledgerRequirements: { total: number; included: number };
+  gates: { total: number; included: number };
+}
+
+interface GoalToolPayload {
+  goal: GoalState | null;
+  remainingTokens: number | null;
+  remainingWallTimeSeconds: number | null;
+  ledger: GoalEvidenceLedger | null;
+  evidenceSummary: GoalEvidenceSummary;
+  progress: GoalProgressState | null;
+  noProgressEnabled: boolean;
+  restartPolicy: GoalRestartPolicy;
+  pendingBudgetSummary: boolean;
+  gates: readonly ContinuationGate[];
+  truncation: GoalPayloadTruncation | null;
+}
 
 interface GoalToolController {
   runtime: GoalRuntime;
@@ -112,11 +147,7 @@ export function registerGoalTools(pi: ExtensionAPI, controller: GoalToolControll
       controller.runtime.progress = null;
       controller.replace(ctx, next);
       controller.emit('active', next, { triggerTurn: ctx.isIdle() });
-      const payload = goalPayload(controller.runtime, controller.gates(), timestamp);
-      return {
-        content: [{ type: 'text', text: JSON.stringify(payload) }],
-        details: payload,
-      };
+      return goalToolResult(controller.runtime, controller.gates(), timestamp);
     },
   });
 
@@ -128,11 +159,7 @@ export function registerGoalTools(pi: ExtensionAPI, controller: GoalToolControll
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute() {
       if (controller.runtime.goal?.status !== 'active') throw new Error('No active goal is set.');
-      const payload = goalPayload(controller.runtime, controller.gates(), now());
-      return {
-        content: [{ type: 'text', text: JSON.stringify(payload) }],
-        details: payload,
-      };
+      return goalToolResult(controller.runtime, controller.gates(), now());
     },
   });
 
@@ -255,21 +282,21 @@ export function registerGoalTools(pi: ExtensionAPI, controller: GoalToolControll
       if (errors.length > 0) throw new Error(`Goal cannot be completed:\n- ${errors.join('\n- ')}`);
       const next = controller.transition(ctx, 'complete');
       controller.emit('complete', next);
-      const payload = goalPayload(controller.runtime, controller.gates(), now());
-      return {
-        content: [{ type: 'text', text: JSON.stringify(payload) }],
-        details: payload,
-      };
+      return goalToolResult(controller.runtime, controller.gates(), now());
     },
   });
 }
 
-function goalPayload(runtime: GoalRuntime, gates: readonly ContinuationGate[], now: number) {
-  if (!runtime.goal) return { goal: null };
+function goalPayload(
+  runtime: GoalRuntime,
+  gates: readonly ContinuationGate[],
+  now: number,
+): GoalToolPayload {
+  const goal = runtime.goal;
   return {
-    goal: runtime.goal,
-    remainingTokens: remainingTokens(runtime.goal),
-    remainingWallTimeSeconds: remainingWallTime(runtime.goal, now),
+    goal,
+    remainingTokens: goal ? remainingTokens(goal) : null,
+    remainingWallTimeSeconds: goal ? remainingWallTime(goal, now) : null,
     ledger: runtime.ledger,
     evidenceSummary: summarizeGoalEvidence(runtime.ledger),
     progress: runtime.progress,
@@ -277,7 +304,106 @@ function goalPayload(runtime: GoalRuntime, gates: readonly ContinuationGate[], n
     restartPolicy: runtime.restartPolicy,
     pendingBudgetSummary: runtime.pendingBudgetSummary,
     gates,
+    truncation: null,
   };
+}
+
+function goalToolResult(runtime: GoalRuntime, gates: readonly ContinuationGate[], now: number) {
+  const payload = goalPayload(runtime, gates, now);
+  const fullResult = toolResult(payload);
+  const originalResultBytes = serializedBytes(fullResult);
+  if (originalResultBytes <= MAX_GOAL_TOOL_RESULT_BYTES || !payload.goal) return fullResult;
+
+  const compactGates = gates.slice(0, COMPACT_GATE_LIMIT).map((gate) => ({
+    sessionId: gate.sessionId,
+    source: gate.source,
+    gateId: gate.gateId,
+    domain: gate.domain,
+    reason: truncateUtf8(gate.reason, COMPACT_GATE_REASON_BYTES),
+    acquiredAt: gate.acquiredAt,
+    updatedAt: gate.updatedAt,
+  }));
+  const compactObjective = truncateUtf8(payload.goal.objective, COMPACT_OBJECTIVE_BYTES);
+  const totalRequirements = runtime.ledger?.requirements.length ?? 0;
+  let includedRequirements = totalRequirements;
+
+  while (includedRequirements >= 0) {
+    const compactLedger = runtime.ledger
+      ? {
+          ...runtime.ledger,
+          requirements: runtime.ledger.requirements.slice(0, includedRequirements),
+        }
+      : null;
+    const compactPayload: GoalToolPayload = {
+      ...payload,
+      goal: { ...payload.goal, objective: compactObjective },
+      ledger: compactLedger,
+      progress: runtime.progress
+        ? { ...runtime.progress, observations: runtime.progress.observations.slice(-2) }
+        : null,
+      gates: compactGates,
+      truncation: {
+        truncated: true,
+        notice: "Goal tool output was truncated to stay within Pi's 50 KiB result limit.",
+        originalResultBytes,
+        maxResultBytes: MAX_GOAL_TOOL_RESULT_BYTES,
+        objective: {
+          totalBytes: utf8Bytes(payload.goal.objective),
+          includedBytes: utf8Bytes(compactObjective),
+        },
+        ledgerRequirements: { total: totalRequirements, included: includedRequirements },
+        gates: { total: gates.length, included: compactGates.length },
+      },
+    };
+    const compactResult = toolResult(compactPayload);
+    if (serializedBytes(compactResult) <= MAX_GOAL_TOOL_RESULT_BYTES) return compactResult;
+    if (includedRequirements === 0) break;
+    includedRequirements = Math.floor(includedRequirements / 2);
+  }
+
+  const minimalPayload: GoalToolPayload = {
+    goal: { ...payload.goal, objective: '[objective omitted: output limit]' },
+    remainingTokens: payload.remainingTokens,
+    remainingWallTimeSeconds: payload.remainingWallTimeSeconds,
+    ledger: null,
+    evidenceSummary: payload.evidenceSummary,
+    progress: null,
+    noProgressEnabled: payload.noProgressEnabled,
+    restartPolicy: payload.restartPolicy,
+    pendingBudgetSummary: payload.pendingBudgetSummary,
+    gates: [],
+    truncation: {
+      truncated: true,
+      notice:
+        "Goal objective, evidence ledger, progress, and gates were omitted to stay within Pi's 50 KiB result limit.",
+      originalResultBytes,
+      maxResultBytes: MAX_GOAL_TOOL_RESULT_BYTES,
+      ledgerRequirements: { total: totalRequirements, included: 0 },
+      gates: { total: gates.length, included: 0 },
+    },
+  };
+  return toolResult(minimalPayload);
+}
+
+function toolResult<T>(payload: T) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    details: payload,
+  };
+}
+
+function serializedBytes(value: unknown): number {
+  return utf8Bytes(JSON.stringify(value));
+}
+
+function utf8Bytes(value: string): number {
+  return utf8Encoder.encode(value).byteLength;
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  const encoded = utf8Encoder.encode(value);
+  if (encoded.byteLength <= maxBytes) return value;
+  return `${utf8Decoder.decode(encoded.slice(0, Math.max(0, maxBytes - 3)))}…`;
 }
 
 type EvidenceToolParams = {

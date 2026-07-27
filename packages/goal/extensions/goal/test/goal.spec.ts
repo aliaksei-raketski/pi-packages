@@ -262,6 +262,46 @@ describe('goal extension', () => {
     expect(rendered).toContain('No-progress streak: 2');
   });
 
+  it('bounds aggregate goal tool results and reports omitted data', async () => {
+    await emit(harness, 'session_start', { reason: 'startup' });
+    const objective = '界'.repeat(20_000);
+    const createResult = (await harness.tools
+      .get('create_goal')
+      ?.execute('create-large', { objective }, undefined, undefined, harness.ctx)) as {
+      details: { truncation: { truncated: boolean } | null };
+    };
+    expect(new TextEncoder().encode(JSON.stringify(createResult)).byteLength).toBeLessThanOrEqual(
+      50 * 1_024,
+    );
+    expect(createResult.details.truncation).toMatchObject({ truncated: true });
+
+    for (let index = 0; index < 32; index += 1) {
+      harness.events.emit(CONTINUATION_GATE_ACQUIRE_EVENT, {
+        sessionId: 'session-1',
+        source: 'producer',
+        gateId: `large-${index}`,
+        domain: 'autonomous-continuation',
+        reason: 'x'.repeat(2_048),
+        acquiredAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    }
+    const getResult = (await harness.tools
+      .get('get_goal')
+      ?.execute('get-large', {}, undefined, undefined, harness.ctx)) as {
+      details: {
+        truncation: { truncated: boolean; gates: { total: number; included: number } } | null;
+      };
+    };
+    expect(new TextEncoder().encode(JSON.stringify(getResult)).byteLength).toBeLessThanOrEqual(
+      50 * 1_024,
+    );
+    expect(getResult.details.truncation).toMatchObject({
+      truncated: true,
+      gates: { total: 32, included: 8 },
+    });
+  });
+
   it('queues at most one continuation after Pi settles', async () => {
     await createActiveGoal(harness);
     await emit(harness, 'agent_settled');
@@ -655,6 +695,26 @@ describe('goal extension', () => {
     }
   });
 
+  it('does not auto-resume an invalid producer-message handoff normalized to wake none', async () => {
+    await createActiveGoal(harness);
+    acquireGate(harness);
+
+    harness.events.emit(CONTINUATION_GATE_RELEASE_EVENT, {
+      releaseId: 'release-invalid-handoff',
+      sessionId: 'session-1',
+      source: 'producer',
+      gateId: 'tests',
+      domain: 'autonomous-continuation',
+      outcome: 'completed',
+      wake: 'producer-message',
+      handoffId: 'not-committed',
+      releasedAt: Date.now(),
+    });
+    await Promise.resolve();
+
+    expect(harness.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('cleans up a failed auto-resume delivery so later continuation can proceed', async () => {
     await createActiveGoal(harness);
     acquireGate(harness);
@@ -765,6 +825,37 @@ describe('goal extension', () => {
       expect(
         (injection as { message?: { details?: unknown } })?.message?.details,
       ).not.toHaveProperty('ledger');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('delivers a later restore-idle deadline summary after startup deferral ends', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(10_000);
+      const restored = createGoalState(
+        'idle restore with time remaining',
+        null,
+        Date.now(),
+        () => 'restored-goal',
+        10,
+      );
+      harness.branch.push({
+        type: 'custom',
+        customType: 'pi-goal',
+        data: { goal: restored, statusBarEnabled: true, restartPolicy: 'restore-idle' },
+      });
+
+      await emit(harness, 'session_start', { reason: 'startup' });
+      await Promise.resolve();
+      expect(harness.sendMessage).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(harness.sendMessage).toHaveBeenCalledOnce();
+      expect(harness.sendMessage.mock.calls[0]?.[0]).toMatchObject({
+        details: { kind: 'budget_limited', goal: { status: 'budget_limited' } },
+      });
     } finally {
       vi.useRealTimers();
     }
