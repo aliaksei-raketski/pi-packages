@@ -54,9 +54,6 @@ export async function createCommandArtifacts(input: {
       input.config.maxArtifactBytesPerRun,
       input.config.maxSpoolBytes,
     ),
-    // Manifests, quotas, and restart adoption require structural artifacts to remain
-    // available until validated retention cleanup removes the run as one unit.
-    preserveOutputFiles: true,
     streamFile: input.streamOutput ? artifacts.streamFile : undefined,
   });
 
@@ -87,6 +84,41 @@ export async function removeUncommittedArtifacts(runDir: string, runId: string):
     if (!details || (!details.isFile() && !details.isSymbolicLink() && !details.isFIFO())) continue;
     await rm(path, { force: true });
   }
+}
+
+export async function scheduleRunArtifactCleanup(runDir: string, runId: string): Promise<void> {
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(runId)) throw new Error('Invalid tmux-bash run ID.');
+  const cleanup = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      `import { lstat, readdir, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+const root = process.env.TMUX_BASH_RUN_DIR;
+const runId = process.env.TMUX_BASH_RUN_ID;
+if (!root || !runId) process.exit(1);
+const live = join(root, runId + '.live');
+while (await lstat(live).then(() => true, (error) => {
+  if (error?.code === 'ENOENT') return false;
+  throw error;
+})) await delay(250);
+const names = await readdir(root).catch((error) => {
+  if (error?.code === 'ENOENT') return [];
+  throw error;
+});
+for (const name of names) {
+  if (name === runId || name.startsWith(runId + '.')) await rm(join(root, name), { force: true });
+}`,
+    ],
+    {
+      detached: true,
+      env: { TMUX_BASH_RUN_DIR: runDir, TMUX_BASH_RUN_ID: runId },
+      stdio: 'ignore',
+    },
+  );
+  cleanup.unref();
 }
 
 export async function scheduleRunDirectoryCleanup(runDir: string): Promise<void> {
@@ -187,7 +219,6 @@ function buildWrapperScript(
     displayCommand: string;
     environment: string[];
     maxArtifactBytesPerRun: number;
-    preserveOutputFiles: boolean;
     streamFile?: string;
   },
 ): string {
@@ -219,8 +250,6 @@ if [ -f "$cleanup_sentinel" ]; then
   if ! find "$run_dir" -name '*.live' -print -quit | grep -q .; then
     rm -rf "$run_dir"
   fi
-elif [ ${input.preserveOutputFiles ? 'true' : 'false'} != true ]; then
-  rm -f "$command_file" "$script_file" "$spool_file"
 fi
 exit "$status"
 `;

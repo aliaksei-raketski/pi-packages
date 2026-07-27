@@ -96,6 +96,22 @@ describe('TmuxClient', () => {
     await expect(client.isOwnedWindow('@123', metadata)).resolves.toBe(false);
   });
 
+  it('reports remain-on-exit panes as dead', async () => {
+    const execute = vi.fn<TmuxExecutor>(async (_binary, args) =>
+      ok(args.at(-1) === '#{pane_dead}' ? '1\n' : ''),
+    );
+    const client = new TmuxClient('tmux', execute);
+
+    await expect(client.isPaneDead('@123')).resolves.toBe(true);
+    expect(execute).toHaveBeenCalledWith('tmux', [
+      'display-message',
+      '-p',
+      '-t',
+      '@123',
+      '#{pane_dead}',
+    ]);
+  });
+
   it('sends literal input separately from fixed control keys and deletes its buffer', async () => {
     const execute = vi.fn<TmuxExecutor>(async () => ok());
     const client = new TmuxClient('tmux', execute);

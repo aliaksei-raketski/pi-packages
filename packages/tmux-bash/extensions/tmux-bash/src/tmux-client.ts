@@ -193,6 +193,19 @@ export class TmuxClient {
     return result.code === 0 && result.stdout.trim() === windowId;
   }
 
+  async isPaneDead(windowId: string): Promise<boolean> {
+    assertWindowId(windowId);
+    const result = await this.executeProcess(this.binary, [
+      'display-message',
+      '-p',
+      '-t',
+      windowId,
+      '#{pane_dead}',
+    ]);
+    if (result.code !== 0) throw tmuxError(`inspect pane ${windowId}`, result);
+    return result.stdout.trim() === '1';
+  }
+
   async isOwnedWindow(windowId: string, expected: ManagedWindowIdentity): Promise<boolean> {
     const actual = await this.getMetadata(windowId);
     return actual !== undefined && sameManagedWindowOwner(actual, expected);

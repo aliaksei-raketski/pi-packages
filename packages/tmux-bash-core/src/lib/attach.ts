@@ -15,7 +15,7 @@ export function buildAttachCommand(input: {
   assertSafeValue(input.sessionName, 'tmux session name');
 
   const args = input.insideTmux
-    ? ['select-window', '-t', input.windowId]
+    ? ['switch-client', '-t', input.sessionName, ';', 'select-window', '-t', input.windowId]
     : ['attach-session', '-t', input.sessionName, ';', 'select-window', '-t', input.windowId];
   return {
     binary: input.binary,

@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import type { TmuxBashConfig } from './types.js';
 
 const MAX_RESOURCE_ENTRIES = 100_000;
+const DEFERRED_ARTIFACT_HEADROOM_BYTES = 4 * 1024;
 
 export interface ResourceUsage {
   artifactBytes: number;
@@ -25,6 +26,13 @@ export interface CleanupCandidate {
   bytes: number;
   files: string[];
   manifest: ManagedRunManifest;
+}
+
+export class ArtifactQuotaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ArtifactQuotaError';
+  }
 }
 
 export class ResourceManager {
@@ -61,18 +69,32 @@ export class ResourceManager {
           `tmux-bash concurrent run limit (${this.config.maxConcurrentRuns}) reached. Wait for a command or run tmux cleanup-preview.`,
         );
       }
-      if (this.projectedArtifactBytes(usage) > this.config.maxArtifactBytesTotal) {
+      const needsArtifactCapacity =
+        this.projectedArtifactBytes(usage) > this.config.maxArtifactBytesTotal;
+      const needsCompletedCapacity =
+        this.projectedCompletedRuns(usage) > this.config.maxCompletedRuns;
+      if (
+        this.config.quotaPolicy === 'cleanup-completed' &&
+        (needsArtifactCapacity || needsCompletedCapacity)
+      ) {
         await this.cleanup({
           automatic: true,
+          includeYoung: true,
+          additionalRuns: 1,
           isLiveOwnedWindow: options.isCleanupProtectedWindow,
           isActiveRun: options.isActiveRun,
         });
-        const refreshed = await this.usage({ isActiveRun: options.isActiveRun });
-        if (this.projectedArtifactBytes(refreshed) > this.config.maxArtifactBytesTotal) {
-          throw new Error(
-            `tmux-bash artifact quota (${this.config.maxArtifactBytesTotal} bytes) reached. Run tmux cleanup-preview and tmux cleanup.`,
-          );
-        }
+      }
+      const refreshed = await this.usage({ isActiveRun: options.isActiveRun });
+      if (this.projectedCompletedRuns(refreshed) > this.config.maxCompletedRuns) {
+        throw new Error(
+          `tmux-bash completed run limit (${this.config.maxCompletedRuns}) reached. Run tmux cleanup-preview and tmux cleanup.`,
+        );
+      }
+      if (this.projectedArtifactBytes(refreshed) > this.config.maxArtifactBytesTotal) {
+        throw new ArtifactQuotaError(
+          `tmux-bash artifact quota (${this.config.maxArtifactBytesTotal} bytes) reached. Run tmux cleanup-preview and tmux cleanup.`,
+        );
       }
       const path = join(this.reservationsDir, `${assertRunId(runId)}.reserve`);
       try {
@@ -93,6 +115,49 @@ export class ResourceManager {
       throw new Error('Refusing to release a reservation outside the durable root.');
     }
     await rm(path, { force: true });
+  }
+
+  async validateReservationCapacity(
+    reservationPath: string,
+    options: {
+      isActiveRun?: (manifest: ManagedRunManifest) => Promise<boolean>;
+      isCleanupProtectedWindow?: (manifest: ManagedRunManifest) => Promise<boolean>;
+    } = {},
+  ): Promise<void> {
+    if (!reservationPath.startsWith(`${this.reservationsDir}/`)) {
+      throw new Error('Refusing to validate a reservation outside the durable root.');
+    }
+    await this.withReservationLock(async () => {
+      const reservation = await lstat(reservationPath).catch(() => undefined);
+      if (!reservation?.isFile() || reservation.isSymbolicLink()) {
+        throw new Error('Tmux-bash run reservation disappeared before launch.');
+      }
+      let usage = await this.usage({ isActiveRun: options.isActiveRun });
+      if (
+        this.config.quotaPolicy === 'cleanup-completed' &&
+        (this.projectedArtifactBytes(usage, 0) > this.config.maxArtifactBytesTotal ||
+          this.projectedCompletedRuns(usage, 0) > this.config.maxCompletedRuns)
+      ) {
+        await this.cleanup({
+          automatic: true,
+          includeYoung: true,
+          additionalRuns: 0,
+          isLiveOwnedWindow: options.isCleanupProtectedWindow,
+          isActiveRun: options.isActiveRun,
+        });
+        usage = await this.usage({ isActiveRun: options.isActiveRun });
+      }
+      if (this.projectedCompletedRuns(usage, 0) > this.config.maxCompletedRuns) {
+        throw new Error(
+          `tmux-bash completed run limit (${this.config.maxCompletedRuns}) reached. Run tmux cleanup-preview and tmux cleanup.`,
+        );
+      }
+      if (this.projectedArtifactBytes(usage, 0) > this.config.maxArtifactBytesTotal) {
+        throw new ArtifactQuotaError(
+          `tmux-bash artifact quota (${this.config.maxArtifactBytesTotal} bytes) reached after creating launch artifacts.`,
+        );
+      }
+    });
   }
 
   async usage(
@@ -171,6 +236,7 @@ export class ResourceManager {
       includeYoung?: boolean;
       isLiveOwnedWindow?: (manifest: ManagedRunManifest) => Promise<boolean>;
       isActiveRun?: (manifest: ManagedRunManifest) => Promise<boolean>;
+      additionalRuns?: number;
     } = {},
   ): Promise<CleanupCandidate[]> {
     const candidates = await this.preview({ includeYoung: options.includeYoung });
@@ -192,8 +258,10 @@ export class ResourceManager {
       if (options.automatic) {
         const usage = await this.usage({ isActiveRun: options.isActiveRun });
         if (
-          this.projectedArtifactBytes(usage) <= this.config.maxArtifactBytesTotal &&
-          usage.completedRuns <= this.config.maxCompletedRuns
+          this.projectedArtifactBytes(usage, options.additionalRuns ?? 0) <=
+            this.config.maxArtifactBytesTotal &&
+          this.projectedCompletedRuns(usage, options.additionalRuns ?? 0) <=
+            this.config.maxCompletedRuns
         ) {
           break;
         }
@@ -218,10 +286,15 @@ export class ResourceManager {
     return names;
   }
 
-  private projectedArtifactBytes(usage: ResourceUsage): number {
+  private projectedArtifactBytes(usage: ResourceUsage, additionalRuns = 1): number {
     const liveCapacity =
-      (usage.activeRuns + usage.reservations + 1) * this.config.maxArtifactBytesPerRun;
+      (usage.activeRuns + usage.reservations + additionalRuns) *
+      (this.config.maxArtifactBytesPerRun + DEFERRED_ARTIFACT_HEADROOM_BYTES);
     return usage.artifactBytes + liveCapacity;
+  }
+
+  private projectedCompletedRuns(usage: ResourceUsage, additionalRuns = 1): number {
+    return usage.completedRuns + usage.activeRuns + usage.reservations + additionalRuns;
   }
 
   private async withReservationLock<T>(operation: () => Promise<T>): Promise<T> {

@@ -16,7 +16,7 @@ import {
 } from '@aliaksei-raketski/pi-tmux-bash-core';
 import { createReadStream, watch, type ReadStream } from 'node:fs';
 import { access, mkdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { clampPollInterval, clampTimeout } from './config.js';
@@ -25,12 +25,13 @@ import {
   createPiSessionEnvironment,
   createUserBashEnvironment,
   removeUncommittedArtifacts,
+  scheduleRunArtifactCleanup,
 } from './command-artifacts.js';
 import { formatOutput, readExitCode, readOutput, type OutputTail } from './output.js';
 import type { BashInput } from './schemas.js';
 import { discoverAndReconcileRuns } from './adoption.js';
 import { CompletionDeliveryService } from './completion.js';
-import { ResourceManager } from './resource-manager.js';
+import { ArtifactQuotaError, ResourceManager } from './resource-manager.js';
 import { RunStore } from './run-store.js';
 import { validateInteractiveKey, validateLiteralInput } from './interactive-input.js';
 import { sanitizeTerminalText } from './sanitize.js';
@@ -63,6 +64,7 @@ export class TmuxBashSupervisor {
   private resources?: ResourceManager;
   private completion?: CompletionDeliveryService;
   private resourceScanTimer?: ReturnType<typeof setInterval>;
+  private readonly sessionArtifacts = new Map<string, string>();
 
   constructor(
     private readonly pi: ExtensionAPI,
@@ -82,6 +84,45 @@ export class TmuxBashSupervisor {
     };
   }
 
+  private runDirectory(scope: TmuxWorkspaceScope | undefined, sessionId: string): string {
+    const parent =
+      this.config.adoptionPolicy === 'same-pi-session'
+        ? this.config.durableOutputDir
+        : this.config.outputDir || this.config.durableOutputDir;
+    return scope ? join(parent, scope.hash) : join(parent, `pi-tmux-${shortHash(sessionId, 12)}`);
+  }
+
+  private async activateRunDirectory(
+    runDir: string,
+    scope: TmuxWorkspaceScope | undefined,
+  ): Promise<void> {
+    await mkdir(runDir, { recursive: true, mode: 0o700 });
+    this.state.runDir = runDir;
+    this.state.currentScope = scope;
+    const store = new RunStore(runDir);
+    const resources = new ResourceManager(runDir, this.config);
+    this.runStore = store;
+    this.resources = resources;
+    this.completion = new CompletionDeliveryService(this.pi, store, this.state.gateController);
+    await store.initialize();
+    await resources.initialize();
+  }
+
+  private async runtimeForScope(
+    scope: TmuxWorkspaceScope,
+    sessionId: string,
+  ): Promise<{ runDir: string; store: RunStore; resources: ResourceManager }> {
+    const runDir = this.runDirectory(scope, sessionId);
+    if (this.state.runDir === runDir && this.runStore && this.resources) {
+      return { runDir, store: this.runStore, resources: this.resources };
+    }
+    const store = new RunStore(runDir);
+    const resources = new ResourceManager(runDir, this.config);
+    await store.initialize();
+    await resources.initialize();
+    return { runDir, store, resources };
+  }
+
   async startSession(ctx: ExtensionContext): Promise<void> {
     if (this.state.runDir) await this.shutdown(ctx);
     this.state.disposed = false;
@@ -93,32 +134,17 @@ export class TmuxBashSupervisor {
     } catch (error) {
       if (this.config.nonGitScope === 'cwd') throw error;
     }
-    this.state.currentScope = scope;
-    const parent =
-      this.config.adoptionPolicy === 'same-pi-session'
-        ? this.config.durableOutputDir
-        : this.config.outputDir || this.config.durableOutputDir;
-    await mkdir(parent, { recursive: true, mode: 0o700 });
-    const runDir = scope
-      ? join(parent, scope.hash)
-      : join(parent, `pi-tmux-${shortHash(sessionId, 12)}`);
-    await mkdir(runDir, { recursive: true, mode: 0o700 });
-    this.state.runDir = runDir;
-    this.runStore = new RunStore(runDir);
-    this.resources = new ResourceManager(runDir, this.config);
-    this.completion = new CompletionDeliveryService(
-      this.pi,
-      this.runStore,
-      this.state.gateController,
-    );
-    await this.runStore.initialize();
-    await this.resources.initialize();
+    const runDir = this.runDirectory(scope, sessionId);
+    await this.activateRunDirectory(runDir, scope);
+    const store = this.runStore;
+    const resources = this.resources;
+    if (!store || !resources) throw new Error('tmux-bash artifact store initialization failed.');
 
     if (scope && this.config.adoptionPolicy === 'same-pi-session') {
       const adopted = await discoverAndReconcileRuns({
         config: this.config,
         tmux: this.tmux,
-        store: this.runStore,
+        store,
         sessionId,
         scope,
       });
@@ -140,7 +166,7 @@ export class TmuxBashSupervisor {
       }
     }
     if (this.config.quotaPolicy === 'cleanup-completed') {
-      await this.resources.cleanup({
+      await resources.cleanup({
         automatic: true,
         isLiveOwnedWindow: (manifest) => this.isLiveOwnedManifest(manifest),
         isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest),
@@ -179,6 +205,22 @@ export class TmuxBashSupervisor {
       await this.runStore?.persist(run).catch(() => undefined);
       this.releaseGate(run, 'abandoned', 'none');
     }
+    if (!this.config.preserveOutputFiles) {
+      for (const [runId, runDir] of this.sessionArtifacts) {
+        const run = this.state.commands.get(runId);
+        const isLive =
+          run !== undefined &&
+          !run.killed &&
+          !run.endedAt &&
+          (run.state === 'running' || run.state === 'starting');
+        if (isLive) {
+          await scheduleRunArtifactCleanup(runDir, runId).catch(() => undefined);
+        } else {
+          await removeUncommittedArtifacts(runDir, runId).catch(() => undefined);
+        }
+      }
+    }
+    this.sessionArtifacts.clear();
 
     if (ctx) updateTmuxBashStatus(this.pi, ctx, { ...this.config, statusbarEnabled: false }, []);
     this.state.runDir = null;
@@ -203,24 +245,27 @@ export class TmuxBashSupervisor {
     throwIfCancelled(signal);
     await this.tmux.checkAvailable(signal);
     throwIfCancelled(signal);
-    this.ensureWatcher();
 
+    const sessionId = ctx.sessionManager.getSessionId();
+    const scope = await resolveWorkspaceScope(this.config, ctx.cwd, signal);
+    if (this.state.currentScope && !matchesScope(this.state.currentScope, scope)) {
+      throw new Error('tmux-bash refused a command outside the active workspace scope.');
+    }
+    const scopedRunDir = this.runDirectory(scope, sessionId);
+    if (!this.state.currentScope || this.state.runDir !== scopedRunDir) {
+      await this.activateRunDirectory(scopedRunDir, scope);
+    }
     const runDir = this.state.runDir;
     const runStore = this.runStore;
     const resources = this.resources;
     if (!runDir || !runStore || !resources) {
       throw new Error('tmux-bash runtime has no artifact store.');
     }
-    const sessionId = ctx.sessionManager.getSessionId();
-    const scope = await resolveWorkspaceScope(this.config, ctx.cwd, signal);
-    if (this.state.currentScope && !matchesScope(this.state.currentScope, scope)) {
-      throw new Error('tmux-bash refused a command outside the active workspace scope.');
-    }
-    this.state.currentScope = scope;
+    this.ensureWatcher();
     throwIfCancelled(signal);
     const runId = randomUUID().replaceAll('-', '');
     const completionId = randomUUID().replaceAll('-', '');
-    const reservationPath = await this.reserveRunSlot(resources, runId);
+    const reservationPath = await this.reserveRunSlot(resources, runStore, runId);
     const tmuxSession = deriveTmuxSession(this.config, scope);
     let run: CommandRun | undefined;
     try {
@@ -232,6 +277,7 @@ export class TmuxBashSupervisor {
         config: this.config,
         env: createPiSessionEnvironment(ctx),
       });
+      this.sessionArtifacts.set(runId, runDir);
       throwIfCancelled(signal);
       const awaited = Boolean(
         input.background &&
@@ -253,6 +299,7 @@ export class TmuxBashSupervisor {
         reservationPath,
       });
       await this.registerStartingRun(run, runStore);
+      await this.validateRunSlot(resources, runStore, reservationPath);
       if (awaited) this.acquireGate(run);
 
       await this.launchStartingRun(run, runStore, resources, reservationPath, signal, input.name);
@@ -261,7 +308,7 @@ export class TmuxBashSupervisor {
     } catch (error) {
       await resources.releaseReservation(reservationPath).catch(() => undefined);
       if (run?.windowId) await this.tmux.killWindow(run.windowId).catch(() => undefined);
-      if (run) {
+      if (run && !(error instanceof ArtifactQuotaError)) {
         run.killed = signal?.aborted ?? false;
         run.endedAt = Date.now();
         run.completionClaimed = true;
@@ -270,7 +317,9 @@ export class TmuxBashSupervisor {
         this.releaseGate(run, signal?.aborted ? 'cancelled' : 'failed', 'current-turn');
         this.state.commands.delete(runId);
       } else {
+        if (run) this.state.commands.delete(runId);
         await removeUncommittedArtifacts(runDir, runId).catch(() => undefined);
+        this.sessionArtifacts.delete(runId);
       }
       this.publishStatus();
       if (signal?.aborted) throw cancelledError();
@@ -306,9 +355,24 @@ export class TmuxBashSupervisor {
     return this.waitInForeground(run, input, signal, onUpdate);
   }
 
-  private reserveRunSlot(resources: ResourceManager, runId: string): Promise<string> {
+  private reserveRunSlot(
+    resources: ResourceManager,
+    store: RunStore,
+    runId: string,
+  ): Promise<string> {
     return resources.reserve(runId, {
-      isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest),
+      isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest, store),
+      isCleanupProtectedWindow: (manifest) => this.isLiveOwnedManifest(manifest),
+    });
+  }
+
+  private validateRunSlot(
+    resources: ResourceManager,
+    store: RunStore,
+    reservationPath: string,
+  ): Promise<void> {
+    return resources.validateReservationCapacity(reservationPath, {
+      isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest, store),
       isCleanupProtectedWindow: (manifest) => this.isLiveOwnedManifest(manifest),
     });
   }
@@ -409,19 +473,16 @@ export class TmuxBashSupervisor {
     },
   ): Promise<{ exitCode: number | null }> {
     const ctx = this.state.statusContext;
-    const runDir = this.state.runDir;
-    const store = this.runStore;
-    const resources = this.resources;
-    if (!ctx || !runDir || !store || !resources || this.state.disposed) {
-      throw new Error('tmux-bash runtime is not active.');
-    }
+    if (!ctx || this.state.disposed) throw new Error('tmux-bash runtime is not active.');
     if (options.signal?.aborted) throw new Error('aborted');
     const timeoutMs = userBashTimeoutMs(options.timeout);
     const scope = await resolveWorkspaceScope(this.config, cwd, options.signal);
+    const sessionId = ctx.sessionManager.getSessionId();
+    const { runDir, store, resources } = await this.runtimeForScope(scope, sessionId);
     const displayCommand = boundedDisplayCommand(command);
     const runId = randomUUID().replaceAll('-', '');
     const completionId = randomUUID().replaceAll('-', '');
-    const reservationPath = await this.reserveRunSlot(resources, runId);
+    const reservationPath = await this.reserveRunSlot(resources, store, runId);
     let run: CommandRun | undefined;
     let outputStream: ReadStream | undefined;
     let streamDone: Promise<void> | undefined;
@@ -435,6 +496,7 @@ export class TmuxBashSupervisor {
         env: createUserBashEnvironment(options.env ?? process.env),
         streamOutput: true,
       });
+      this.sessionArtifacts.set(runId, runDir);
       if (!artifacts.streamFile) throw new Error('User bash stream FIFO was not created.');
       outputStream = createReadStream(artifacts.streamFile);
       streamDone = new Promise<void>((resolve, reject) => {
@@ -454,7 +516,7 @@ export class TmuxBashSupervisor {
         artifacts,
         runId,
         completionId,
-        sessionId: ctx.sessionManager.getSessionId(),
+        sessionId,
         scope,
         cwd,
         tmuxSession: deriveTmuxSession(this.config, scope),
@@ -466,6 +528,7 @@ export class TmuxBashSupervisor {
         reservationPath,
       });
       await this.registerStartingRun(run, store);
+      await this.validateRunSlot(resources, store, reservationPath);
       await this.launchStartingRun(
         run,
         store,
@@ -476,7 +539,7 @@ export class TmuxBashSupervisor {
       );
       const outcome = await this.waitForExit(run, timeoutMs, options.signal);
       if (outcome !== 'completed') {
-        await this.terminateForeground(run, outcome === 'aborted' ? 'cancelled' : 'failed');
+        await this.terminateForeground(run, outcome === 'aborted' ? 'cancelled' : 'failed', store);
         throw new Error(outcome === 'aborted' ? 'aborted' : `timeout:${options.timeout}`);
       }
       await streamDone;
@@ -489,11 +552,22 @@ export class TmuxBashSupervisor {
       await store.transition(run, exitCode === 0 ? 'completed' : 'failed');
       await this.closeCompletedWindow(run);
       return { exitCode: exitCode ?? null };
+    } catch (error) {
+      if (run && !run.windowId) {
+        this.state.commands.delete(run.runId);
+        await removeUncommittedArtifacts(runDir, runId).catch(() => undefined);
+        this.sessionArtifacts.delete(runId);
+        run = undefined;
+      }
+      throw error;
     } finally {
       outputStream?.destroy();
       await streamDone?.catch(() => undefined);
       if (run?.streamFile) await rm(run.streamFile, { force: true }).catch(() => undefined);
-      if (!run) await removeUncommittedArtifacts(runDir, runId).catch(() => undefined);
+      if (!run) {
+        await removeUncommittedArtifacts(runDir, runId).catch(() => undefined);
+        this.sessionArtifacts.delete(runId);
+      }
       await resources.releaseReservation(reservationPath).catch(() => undefined);
       if (run && run.state !== 'running' && run.state !== 'starting') {
         this.state.commands.delete(run.runId);
@@ -826,7 +900,11 @@ export class TmuxBashSupervisor {
     return result;
   }
 
-  private async terminateForeground(run: CommandRun, outcome: 'cancelled' | 'failed') {
+  private async terminateForeground(
+    run: CommandRun,
+    outcome: 'cancelled' | 'failed',
+    store: RunStore | undefined = this.runStore,
+  ) {
     if (run.windowId && (await this.isOwnedWindow(run))) await this.tmux.killWindow(run.windowId);
     run.killed = true;
     run.endedAt = Date.now();
@@ -834,7 +912,7 @@ export class TmuxBashSupervisor {
     run.completionClaimed = true;
     this.stopPoll(run.runId);
     this.releaseGate(run, outcome, 'current-turn');
-    await this.runStore?.transition(run, 'killed');
+    await store?.transition(run, 'killed');
     this.publishStatus();
   }
 
@@ -1391,15 +1469,23 @@ export class TmuxBashSupervisor {
     }
   }
 
-  private async isValidatedActiveManifest(manifest: ManagedRunManifest): Promise<boolean> {
+  private async isValidatedActiveManifest(
+    manifest: ManagedRunManifest,
+    store: RunStore | undefined = this.runStore,
+  ): Promise<boolean> {
     if (!manifest.windowId) return false;
     try {
+      if ((await readExitCode(manifest.exitCodeFile)) !== undefined) return false;
+      if (await this.tmux.isPaneDead(manifest.windowId)) return false;
+      const manifestPath =
+        store?.manifestPath(manifest.runId) ??
+        join(dirname(manifest.outputFile), `${manifest.runId}.manifest.json`);
       return await this.tmux.isOwnedWindow(manifest.windowId, {
         owner: TMUX_BASH_OWNERSHIP_MARKER,
         scope: manifest.scope,
         piSessionId: manifest.piSessionId,
         runId: manifest.runId,
-        manifestPath: this.runStore?.manifestPath(manifest.runId) ?? '',
+        manifestPath,
         completionId: manifest.completionId,
         completionDelivery: manifest.completionDelivery,
       });

@@ -8,7 +8,7 @@ import { createLocalBashOperations } from '@earendil-works/pi-coding-agent';
 import { shortHash, TMUX_BASH_OWNERSHIP_MARKER } from '@aliaksei-raketski/pi-tmux-bash-core';
 import { execFile, execFileSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -19,6 +19,7 @@ import { DEFAULT_TMUX_BASH_CONFIG } from '../src/config.js';
 import { readExitCode } from '../src/output.js';
 import { TmuxBashRuntime } from '../src/runtime.js';
 import { TmuxClient } from '../src/tmux-client.js';
+import { resolveWorkspaceScope } from '../src/tmux-scope.js';
 
 const execFileAsync = promisify(execFile);
 const tmuxAvailable = (() => {
@@ -260,6 +261,7 @@ suite('real tmux integration', () => {
       outputDir: directory,
       durableOutputDir: directory,
       adoptionPolicy: 'same-pi-session' as const,
+      preserveOutputFiles: true,
       tmuxSessionScope: 'global' as const,
       globalTmuxSessionName: sessionName,
       autoCloseWindowsOnCompletion: false,
@@ -425,6 +427,7 @@ suite('real tmux integration', () => {
         globalTmuxSessionName: sessionName,
         autoCloseWindowsOnCompletion: true,
         nonGitScope: 'cwd',
+        preserveOutputFiles: true,
         statusbarEnabled: false,
       },
       controller,
@@ -469,6 +472,19 @@ suite('real tmux integration', () => {
         }),
       ).resolves.toEqual({ exitCode: 0 });
       expect(emptyOutput).toEqual([]);
+
+      const routedDirectory = await mkdtemp(join(tmpdir(), 'pi-tmux-user-bash-cwd-'));
+      directories.push(routedDirectory);
+      await expect(
+        runtime.executeUserBash('true', routedDirectory, { onData: () => undefined }),
+      ).resolves.toEqual({ exitCode: 0 });
+      const routedScope = await resolveWorkspaceScope(runtime.config, routedDirectory);
+      expect(
+        (await readdir(join(directory, routedScope.hash))).some((name) =>
+          name.endsWith('.manifest.json'),
+        ),
+      ).toBe(true);
+
       await expect(
         runtime.executeUserBash('sleep 5', directory, {
           onData: () => undefined,

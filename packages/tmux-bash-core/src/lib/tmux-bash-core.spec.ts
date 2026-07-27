@@ -301,11 +301,11 @@ describe('structured attach commands', () => {
     expect(
       buildAttachCommand({
         binary: 'tmux',
-        sessionName: 'ignored-by-select',
+        sessionName: 'target-session',
         windowId: '@12',
         insideTmux: true,
       }).args,
-    ).toEqual(['select-window', '-t', '@12']);
+    ).toEqual(['switch-client', '-t', 'target-session', ';', 'select-window', '-t', '@12']);
   });
 
   it('does not need filesystem state for parsing', async () => {

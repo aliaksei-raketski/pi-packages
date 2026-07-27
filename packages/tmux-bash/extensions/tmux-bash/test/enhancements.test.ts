@@ -485,7 +485,7 @@ describe('resource reservations and cleanup', () => {
     const { root, config } = await fixtureConfig({
       maxConcurrentRuns: 10,
       maxArtifactBytesPerRun: 1_024,
-      maxArtifactBytesTotal: 2_500,
+      maxArtifactBytesTotal: 11_000,
     });
     const left = new ResourceManager(root, config);
     const right = new ResourceManager(root, config);
@@ -493,6 +493,36 @@ describe('resource reservations and cleanup', () => {
     const second = await right.reserve('artifact-right1');
     await expect(left.reserve('artifact-third1')).rejects.toThrow(/artifact quota/);
     await Promise.all([left.releaseReservation(first), right.releaseReservation(second)]);
+  });
+
+  it('rejects launches that would exceed the completed-run limit', async () => {
+    const { root, config } = await fixtureConfig({ maxCompletedRuns: 1 });
+    const store = new RunStore(root);
+    await store.initialize();
+    const completed = await createRun(root, config, 'run-complete-1', {
+      state: 'completed',
+      awaited: false,
+      endedAt: Date.now(),
+      exitCode: 0,
+    });
+    await store.persist(completed);
+
+    const resources = new ResourceManager(root, config);
+    await expect(resources.reserve('run-overflow-1')).rejects.toThrow(/completed run limit/);
+  });
+
+  it('rolls back launch capacity when structural artifacts exceed total headroom', async () => {
+    const { root, config } = await fixtureConfig({
+      maxArtifactBytesPerRun: 1_024,
+      maxArtifactBytesTotal: 5_700,
+    });
+    const resources = new ResourceManager(root, config);
+    const reservation = await resources.reserve('run-overhead-1');
+    await writeFile(join(root, 'run-overhead-1.command'), Buffer.alloc(600));
+
+    await expect(resources.validateReservationCapacity(reservation)).rejects.toThrow(
+      /after creating launch artifacts/,
+    );
   });
 
   it('previews oldest eligible runs, protects live windows, and skips symlinks', async () => {

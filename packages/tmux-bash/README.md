@@ -63,6 +63,7 @@ Adoption is off by default. Enable it only with a durable absolute directory:
 {
   "adoptionPolicy": "same-pi-session",
   "durableOutputDir": "/home/me/.pi/agent/tmux-bash",
+  "preserveOutputFiles": true,
   "adoptionScanTimeoutMs": 5000,
   "adoptPolling": true,
 }
@@ -113,7 +114,7 @@ Enable input explicitly and include the actions:
 
 The model action only presents `{ binary, args, display }`. `/tmux-attach [@id]` is the explicit user action. With no ID it selects among live in-scope runs, confirms how to return to Pi, revalidates ownership after confirmation, then temporarily stops/restarts the TUI around inherited-stdio tmux. RPC/non-TUI contexts only present the safe command.
 
-Outside tmux the argv attaches the owned session and selects the stable window. Inside tmux it uses `select-window` without shell composition. Session names are data, not executable syntax.
+Outside tmux the argv attaches the owned session and selects the stable window. Inside tmux it switches the active client to the owned session before selecting the stable window, without shell composition. Session names are data, not executable syntax.
 
 ## Optional `!` and `!!` routing
 
@@ -149,7 +150,7 @@ A filesystem lock and reservation files serialize cross-process slot checks. Sta
 
 The generated Node bounded-tee helper duplicates exact combined bytes to the tmux pane while compacting the private tail artifact in place. It never renames an open `tee` inode, preserves `PIPESTATUS[0]`, marks rotation, and keeps the file at or below `maxArtifactBytesPerRun`. Small command, wrapper, manifest, marker, and sentinel files count toward total usage.
 
-`cleanup-preview` reports bounded oldest-first candidates and reclaimable bytes. Model cleanup observes configured retention. `/tmux-cleanup` can include retained completed runs only after explicit user confirmation. Cleanup rechecks that no owned live window exists and refuses symlinks, paths outside the durable root, live runs, and unowned resources.
+`cleanup-preview` reports bounded oldest-first candidates and reclaimable bytes. With `quotaPolicy: "reject-new"`, launches reserve capacity for their eventual completed records and are rejected before `maxCompletedRuns` can be exceeded. Model cleanup observes configured retention. `/tmux-cleanup` can include retained completed runs only after explicit user confirmation. Cleanup rechecks that no owned live window exists and refuses symlinks, paths outside the durable root, live runs, and unowned resources.
 
 ## Workspace scope and non-Git fallback
 
