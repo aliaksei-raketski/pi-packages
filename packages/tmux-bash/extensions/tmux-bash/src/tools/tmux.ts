@@ -1,6 +1,10 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
-import { TMUX_PROMPT_SNIPPET } from '../prompt.js';
+import {
+  createTmuxPromptGuidelines,
+  createTmuxToolDescription,
+  TMUX_PROMPT_SNIPPET,
+} from '../prompt.js';
 import { renderTmuxCall, renderTmuxResult } from '../render.js';
 import { createTmuxInputSchema, type TmuxInput } from '../schemas.js';
 import type { TmuxBashRuntime } from '../runtime.js';
@@ -10,16 +14,9 @@ export function registerTmuxTool(pi: ExtensionAPI, runtime: TmuxBashRuntime): vo
   pi.registerTool({
     name: runtime.config.tmuxToolName,
     label: 'tmux jobs',
-    description:
-      'List, inspect, poll, await, unawait, present attach commands, send opt-in literal input, preview cleanup, clean artifacts, or kill only tmux windows managed by this extension and allowed by the configured scope. Targets are stable @-prefixed window IDs.',
+    description: createTmuxToolDescription(runtime.config),
     promptSnippet: TMUX_PROMPT_SNIPPET,
-    promptGuidelines: [
-      'Use tmux only with stable @-prefixed window IDs returned by bash or tmux list.',
-      'Tmux polling reports progress but does not implicitly await or unawait a command.',
-      'Never use tmux send-input for secrets because model tool arguments are session-visible.',
-      'Tmux attach only presents a safe command; it never suspends Pi or attaches by itself.',
-      'Use tmux cleanup-preview before cleanup; cleanup never deletes a validated live run.',
-    ],
+    promptGuidelines: runtime.config.systemPrompt ? createTmuxPromptGuidelines(runtime.config) : [],
     parameters: createTmuxInputSchema(runtime.config),
     execute: async (_toolCallId, rawParams, _signal, _onUpdate, ctx) => {
       const params = rawParams as TmuxInput;

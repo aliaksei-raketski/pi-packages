@@ -244,6 +244,6 @@ Configuration is JSONC from `$PI_TMUX_BASH_CONFIG`, or `tmux-bash.jsonc` under P
 }
 ```
 
-`maxSpoolBytes` is accepted as the direct migration alias for `maxArtifactBytesPerRun`; internal execution uses the latter. `enabledTmuxActions` narrows the public enum, and disabled interactive actions are omitted even if mistakenly listed. `environmentDenylist` defaults to `TMUX`, `TMUX_PANE`, `PWD`, `OLDPWD`, `SHLVL`, and `_`.
+`maxSpoolBytes` is accepted as the direct migration alias for `maxArtifactBytesPerRun`; internal execution uses the latter. `enabledTmuxActions` narrows the public enum, and disabled interactive actions are omitted even if mistakenly listed. Omit `enabledTmuxActions` to inherit newly added safe actions; an explicit array remains pinned until you update it. `environmentDenylist` defaults to `TMUX`, `TMUX_PANE`, `PWD`, `OLDPWD`, `SHLVL`, and `_`.
 
 Commands and input run with the user's permissions. Tmux is always invoked with argument arrays. Wrapper paths/environment values are quoted only where Bash syntax is required. Command text and output are bounded and sanitized before model/UI rendering.
