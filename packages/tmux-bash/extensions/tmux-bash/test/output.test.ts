@@ -1,9 +1,13 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { formatOutput, readOutput } from '../src/output.js';
+import { formatOutput, readExitCode, readOutput } from '../src/output.js';
+
+const execFileAsync = promisify(execFile);
 
 const directories: string[] = [];
 
@@ -55,5 +59,39 @@ describe('bounded output reads', () => {
       readBytes: 0,
       truncated: false,
     });
+  });
+
+  it('rejects symlinked output and non-regular or oversized exit sentinels without blocking', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'pi-tmux-sentinel-'));
+    directories.push(directory);
+    const target = join(directory, 'target');
+    const linkedOutput = join(directory, 'linked.out');
+    const fifo = join(directory, 'blocked.exit');
+    const exitDirectory = join(directory, 'directory.exit');
+    const oversized = join(directory, 'oversized.exit');
+    await writeFile(target, 'secret');
+    await symlink(target, linkedOutput);
+    await execFileAsync('mkfifo', ['-m', '600', fifo]);
+    await mkdir(exitDirectory);
+    await writeFile(oversized, '1'.repeat(17), { mode: 0o600 });
+
+    await expect(readOutput(linkedOutput, 1_024)).rejects.toMatchObject({ code: 'ELOOP' });
+    await expect(readExitCode(fifo)).rejects.toThrow('not a regular file');
+    await expect(readExitCode(exitDirectory)).rejects.toThrow('not a regular file');
+    await expect(readExitCode(oversized)).rejects.toThrow('exceeds 16 bytes');
+  });
+
+  it('accepts only shell exit statuses in the 0-255 range', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'pi-tmux-exit-range-'));
+    directories.push(directory);
+    const path = join(directory, 'status.exit');
+    await writeFile(path, '255\n', { mode: 0o600 });
+    await expect(readExitCode(path)).resolves.toBe(255);
+    await writeFile(path, '256\n', { mode: 0o600 });
+    await expect(readExitCode(path)).rejects.toThrow('outside the 0-255 range');
+    await writeFile(path, '-1\n', { mode: 0o600 });
+    await expect(readExitCode(path)).rejects.toThrow('malformed');
+    await writeFile(path, 'not-a-status\n', { mode: 0o600 });
+    await expect(readExitCode(path)).rejects.toThrow('malformed');
   });
 });

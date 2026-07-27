@@ -96,6 +96,17 @@ describe('TmuxClient', () => {
     await expect(client.isOwnedWindow('@123', metadata)).resolves.toBe(false);
   });
 
+  it('fails closed on ambiguous window inspection errors', async () => {
+    const execute = vi.fn<TmuxExecutor>(async () => ({
+      stdout: '',
+      stderr: 'permission denied',
+      code: 1,
+    }));
+    const client = new TmuxClient('tmux', execute);
+
+    await expect(client.hasWindow('@123')).rejects.toThrow('inspect window');
+  });
+
   it('reports remain-on-exit panes as dead', async () => {
     const execute = vi.fn<TmuxExecutor>(async (_binary, args) =>
       ok(args.at(-1) === '#{pane_dead}' ? '1\n' : ''),

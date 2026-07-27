@@ -75,48 +75,61 @@ function manifest(overrides: Partial<ManagedRunManifest> = {}): ManagedRunManife
 describe('workspace scopes and names', () => {
   it('prefers and canonicalizes a Git root', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tmux-core-'));
-    const nested = join(directory, 'nested');
-    await mkdir(nested);
-    const scope = await resolveTmuxWorkspaceScope(nested, {
-      resolveGitRoot: async () => directory,
-      realpath,
-    });
-    expect(scope).toEqual({
-      kind: 'git-root',
-      root: directory,
-      hash: shortHash(directory),
-      displayName: directory.split('/').at(-1),
-    });
+    try {
+      const nested = join(directory, 'nested');
+      await mkdir(nested);
+      const scope = await resolveTmuxWorkspaceScope(nested, {
+        resolveGitRoot: async () => directory,
+        realpath,
+      });
+      expect(scope).toEqual({
+        kind: 'git-root',
+        root: directory,
+        hash: shortHash(directory),
+        displayName: directory.split('/').at(-1),
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('requires opt-in before using a canonical cwd scope', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tmux-core-'));
-    const host = { resolveGitRoot: async () => undefined, realpath };
-    await expect(resolveTmuxWorkspaceScope(directory, host)).rejects.toThrow('Git worktree');
-    const scope = await resolveTmuxWorkspaceScope(directory, host, { nonGitScope: 'cwd' });
-    expect(scope.kind).toBe('cwd');
-    expect(scope.root).toBe(directory);
+    try {
+      const host = { resolveGitRoot: async () => undefined, realpath };
+      await expect(resolveTmuxWorkspaceScope(directory, host)).rejects.toThrow('Git worktree');
+      const scope = await resolveTmuxWorkspaceScope(directory, host, { nonGitScope: 'cwd' });
+      expect(scope.kind).toBe('cwd');
+      expect(scope.root).toBe(directory);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('canonicalizes symlinked cwd scopes and rejects deleted or inaccessible paths', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'tmux-core-symlink-'));
-    const actual = join(parent, 'actual');
-    const linked = join(parent, 'linked');
-    await mkdir(actual);
-    await symlink(actual, linked);
-    const host = { resolveGitRoot: async () => undefined, realpath };
-    const scope = await resolveTmuxWorkspaceScope(linked, host, { nonGitScope: 'cwd' });
-    expect(scope.root).toBe(actual);
-    const renamed = join(parent, 'renamed');
-    await rename(actual, renamed);
-    await expect(resolveTmuxWorkspaceScope(actual, host, { nonGitScope: 'cwd' })).rejects.toThrow();
-    const renamedScope = await resolveTmuxWorkspaceScope(renamed, host, { nonGitScope: 'cwd' });
-    expect(renamedScope.root).toBe(renamed);
-    expect(renamedScope.hash).not.toBe(scope.hash);
-    await expect(
-      resolveTmuxWorkspaceScope(join(parent, 'missing'), host, { nonGitScope: 'cwd' }),
-    ).rejects.toThrow();
-    await rm(parent, { recursive: true, force: true });
+    try {
+      const actual = join(parent, 'actual');
+      const linked = join(parent, 'linked');
+      await mkdir(actual);
+      await symlink(actual, linked);
+      const host = { resolveGitRoot: async () => undefined, realpath };
+      const scope = await resolveTmuxWorkspaceScope(linked, host, { nonGitScope: 'cwd' });
+      expect(scope.root).toBe(actual);
+      const renamed = join(parent, 'renamed');
+      await rename(actual, renamed);
+      await expect(
+        resolveTmuxWorkspaceScope(actual, host, { nonGitScope: 'cwd' }),
+      ).rejects.toThrow();
+      const renamedScope = await resolveTmuxWorkspaceScope(renamed, host, { nonGitScope: 'cwd' });
+      expect(renamedScope.root).toBe(renamed);
+      expect(renamedScope.hash).not.toBe(scope.hash);
+      await expect(
+        resolveTmuxWorkspaceScope(join(parent, 'missing'), host, { nonGitScope: 'cwd' }),
+      ).rejects.toThrow();
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
   });
 
   it('isolates same-basename cwd scopes and derives hash-based sessions', async () => {
@@ -166,6 +179,17 @@ describe('manifest parser', () => {
     expect(() => parseManagedRunManifest(incomplete, { artifactRoot: root })).toThrow(
       'continuationDomain',
     );
+  });
+
+  it('uses one leading-alphanumeric identifier grammar across manifests and metadata', () => {
+    expect(() =>
+      parseManagedRunManifest(manifest({ runId: '________' }), { artifactRoot: root }),
+    ).toThrow();
+    expect(() =>
+      parseManagedWindowMetadata(
+        Object.fromEntries(managedWindowMetadataEntries({ ...metadata, runId: '________' })),
+      ),
+    ).toThrow();
   });
 
   it('rejects traversal, mismatched IDs, NULs, and inconsistent timestamps', () => {
@@ -308,10 +332,24 @@ describe('structured attach commands', () => {
     ).toEqual(['switch-client', '-t', 'target-session', ';', 'select-window', '-t', '@12']);
   });
 
+  it('accepts absolute binary paths containing spaces as argv data', () => {
+    expect(
+      buildAttachCommand({
+        binary: '/opt/tmux builds/tmux',
+        sessionName: 'target-session',
+        windowId: '@12',
+      }).binary,
+    ).toBe('/opt/tmux builds/tmux');
+  });
+
   it('does not need filesystem state for parsing', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'tmux-core-artifacts-'));
-    const output = join(directory, 'run-12345678.out');
-    await writeFile(output, 'output');
-    expect(output).toContain(directory);
+    try {
+      const output = join(directory, 'run-12345678.out');
+      await writeFile(output, 'output');
+      expect(output).toContain(directory);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

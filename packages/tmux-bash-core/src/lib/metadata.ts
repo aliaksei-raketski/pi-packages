@@ -119,7 +119,8 @@ function requireIdentifier(
   key: string,
 ): string {
   const value = requireValue(options, key);
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(value)) throw new Error(`Invalid tmux option ${key}.`);
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(value))
+    throw new Error(`Invalid tmux option ${key}.`);
   return value;
 }
 

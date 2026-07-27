@@ -36,6 +36,28 @@ describe('tmux-bash extension', () => {
     expect(pi.on).not.toHaveBeenCalledWith('user_bash', expect.any(Function));
     expect(setIntervalSpy).not.toHaveBeenCalled();
 
+    const theme = { fg: (_color: string, text: string) => text };
+    const entryRenderers = pi.registerEntryRenderer.mock.calls.map((call) => call[1]);
+    expect(entryRenderers).toHaveLength(2);
+    for (const renderer of entryRenderers) {
+      expect(() => renderer({ data: null }, { expanded: false }, theme).render(200)).not.toThrow();
+      const rendered = renderer(
+        {
+          data: {
+            runId: `unsafe\u001b]0;title\u0007${'r'.repeat(500)}`,
+            summary: `summary\u001b]52;c;YQ==\u0007${'s'.repeat(4_000)}`,
+          },
+        },
+        { expanded: false },
+        theme,
+      )
+        .render(4_000)
+        .map((line: string) => line.trimEnd())
+        .join('\n');
+      expect(rendered).not.toContain('\u001b');
+      expect(rendered.length).toBeLessThan(2_300);
+    }
+
     const tmuxTool = pi.registerTool.mock.calls
       .map((call) => call[0])
       .find((tool) => tool.name === 'tmux');

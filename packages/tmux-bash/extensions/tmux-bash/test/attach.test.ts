@@ -149,7 +149,7 @@ describe('/tmux-cleanup', () => {
 
     ctx.ui.confirm.mockResolvedValueOnce(true);
     await commands.get('tmux-cleanup')?.handler('', ctx);
-    expect(runtime.cleanup).toHaveBeenCalledWith(ctx, true);
+    expect(runtime.cleanup).toHaveBeenCalledWith(ctx, true, ['run-1']);
     expect(ctx.ui.notify).toHaveBeenCalledWith('removed one candidate', 'info');
   });
 });

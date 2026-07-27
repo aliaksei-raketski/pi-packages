@@ -28,16 +28,15 @@ export function registerTmuxCleanupCommands(pi: ExtensionAPI, runtime: TmuxBashR
           ctx.ui.notify('tmux cleanup requires an interactive confirmation.', 'warning');
           return;
         }
-        const count = summary?.candidateCount ?? candidates.length;
-        const bytes =
-          summary?.reclaimableBytes ??
-          candidates.reduce((total, candidate) => total + candidate.bytes, 0);
+        const approvedRunIds = candidates.map((candidate) => candidate.runId);
+        const count = candidates.length;
+        const bytes = candidates.reduce((total, candidate) => total + candidate.bytes, 0);
         const confirmed = await ctx.ui.confirm(
-          `Remove ${count} inactive tmux run(s)?`,
+          `Remove ${count}${summary?.truncated ? ' shown' : ''} inactive tmux run(s)?`,
           `This will reclaim approximately ${bytes} bytes. Live and unowned resources are always protected.`,
         );
         if (!confirmed) return;
-        const result = await runtime.cleanup(ctx, true);
+        const result = await runtime.cleanup(ctx, true, approvedRunIds);
         const text =
           result.content[0]?.type === 'text' ? result.content[0].text : 'Cleanup finished.';
         ctx.ui.notify(text, 'info');

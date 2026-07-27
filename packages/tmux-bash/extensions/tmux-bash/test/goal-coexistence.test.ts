@@ -193,11 +193,34 @@ async function startScenario(commandCount: number) {
   goal(lifecycle.pi as never);
   const controller = createContinuationGateController(lifecycle.pi, { source: 'pi-tmux-bash' });
   let nextWindowId = 70;
-  const execute = vi.fn<TmuxExecutor>(async (_binary, args) => ({
-    stdout: args[0] === 'new-window' ? `@${nextWindowId++}\n` : '',
-    stderr: '',
-    code: 0,
-  }));
+  const metadata = new Map<string, string>();
+  const windows: string[] = [];
+  const execute = vi.fn<TmuxExecutor>(async (_binary, args) => {
+    if (args[0] === 'new-window') {
+      const windowId = `@${nextWindowId++}`;
+      windows.push(windowId);
+      return { stdout: `${windowId}\n`, stderr: '', code: 0 };
+    }
+    if (args[0] === 'set-option') {
+      metadata.set(`${args[3]}:${args[4]}`, args[5] ?? '');
+      return { stdout: '', stderr: '', code: 0 };
+    }
+    if (args[0] === 'list-windows') {
+      return { stdout: `${windows.join('\n')}\n`, stderr: '', code: 0 };
+    }
+    if (args[0] === 'show-options') {
+      const value = metadata.get(`${args[4]}:${args[5]}`);
+      return value === undefined
+        ? { stdout: '', stderr: 'missing option', code: 1 }
+        : { stdout: `${value}\n`, stderr: '', code: 0 };
+    }
+    if (args[0] === 'display-message') {
+      return args.at(-1) === '#{window_id}'
+        ? { stdout: `${args[3]}\n`, stderr: '', code: 0 }
+        : { stdout: '0\n', stderr: '', code: 0 };
+    }
+    return { stdout: '', stderr: '', code: 0 };
+  });
   const runtime = new TmuxBashRuntime(
     lifecycle.pi as never,
     {

@@ -1,19 +1,22 @@
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { createReadStream } from 'node:fs';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createCommandArtifacts,
   createPiSessionEnvironment,
   removeUncommittedArtifacts,
+  scheduleRunArtifactCleanup,
   scheduleRunDirectoryCleanup,
   shellQuote,
 } from '../src/command-artifacts.js';
 import { DEFAULT_TMUX_BASH_CONFIG } from '../src/config.js';
+import { readOutput } from '../src/output.js';
 
 const execFileAsync = promisify(execFile);
 const directories: string[] = [];
@@ -158,6 +161,33 @@ describe('command artifacts', () => {
     await expect(readFile(artifacts.rotationMarkerFile)).resolves.toBeInstanceOf(Buffer);
   });
 
+  it('reconstructs a chronological tail while the circular spool is still live', async () => {
+    const runDir = await mkdtemp(join(tmpdir(), 'tmux-artifacts-live-ring-'));
+    directories.push(runDir);
+    const artifacts = await createCommandArtifacts({
+      runDir,
+      runId: 'liverng123',
+      command: `${shellQuote(process.execPath)} -e ${shellQuote("process.stdout.write('A'.repeat(700)); setTimeout(() => { process.stdout.write('B'.repeat(700)); setTimeout(() => {}, 500); }, 100)")}`,
+      displayCommand: 'produce live ring output',
+      config: { ...DEFAULT_TMUX_BASH_CONFIG, maxSpoolBytes: 1_024 },
+    });
+    const child = execFile(artifacts.scriptFile, []);
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (await stat(artifacts.rotationMarkerFile).catch(() => undefined)) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const live = await readOutput(artifacts.outputFile, 1_024);
+    expect(live.totalBytes).toBeGreaterThan(1_024);
+    expect(live.content.endsWith('B'.repeat(700))).toBe(true);
+    await new Promise<void>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+    });
+    const finalized = await readOutput(artifacts.outputFile, 1_024);
+    expect(finalized.totalBytes).toBeGreaterThan(1_024);
+    expect(finalized.content.endsWith('B'.repeat(700))).toBe(true);
+  });
+
   it('streams exact user-bash bytes through its FIFO without including the display header', async () => {
     const runDir = await mkdtemp(join(tmpdir(), 'tmux-artifacts-stream-'));
     directories.push(runDir);
@@ -198,10 +228,42 @@ describe('command artifacts', () => {
       config: DEFAULT_TMUX_BASH_CONFIG,
     });
     const unrelated = join(runDir, 'unrelated-safe');
+    const prefixedNotes = join(runDir, 'rollback123.notes');
     await writeFile(unrelated, 'keep');
+    await writeFile(prefixedNotes, 'keep notes');
     await removeUncommittedArtifacts(runDir, 'rollback123');
     await expect(stat(artifacts.commandFile)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(unrelated, 'utf8')).resolves.toBe('keep');
+    await expect(readFile(prefixedNotes, 'utf8')).resolves.toBe('keep notes');
+  });
+
+  it('contains and reports cleanup child process error events', async () => {
+    const runDir = await mkdtemp(join(tmpdir(), 'tmux-artifacts-child-error-'));
+    directories.push(runDir);
+    const initialChild = fakeCleanupChild();
+    const initialSpawn = vi.fn(() => initialChild);
+    const initialError = vi.fn();
+    const initial = scheduleRunDirectoryCleanup(runDir, {
+      spawn: initialSpawn,
+      onError: initialError,
+    });
+    await vi.waitFor(() => expect(initialSpawn).toHaveBeenCalledOnce());
+    const launchFailure = new Error('spawn failed asynchronously');
+    initialChild.emit('error', launchFailure);
+    await expect(initial).rejects.toThrow('spawn failed asynchronously');
+    expect(initialError).toHaveBeenCalledWith(launchFailure);
+
+    const runningChild = fakeCleanupChild();
+    const runningError = vi.fn();
+    const running = scheduleRunArtifactCleanup(runDir, 'cleanup123', {
+      spawn: vi.fn(() => runningChild),
+      onError: runningError,
+    });
+    runningChild.emit('spawn');
+    await running;
+    const lateFailure = new Error('detached cleanup failed');
+    expect(() => runningChild.emit('error', lateFailure)).not.toThrow();
+    expect(runningError).toHaveBeenCalledWith(lateFailure);
   });
 
   it('removes retained artifacts after a live command exits', async () => {
@@ -243,3 +305,7 @@ describe('command artifacts', () => {
     );
   });
 });
+
+function fakeCleanupChild(): ChildProcess {
+  return Object.assign(new EventEmitter(), { unref: vi.fn() }) as unknown as ChildProcess;
+}

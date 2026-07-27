@@ -16,6 +16,7 @@ export const TMUX_BASH_METADATA_KEYS = {
 
 export const MANAGED_RUN_MANIFEST_FIELDS = [
   'runId',
+  'origin',
   'completionId',
   'piSessionId',
   'scope',
@@ -36,6 +37,8 @@ export const MANAGED_RUN_MANIFEST_FIELDS = [
   'continuationDomain',
   'completionDelivery',
   'deliveryState',
+  'completionDeliveryAttempts',
+  'completionDeliveryExhausted',
   'polling',
   'outputWasRotated',
   'updatedAt',

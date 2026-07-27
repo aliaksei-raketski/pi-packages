@@ -7,6 +7,7 @@ import type { ContinuationGateController } from '@aliaksei-raketski/pi-continuat
 import type {
   CompletionDelivery,
   CompletionDeliveryState,
+  ManagedRunOrigin,
   ManagedRunState,
   TmuxWorkspaceScope,
 } from '@aliaksei-raketski/pi-tmux-bash-core';
@@ -108,6 +109,7 @@ export interface CommandArtifacts {
 
 export interface CommandRun extends CommandArtifacts {
   runId: string;
+  origin?: ManagedRunOrigin;
   completionId: string;
   sessionId: string;
   scope: TmuxWorkspaceScope;
@@ -130,9 +132,12 @@ export interface CommandRun extends CommandArtifacts {
   completionDelivered: boolean;
   completionClaimed: boolean;
   completionPromise?: Promise<AgentToolResult<TmuxBashDetails> | undefined>;
+  completionObserverPromise?: Promise<void>;
   completionRetryTimer?: ReturnType<typeof setTimeout>;
+  lastPaneHealthCheckAt?: number;
   completionDeliveryFailures: number;
   completionDeliveryFailed: boolean;
+  completionDeliveryExhausted?: boolean;
   killed: boolean;
   adopted: boolean;
   outputWasRotated: boolean;

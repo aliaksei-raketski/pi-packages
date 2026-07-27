@@ -123,7 +123,7 @@ Outside tmux the argv attaches the owned session and selects the stable window. 
 - `event.cwd` is honored for each command;
 - stdout/stderr bytes are forwarded in order;
 - normal non-zero status is returned as the actual exit code;
-- timeout and cancellation kill the foreground owned window;
+- timeout and cancellation kill the foreground owned window when termination can be confirmed; if ownership or termination cannot be revalidated, the command remains monitored in the background and the result reports that uncertainty;
 - no continuation gate, poller, background completion, or synthetic message is created;
 - `PI_SESSION_ID`, session file, provider/model, and reasoning variables are removed;
 - Pi still owns `!!` context exclusion because the extension returns standard operations/results.

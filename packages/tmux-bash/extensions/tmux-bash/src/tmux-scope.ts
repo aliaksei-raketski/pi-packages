@@ -21,9 +21,14 @@ async function resolveGitRoot(cwd: string, signal?: AbortSignal): Promise<string
       signal,
     });
     return stdout.trim() || undefined;
-  } catch {
+  } catch (error) {
     if (signal?.aborted) throw cancelledError();
-    return undefined;
+    const stderr =
+      typeof error === 'object' && error !== null && 'stderr' in error
+        ? String((error as { stderr?: unknown }).stderr ?? '')
+        : '';
+    if (/not a git repository|not a work tree/i.test(stderr)) return undefined;
+    throw error;
   }
 }
 

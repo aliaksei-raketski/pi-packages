@@ -4,7 +4,7 @@ import {
   CONTINUATION_GATE_SNAPSHOT_EVENT,
   createContinuationGateController,
 } from '@aliaksei-raketski/pi-continuation-gate-protocol';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_TMUX_BASH_CONFIG } from '../src/config.js';
 import { TmuxBashRuntime } from '../src/runtime.js';
 import { TmuxClient, type TmuxExecutor } from '../src/tmux-client.js';
-import { TMUX_BASH_DISPLAY_COMPLETION } from '../src/types.js';
+import { TMUX_BASH_DISPLAY_COMPLETION, TMUX_BASH_PENDING_COMPLETION } from '../src/types.js';
 
 class EventBus {
   private handlers = new Map<string, Set<(payload: unknown) => void>>();
@@ -92,6 +92,78 @@ describe('TmuxBashRuntime', () => {
     expect(result.details.usage).toMatchObject({ activeRuns: 0, reservations: 0 });
     controller.dispose();
     await rm(root, { recursive: true, force: true });
+  });
+
+  it('bounds list and list-polls model-visible output and run details', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tmux-list-bounded-'));
+    const events = new EventBus();
+    const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
+    const controller = createContinuationGateController(pi as never, { source: 'pi-tmux-bash' });
+    const fakeTmux = managedTmux('@99');
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        outputDir: root,
+        durableOutputDir: root,
+        statusbarEnabled: false,
+      },
+      controller,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(runtime);
+    const context = fakeContext();
+    await runtime.startSession(context as never);
+    const started = await runtime.executeBash(
+      { command: 'sleep 10', background: true },
+      undefined,
+      undefined,
+      context as never,
+    );
+    const base = runtime.state.commands.get(started.details?.runId ?? '');
+    if (!base) throw new Error('Expected base run.');
+    const sharedTimer = setInterval(() => undefined, 60_000);
+    for (let index = 0; index < 2_500; index += 1) {
+      const runId = `bounded-${String(index).padStart(4, '0')}`;
+      const clone = {
+        ...base,
+        runId,
+        completionId: `completion-${runId}`,
+        windowId: `@${index + 100}`,
+        state: 'completed' as const,
+        endedAt: Date.now(),
+        exitCode: 0,
+        killed: false,
+        completionDelivered: true,
+        completionClaimed: true,
+        completionDeliveryFailed: false,
+        deliveryState: 'delivered' as const,
+        displayCommand: 'x'.repeat(4_096),
+        command: 'x'.repeat(4_096),
+      };
+      runtime.state.commands.set(runId, clone);
+      runtime.state.pollers.set(runId, {
+        key: clone.windowId,
+        timer: sharedTimer,
+        runId,
+        intervalSeconds: 30,
+        lines: 80,
+        lastOutput: '',
+      });
+    }
+
+    const listed = await runtime.listResult(context as never);
+    const listText = listed.content[0]?.type === 'text' ? listed.content[0].text : '';
+    expect(Buffer.byteLength(listText)).toBeLessThanOrEqual(64 * 1024);
+    expect(listText).toContain('additional line(s) omitted');
+    expect(listed.details.runs.length).toBeLessThanOrEqual(100);
+    expect(listed.details.runs[0]?.command.length).toBeLessThanOrEqual(512);
+
+    const polls = await runtime.listPollsResult(context as never);
+    const pollText = polls.content[0]?.type === 'text' ? polls.content[0].text : '';
+    expect(Buffer.byteLength(pollText)).toBeLessThanOrEqual(64 * 1024);
+    expect(pollText).toContain('additional line(s) omitted');
+    controller.dispose();
   });
 
   it('removes this session artifacts on shutdown when preservation is disabled', async () => {
@@ -174,7 +246,7 @@ describe('TmuxBashRuntime', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it('rolls back a launch whose generated artifacts exceed total quota', async () => {
+  it('rejects a launch whose structural artifacts exceed the bounded quota headroom', async () => {
     const root = await mkdtemp(join(tmpdir(), 'tmux-launch-quota-'));
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
@@ -188,7 +260,7 @@ describe('TmuxBashRuntime', () => {
         outputDir: root,
         durableOutputDir: root,
         maxArtifactBytesPerRun: 1_024,
-        maxArtifactBytesTotal: 7_000,
+        maxArtifactBytesTotal: 38_000,
         statusbarEnabled: false,
       },
       controller,
@@ -200,12 +272,12 @@ describe('TmuxBashRuntime', () => {
 
     await expect(
       runtime.executeBash(
-        { command: `printf %s ${'x'.repeat(3_000)}`, background: true },
+        { command: `printf %s ${'x'.repeat(40_000)}`, background: true },
         undefined,
         undefined,
         context as never,
       ),
-    ).rejects.toThrow(/after creating launch artifacts/);
+    ).rejects.toThrow(/structural limit/);
     const runDir = runtime.state.runDir;
     if (!runDir) throw new Error('Expected an active run directory.');
     expect((await readdir(runDir)).filter((name) => name !== '.reservations')).toEqual([]);
@@ -331,6 +403,246 @@ describe('TmuxBashRuntime', () => {
     expect(messages).toHaveLength(1);
   });
 
+  it('does not let passive list reconciliation consume a next-turn completion', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tmux-passive-completion-'));
+    const events = new EventBus();
+    const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
+    const context = fakeContext();
+    const controller = createContinuationGateController(pi as never, { source: 'pi-tmux-bash' });
+    const fakeTmux = managedTmux('@77');
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        outputDir: root,
+        durableOutputDir: root,
+        statusbarEnabled: false,
+      },
+      controller,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(runtime);
+    await runtime.startSession(context as never);
+    const started = await runtime.executeBash(
+      {
+        command: 'sleep 1',
+        background: true,
+        waitForCompletion: true,
+        completionDelivery: 'next-turn',
+      },
+      undefined,
+      undefined,
+      context as never,
+    );
+    const run = runtime.state.commands.get(started.details?.runId ?? '');
+    if (!run) throw new Error('Expected registered command run.');
+    runtime.state.watcher?.close();
+    runtime.state.watcher = null;
+    if (runtime.state.completionMonitor) clearInterval(runtime.state.completionMonitor);
+    runtime.state.completionMonitor = null;
+    const manifestWithoutWindow = JSON.parse(await readFile(run.manifestPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    delete manifestWithoutWindow.windowId;
+    const internals = runtime as unknown as {
+      completeIfReady(value: typeof run, deliver: boolean): Promise<unknown>;
+      isLiveOwnedManifest(value: typeof manifestWithoutWindow): Promise<boolean>;
+    };
+    await expect(internals.isLiveOwnedManifest(manifestWithoutWindow)).resolves.toBe(true);
+    await writeFile(run.outputFile, '$ sleep 1\ndone\n');
+    await writeFile(run.exitCodeFile, '0\n');
+
+    await runtime.listResult(context as never);
+
+    expect(run.completionDelivered).toBe(false);
+    expect(run.deliveryState).toBe('pending');
+    expect(pi.appendEntry).not.toHaveBeenCalled();
+    expect(controller.list('session-1')).toHaveLength(1);
+
+    await internals.completeIfReady(run, true);
+    expect(pi.appendEntry).toHaveBeenCalledWith(
+      TMUX_BASH_PENDING_COMPLETION,
+      expect.objectContaining({ runId: run.runId }),
+    );
+    expect(controller.list('session-1')).toHaveLength(0);
+    controller.dispose();
+  });
+
+  it('reconciles a sentinel before kill without transitioning the completed run to killed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tmux-kill-completion-race-'));
+    const events = new EventBus();
+    const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
+    const context = fakeContext();
+    const controller = createContinuationGateController(pi as never, { source: 'pi-tmux-bash' });
+    const fakeTmux = managedTmux('@78');
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        outputDir: root,
+        durableOutputDir: root,
+        autoCloseWindowsOnCompletion: false,
+        statusbarEnabled: false,
+      },
+      controller,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(runtime);
+    await runtime.startSession(context as never);
+    const started = await runtime.executeBash(
+      { command: 'sleep 1', background: true, waitForCompletion: true },
+      undefined,
+      undefined,
+      context as never,
+    );
+    const run = runtime.state.commands.get(started.details?.runId ?? '');
+    if (!run?.windowId) throw new Error('Expected registered command run.');
+    runtime.state.watcher?.close();
+    runtime.state.watcher = null;
+    if (runtime.state.completionMonitor) clearInterval(runtime.state.completionMonitor);
+    runtime.state.completionMonitor = null;
+    await writeFile(run.outputFile, '$ sleep 1\ndone\n');
+    await writeFile(run.exitCodeFile, '0\n');
+    await runtime.listResult(context as never);
+
+    const result = await runtime.kill(run.windowId, context as never);
+
+    expect(result.content[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('it was not killed'),
+    });
+    expect(run.state).toBe('completed');
+    expect(run.killed).toBe(false);
+    expect(fakeTmux.execute.mock.calls.some(([, args]) => args[0] === 'kill-window')).toBe(false);
+    expect(controller.list('session-1')).toHaveLength(0);
+    controller.dispose();
+  });
+
+  it('contains an actual watcher error event and keeps monitor fallback active', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tmux-watcher-emitter-error-'));
+    const events = new EventBus();
+    const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
+    const context = fakeContext();
+    const controller = createContinuationGateController(pi as never, { source: 'pi-tmux-bash' });
+    const fakeTmux = managedTmux('@79');
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        outputDir: root,
+        durableOutputDir: root,
+        statusbarEnabled: false,
+      },
+      controller,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(runtime);
+    await runtime.startSession(context as never);
+    await runtime.executeBash(
+      { command: 'sleep 1', background: true },
+      undefined,
+      undefined,
+      context as never,
+    );
+    const watcher = runtime.state.watcher;
+    if (!watcher) throw new Error('Expected completion watcher.');
+
+    expect(() => watcher.emit('error', new Error('watch backend failed'))).not.toThrow();
+
+    expect(runtime.state.watcher).toBeNull();
+    expect(runtime.state.completionMonitor).not.toBeNull();
+    expect(context.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining('completion watcher failed'),
+      'error',
+    );
+    controller.dispose();
+  });
+
+  it('contains invalid-sentinel observer failures, terminates the run, and releases its gate', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tmux-observer-failure-'));
+    const events = new EventBus();
+    const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
+    const context = fakeContext();
+    const controller = createContinuationGateController(pi as never, { source: 'pi-tmux-bash' });
+    const fakeTmux = managedTmux('@78');
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        outputDir: root,
+        durableOutputDir: root,
+        statusbarEnabled: false,
+      },
+      controller,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(runtime);
+    await runtime.startSession(context as never);
+    const started = await runtime.executeBash(
+      { command: 'sleep 1', background: true, waitForCompletion: true },
+      undefined,
+      undefined,
+      context as never,
+    );
+    const run = runtime.state.commands.get(started.details?.runId ?? '');
+    if (!run) throw new Error('Expected registered command run.');
+    await mkdir(run.exitCodeFile);
+
+    await vi.waitFor(() => {
+      expect(run.completionDeliveryFailed).toBe(true);
+      expect(context.ui.notify).toHaveBeenCalledWith(
+        expect.stringContaining('completion observer failed'),
+        'error',
+      );
+    });
+    expect(controller.list('session-1')).toHaveLength(0);
+    expect(run.state).toBe('failed');
+    expect(run.endedAt).toBeTypeOf('number');
+    expect(fakeTmux.execute.mock.calls.some(([, args]) => args[0] === 'kill-window')).toBe(true);
+    expect(context.ui.notify).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it('terminates a foreground run when an existing exit sentinel is malformed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tmux-foreground-invalid-sentinel-'));
+    const events = new EventBus();
+    const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
+    const context = fakeContext();
+    const controller = createContinuationGateController(pi as never, { source: 'pi-tmux-bash' });
+    const fakeTmux = managedTmux('@80');
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        outputDir: root,
+        durableOutputDir: root,
+        statusbarEnabled: false,
+      },
+      controller,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(runtime);
+    await runtime.startSession(context as never);
+    const executing = runtime.executeBash(
+      { command: 'sleep 10' },
+      undefined,
+      undefined,
+      context as never,
+    );
+    await vi.waitFor(() => expect(runtime.state.commands.size).toBe(1));
+    const run = [...runtime.state.commands.values()][0];
+    if (!run) throw new Error('Expected foreground run.');
+    await writeFile(run.exitCodeFile, 'invalid\n');
+
+    await expect(executing).rejects.toThrow('monitoring failed');
+    expect(run.state).toBe('killed');
+    expect(run.endedAt).toBeTypeOf('number');
+    expect(fakeTmux.execute.mock.calls.some(([, args]) => args[0] === 'kill-window')).toBe(true);
+    expect(controller.list('session-1')).toHaveLength(0);
+    controller.dispose();
+  });
+
   it('releases the gate and retries after completion follow-up delivery fails', async () => {
     const events = new EventBus();
     const releases: Array<{ wake?: string }> = [];
@@ -348,17 +660,13 @@ describe('TmuxBashRuntime', () => {
       },
     };
     const context = fakeContext();
-    const execute = vi.fn<TmuxExecutor>(async (_binary, args) => ({
-      stdout: args[0] === 'new-window' ? '@78\n' : '',
-      stderr: '',
-      code: 0,
-    }));
+    const fakeTmux = managedTmux('@78');
     const controller = createContinuationGateController(pi, { source: 'pi-tmux-bash' });
     const runtime = new TmuxBashRuntime(
       pi as never,
       { ...DEFAULT_TMUX_BASH_CONFIG, statusbarEnabled: false },
       controller,
-      new TmuxClient('tmux', execute),
+      new TmuxClient('tmux', fakeTmux.execute),
     );
     activeRuntimes.push(runtime);
     await runtime.startSession(context as never);
@@ -384,6 +692,65 @@ describe('TmuxBashRuntime', () => {
     expect(controller.list('session-1')).toHaveLength(0);
   });
 
+  it('protects terminal artifacts while completion delivery is pending retry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tmux-retry-cleanup-'));
+    const events = new EventBus();
+    let attempts = 0;
+    const pi = {
+      events,
+      sendMessage: () => {
+        attempts += 1;
+        throw new Error('delivery unavailable');
+      },
+      appendEntry: vi.fn(),
+    };
+    const context = fakeContext();
+    const fakeTmux = managedTmux('@81');
+    const controller = createContinuationGateController(pi, { source: 'pi-tmux-bash' });
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        outputDir: root,
+        durableOutputDir: root,
+        completionDeliveryRetryBaseMs: 5_000,
+        completedArtifactRetentionSeconds: 0,
+        statusbarEnabled: false,
+      },
+      controller,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(runtime);
+    await runtime.startSession(context as never);
+    const started = await runtime.executeBash(
+      { command: 'echo done', background: true },
+      undefined,
+      undefined,
+      context as never,
+    );
+    const run = runtime.state.commands.get(started.details?.runId ?? '');
+    if (!run) throw new Error('Expected registered command run.');
+    await writeFile(run.outputFile, '$ echo done\ndone\n');
+    await writeFile(run.exitCodeFile, '0\n');
+    await vi.waitFor(() => {
+      expect(attempts).toBe(1);
+      expect(run.deliveryState).toBe('pending');
+      expect(run.completionRetryTimer).toBeDefined();
+    });
+
+    const cleanup = await runtime.cleanup(context as never, true);
+
+    expect(cleanup.content[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('No eligible artifacts'),
+    });
+    await expect(readFile(run.manifestPath, 'utf8')).resolves.toContain(
+      '"deliveryState":"pending"',
+    );
+    expect(runtime.state.commands.has(run.runId)).toBe(true);
+    controller.dispose();
+  });
+
   it('stops retrying and reports one terminal notification after permanent delivery failure', async () => {
     const events = new EventBus();
     let attempts = 0;
@@ -395,11 +762,7 @@ describe('TmuxBashRuntime', () => {
       },
     };
     const context = fakeContext();
-    const execute = vi.fn<TmuxExecutor>(async (_binary, args) => ({
-      stdout: args[0] === 'new-window' ? '@79\n' : '',
-      stderr: '',
-      code: 0,
-    }));
+    const fakeTmux = managedTmux('@79');
     const runtime = new TmuxBashRuntime(
       pi as never,
       {
@@ -409,7 +772,7 @@ describe('TmuxBashRuntime', () => {
         statusbarEnabled: false,
       },
       createContinuationGateController(pi, { source: 'pi-tmux-bash' }),
-      new TmuxClient('tmux', execute),
+      new TmuxClient('tmux', fakeTmux.execute),
     );
     activeRuntimes.push(runtime);
     await runtime.startSession(context as never);
@@ -436,9 +799,11 @@ describe('TmuxBashRuntime', () => {
       expect.stringContaining('after 3 attempts'),
       'error',
     );
+    expect(fakeTmux.execute.mock.calls.some(([, args]) => args[0] === 'kill-window')).toBe(true);
   });
 
-  it('cancels a pending completion retry during shutdown', async () => {
+  it('preserves pending completion artifacts for same-session adoption during shutdown', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tmux-shutdown-pending-'));
     const events = new EventBus();
     let attempts = 0;
     const pi = {
@@ -449,20 +814,20 @@ describe('TmuxBashRuntime', () => {
       },
     };
     const context = fakeContext();
-    const execute = vi.fn<TmuxExecutor>(async (_binary, args) => ({
-      stdout: args[0] === 'new-window' ? '@80\n' : '',
-      stderr: '',
-      code: 0,
-    }));
+    const fakeTmux = managedTmux('@80');
     const runtime = new TmuxBashRuntime(
       pi as never,
       {
         ...DEFAULT_TMUX_BASH_CONFIG,
+        outputDir: root,
+        durableOutputDir: root,
+        adoptionPolicy: 'same-pi-session',
+        preserveOutputFiles: false,
         completionDeliveryRetryBaseMs: 50,
         statusbarEnabled: false,
       },
       createContinuationGateController(pi, { source: 'pi-tmux-bash' }),
-      new TmuxClient('tmux', execute),
+      new TmuxClient('tmux', fakeTmux.execute),
     );
     activeRuntimes.push(runtime);
     await runtime.startSession(context as never);
@@ -483,6 +848,8 @@ describe('TmuxBashRuntime', () => {
     await new Promise((resolve) => setTimeout(resolve, 150));
 
     expect(attempts).toBe(1);
+    await expect(readFile(run.manifestPath, 'utf8')).resolves.toContain('"deliveryState":"failed"');
+    await rm(root, { recursive: true, force: true });
   });
 
   it('bounds poll updates and reports an unowned awaited window before releasing its gate', async () => {
@@ -609,7 +976,6 @@ describe('TmuxBashRuntime', () => {
       undefined,
       context as never,
     );
-    expect(result.terminate).not.toBe(true);
     expect(controller.list('session-1')).toHaveLength(0);
     expect(result.details?.completionDelivery).toBe('next-turn');
     expect(result.terminate).not.toBe(true);

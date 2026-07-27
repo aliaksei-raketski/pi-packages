@@ -491,6 +491,7 @@ suite('real tmux integration', () => {
           timeout: 0.05,
         }),
       ).rejects.toThrow('timeout:0.05');
+      expect(runtime.state.commands.size).toBe(0);
       const abort = new AbortController();
       const cancelled = runtime.executeUserBash('sleep 5', directory, {
         onData: () => undefined,
@@ -498,6 +499,7 @@ suite('real tmux integration', () => {
       });
       setTimeout(() => abort.abort(), 50);
       await expect(cancelled).rejects.toThrow('aborted');
+      expect(runtime.state.commands.size).toBe(0);
       expect(gateEvents).toEqual([]);
       expect(runtime.state.pollers.size).toBe(0);
       expect(pi.sendMessage).not.toHaveBeenCalled();

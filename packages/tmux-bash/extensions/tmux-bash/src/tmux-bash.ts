@@ -7,6 +7,7 @@ import { registerTmuxCleanupCommands } from './cleanup-command.js';
 import { loadTmuxBashConfig } from './config.js';
 import { createTmuxGateController } from './gate-integration.js';
 import { TmuxBashRuntime } from './runtime.js';
+import { sanitizeTerminalText } from './sanitize.js';
 import { collectTmuxBashStatus } from './status.js';
 import { registerBashTool } from './tools/bash.js';
 import { registerTmuxTool } from './tools/tmux.js';
@@ -29,22 +30,15 @@ export function tmuxBash(pi: ExtensionAPI) {
   registerTmuxCleanupCommands(pi, runtime);
 
   pi.registerMessageRenderer(TMUX_BASH_COMPLETION_MESSAGE, (message, options, theme) => {
-    const fullContent = messageText(message.content);
+    const fullContent = boundedText(messageText(message.content), 8_000);
     const content = options.expanded ? fullContent : compact(fullContent, 12);
     return new Text(theme.fg('accent', content), 0, 0);
   });
   for (const entryType of [TMUX_BASH_DISPLAY_COMPLETION, TMUX_BASH_PENDING_COMPLETION]) {
     pi.registerEntryRenderer(entryType, (entry, _options, theme) => {
-      const data = entry.data as { runId?: string; summary?: string; state?: string };
+      const data = safeEntryData(entry.data);
       const label = entryType === TMUX_BASH_PENDING_COMPLETION ? 'pending next turn' : 'display';
-      return new Text(
-        theme.fg(
-          'accent',
-          `[tmux ${label}] ${data.runId ?? 'run'}: ${data.summary ?? data.state ?? ''}`,
-        ),
-        0,
-        0,
-      );
+      return new Text(theme.fg('accent', `[tmux ${label}] ${data.runId}: ${data.summary}`), 0, 0);
     });
   }
 
@@ -88,12 +82,37 @@ export function tmuxBash(pi: ExtensionAPI) {
   });
 }
 
-function messageText(content: string | Array<{ type: string; text?: string }>): string {
+function messageText(content: unknown): string {
   if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
   return content
-    .filter((item): item is { type: string; text: string } => typeof item.text === 'string')
+    .filter(
+      (item): item is { text: string } =>
+        typeof item === 'object' && item !== null && typeof Reflect.get(item, 'text') === 'string',
+    )
     .map((item) => item.text)
     .join('\n');
+}
+
+function safeEntryData(value: unknown): { runId: string; summary: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return { runId: 'run', summary: '' };
+  }
+  const runId = Reflect.get(value, 'runId');
+  const summary = Reflect.get(value, 'summary');
+  const state = Reflect.get(value, 'state');
+  return {
+    runId: typeof runId === 'string' ? boundedText(runId.replaceAll('\n', ' '), 128) : 'run',
+    summary: boundedText(
+      compact(typeof summary === 'string' ? summary : typeof state === 'string' ? state : '', 12),
+      2_000,
+    ),
+  };
+}
+
+function boundedText(value: string, maximum: number): string {
+  const sanitized = sanitizeTerminalText(value);
+  return sanitized.length <= maximum ? sanitized : `${sanitized.slice(0, maximum - 1)}…`;
 }
 
 function compact(value: string, maxLines: number): string {

@@ -3,6 +3,9 @@ import { parseManagedWindowMetadata, type ManagedWindowMetadata } from './metada
 import { sameTmuxWorkspaceScope, type TmuxWorkspaceScope } from './scope.js';
 import { assertWindowId } from './attach.js';
 
+const MISSING_TMUX_VALUE_PATTERN =
+  /^(?:missing|unknown option|invalid option(?::|$)|no such option|option .* (?:does not exist|not found)|can't find (?:window|session)|no server running)/i;
+
 export interface TmuxCommandResult {
   stdout: string;
   stderr: string;
@@ -57,7 +60,13 @@ export async function listManagedTmuxWindows(
         options.signal,
       );
       assertBoundedResult(result, maximum);
-      if (result.code === 0) values[key] = stripOneNewline(result.stdout);
+      if (result.code === 0) {
+        values[key] = stripOneNewline(result.stdout);
+      } else if (!MISSING_TMUX_VALUE_PATTERN.test(result.stderr)) {
+        throw new Error(
+          `Failed to read tmux window option ${key}: ${boundedMessage(result.stderr, maximum)}`,
+        );
+      }
     }
     let metadata: ManagedWindowMetadata;
     try {

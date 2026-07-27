@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import {
   CONTINUATION_GATE_RELEASE_EVENT,
   createContinuationGateController,
@@ -9,6 +10,7 @@ import {
 import { lstat, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { discoverAndReconcileRuns } from '../src/adoption.js';
@@ -25,6 +27,7 @@ import {
   type TmuxBashConfig,
 } from '../src/types.js';
 
+const execFileAsync = promisify(execFile);
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -136,6 +139,56 @@ describe('durable run store and adoption', () => {
     await expect(store.loadAll({ signal: controller.signal })).rejects.toThrow('scan deadline');
   });
 
+  it('rejects FIFO and oversized manifests without letting an in-progress scan block', async () => {
+    const { root } = await fixtureConfig();
+    const store = new RunStore(root);
+    await store.initialize();
+    const fifo = join(root, 'run-fifo-1234.manifest.json');
+    const oversized = join(root, 'run-huge-1234.manifest.json');
+    await execFileAsync('mkfifo', ['-m', '600', fifo]);
+    await writeFile(oversized, 'x'.repeat(256 * 1024 + 1), { mode: 0o600 });
+
+    const loaded = await Promise.race([
+      store.loadAll(),
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error('manifest scan blocked')), 1_000),
+      ),
+    ]);
+
+    expect(loaded.manifests).toEqual([]);
+    expect(loaded.diagnostics.map((item) => item.reason).join('\n')).toMatch(
+      /regular file|exceeds 262144 bytes/,
+    );
+  });
+
+  it('rejects alternate artifact paths and canonical artifact symlinks', async () => {
+    const { root, config } = await fixtureConfig();
+    const store = new RunStore(root);
+    await store.initialize();
+    const run = await createRun(root, config, 'run-paths-1234');
+    await store.persist(run);
+    const manifest = JSON.parse(await readFile(run.manifestPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    const alternate = join(root, 'alternate.out');
+    await writeFile(alternate, 'safe alternate', { mode: 0o600 });
+    manifest.outputFile = alternate;
+    await writeFile(run.manifestPath, `${JSON.stringify(manifest)}\n`, { mode: 0o600 });
+
+    let loaded = await store.loadAll();
+    expect(loaded.manifests).toEqual([]);
+    expect(loaded.diagnostics[0]?.reason).toContain('canonical run artifact path');
+
+    manifest.outputFile = run.outputFile;
+    await rm(run.outputFile);
+    await symlink(alternate, run.outputFile);
+    await writeFile(run.manifestPath, `${JSON.stringify(manifest)}\n`, { mode: 0o600 });
+    loaded = await store.loadAll();
+    expect(loaded.manifests).toEqual([]);
+    expect(loaded.diagnostics[0]?.reason).toMatch(/symlink|ELOOP/);
+  });
+
   it('rejects malformed, permissive, and symlinked manifests', async () => {
     const { root } = await fixtureConfig();
     const store = new RunStore(root);
@@ -162,6 +215,7 @@ describe('durable run store and adoption', () => {
     const complete = await createRun(root, config, 'run-done-1234', { windowId: '@78' });
     const orphan = await createRun(root, config, 'run-orphan-12', { windowId: '@79' });
     const changed = await createRun(root, config, 'run-changed-12', { windowId: '@80' });
+    const invalidSentinel = await createRun(root, config, 'run-invalid-12', { windowId: '@82' });
     const other = await createRun(root, config, 'run-other-123', {
       sessionId: 'session-other',
       windowId: '@81',
@@ -174,9 +228,12 @@ describe('durable run store and adoption', () => {
       deliveryState: 'queued',
     });
     await Promise.all(
-      [live, complete, orphan, changed, other, crashedAfterQueue].map((run) => store.persist(run)),
+      [live, complete, orphan, changed, invalidSentinel, other, crashedAfterQueue].map((run) =>
+        store.persist(run),
+      ),
     );
     await writeFile(complete.exitCodeFile, '7\n', { mode: 0o600 });
+    await writeFile(invalidSentinel.exitCodeFile, 'invalid\n', { mode: 0o600 });
 
     const windows = [
       { windowId: '@77', metadata: windowMetadata(live) },
@@ -185,8 +242,14 @@ describe('durable run store and adoption', () => {
         metadata: { ...windowMetadata(changed), completionId: 'different-completion' },
       },
       { windowId: '@81', metadata: windowMetadata(other) },
+      { windowId: '@82', metadata: windowMetadata(invalidSentinel) },
     ];
-    const tmux = { listManaged: vi.fn(async () => windows) };
+    const tmux = {
+      listManaged: vi.fn(async () => windows),
+      isOwnedWindow: vi.fn(async () => true),
+      isPaneDead: vi.fn(async () => false),
+      killWindow: vi.fn(async () => undefined),
+    };
     const adopted = await discoverAndReconcileRuns({
       config,
       tmux: tmux as never,
@@ -203,9 +266,170 @@ describe('durable run store and adoption', () => {
       ]),
     );
     expect(adopted.orphaned.map((run) => run.runId).sort()).toEqual(
-      [changed.runId, orphan.runId].sort(),
+      [changed.runId, invalidSentinel.runId, orphan.runId].sort(),
     );
+    expect(tmux.killWindow).toHaveBeenCalledWith(invalidSentinel.windowId, expect.any(AbortSignal));
+    expect(adopted.diagnostics.join('\n')).toContain('invalid exit sentinel');
     expect(adopted.live.some((run) => run.sessionId === 'session-other')).toBe(false);
+  });
+
+  it('does not adopt a persisted user-bash run into model-facing completion', async () => {
+    const { root, config } = await fixtureConfig();
+    const store = new RunStore(root);
+    await store.initialize();
+    const userBash = await createRun(root, config, 'run-user-bash1', {
+      origin: 'user-bash',
+      windowId: '@82',
+    });
+    await store.persist(userBash);
+    const killWindow = vi.fn(async () => undefined);
+    const adopted = await discoverAndReconcileRuns({
+      config,
+      tmux: {
+        listManaged: vi.fn(async () => [{ windowId: '@82', metadata: windowMetadata(userBash) }]),
+        isOwnedWindow: vi.fn(async () => true),
+        isPaneDead: vi.fn(async () => false),
+        killWindow,
+      } as never,
+      store,
+      sessionId: userBash.sessionId,
+      scope: userBash.scope,
+    });
+
+    expect(adopted.live).toEqual([]);
+    expect(adopted.completed).toEqual([]);
+    expect(adopted.orphaned.map((run) => run.runId)).toEqual([userBash.runId]);
+    expect(killWindow).toHaveBeenCalledWith('@82', expect.any(AbortSignal));
+    expect(adopted.diagnostics.join('\n')).toContain('originated from user-bash');
+  });
+
+  it('contains a malformed sentinel created during dead-pane reconciliation', async () => {
+    const { root, config } = await fixtureConfig();
+    const store = new RunStore(root);
+    await store.initialize();
+    const dead = await createRun(root, config, 'run-race-sentinel', { windowId: '@84' });
+    await store.persist(dead);
+    const killWindow = vi.fn(async () => undefined);
+    const adopted = await discoverAndReconcileRuns({
+      config,
+      tmux: {
+        listManaged: vi.fn(async () => [{ windowId: '@84', metadata: windowMetadata(dead) }]),
+        isOwnedWindow: vi.fn(async () => true),
+        isPaneDead: vi.fn(async () => {
+          await writeFile(dead.exitCodeFile, 'not-an-exit-code');
+          return true;
+        }),
+        killWindow,
+      } as never,
+      store,
+      sessionId: dead.sessionId,
+      scope: dead.scope,
+    });
+
+    expect(adopted.live).toEqual([]);
+    expect(adopted.orphaned.map((run) => run.runId)).toEqual([dead.runId]);
+    expect(killWindow).toHaveBeenCalledWith('@84', expect.any(AbortSignal));
+    expect(adopted.diagnostics.join('\n')).toContain('invalid exit sentinel');
+  });
+
+  it('skips delivered user-bash history after closing a leftover owned pane', async () => {
+    const { root, config } = await fixtureConfig();
+    const store = new RunStore(root);
+    await store.initialize();
+    const historical = await createRun(root, config, 'run-user-hist1', {
+      origin: 'user-bash',
+      state: 'completed',
+      endedAt: Date.now(),
+      exitCode: 0,
+      deliveryState: 'delivered',
+      completionClaimed: true,
+      completionDelivered: true,
+      windowId: '@85',
+    });
+    await store.persist(historical);
+    const killWindow = vi.fn(async () => undefined);
+    const adopted = await discoverAndReconcileRuns({
+      config,
+      tmux: {
+        listManaged: vi.fn(async () => [{ windowId: '@85', metadata: windowMetadata(historical) }]),
+        isOwnedWindow: vi.fn(async () => true),
+        killWindow,
+      } as never,
+      store,
+      sessionId: historical.sessionId,
+      scope: historical.scope,
+    });
+
+    expect(adopted.live).toEqual([]);
+    expect(adopted.completed).toEqual([]);
+    expect(adopted.orphaned).toEqual([]);
+    expect(killWindow).toHaveBeenCalledWith('@85', expect.any(AbortSignal));
+  });
+
+  it('closes all metadata-exact historical panes without touching changed-owner duplicates', async () => {
+    const { root, config } = await fixtureConfig();
+    const store = new RunStore(root);
+    await store.initialize();
+    const historical = await createRun(root, config, 'run-historical-1', {
+      state: 'completed',
+      endedAt: Date.now(),
+      exitCode: 0,
+      deliveryState: 'delivered',
+      completionClaimed: true,
+      completionDelivered: true,
+      windowId: '@90',
+    });
+    await store.persist(historical);
+    const killWindow = vi.fn(async () => undefined);
+    const exact = windowMetadata(historical);
+    const changed = { ...exact, completionId: 'different-completion' };
+    const adopted = await discoverAndReconcileRuns({
+      config,
+      tmux: {
+        listManaged: vi.fn(async () => [
+          { windowId: '@91', metadata: changed },
+          { windowId: '@90', metadata: exact },
+          { windowId: '@92', metadata: exact },
+        ]),
+        isOwnedWindow: vi.fn(async () => true),
+        killWindow,
+      } as never,
+      store,
+      sessionId: historical.sessionId,
+      scope: historical.scope,
+    });
+
+    expect(adopted.live).toEqual([]);
+    expect(adopted.completed).toEqual([]);
+    expect(adopted.orphaned).toEqual([]);
+    expect(killWindow).toHaveBeenCalledWith('@90', expect.any(AbortSignal));
+    expect(killWindow).toHaveBeenCalledWith('@92', expect.any(AbortSignal));
+    expect(killWindow).not.toHaveBeenCalledWith('@91', expect.any(AbortSignal));
+  });
+
+  it('orphans an exactly-owned dead pane when no exit sentinel was published', async () => {
+    const { root, config } = await fixtureConfig();
+    const store = new RunStore(root);
+    await store.initialize();
+    const dead = await createRun(root, config, 'run-dead-pane1', { windowId: '@83' });
+    await store.persist(dead);
+    const killWindow = vi.fn(async () => undefined);
+    const adopted = await discoverAndReconcileRuns({
+      config,
+      tmux: {
+        listManaged: vi.fn(async () => [{ windowId: '@83', metadata: windowMetadata(dead) }]),
+        isPaneDead: vi.fn(async () => true),
+        killWindow,
+      } as never,
+      store,
+      sessionId: dead.sessionId,
+      scope: dead.scope,
+    });
+
+    expect(adopted.live).toEqual([]);
+    expect(adopted.orphaned.map((run) => run.runId)).toEqual([dead.runId]);
+    expect(killWindow).not.toHaveBeenCalled();
+    expect(adopted.diagnostics.join('\n')).toContain('pane died without an exit sentinel');
   });
 
   it('continues startup with diagnostics when tmux discovery is unavailable', async () => {
@@ -467,12 +691,83 @@ describe('resource reservations and cleanup', () => {
     ]);
     expect(raced.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(raced.filter((result) => result.status === 'rejected')).toHaveLength(1);
-    const reservation = raced.find(
-      (result): result is PromiseFulfilledResult<string> => result.status === 'fulfilled',
-    )?.value;
-    if (!reservation) throw new Error('Expected one reservation winner.');
+    const winner = raced.findIndex((result) => result.status === 'fulfilled');
+    const reservation = raced[winner];
+    if (reservation?.status !== 'fulfilled') throw new Error('Expected one reservation winner.');
+    await (winner === 0 ? left : right).releaseReservation(reservation.value);
+    const after = await right.reserve('reserve-after1');
+    expect(after).toContain('reserve-after1.reserve');
+    await right.releaseReservation(after);
+  });
+
+  it('protects a starting run from concurrent cleanup by reservation and discovered ownership', async () => {
+    const { root, config } = await fixtureConfig({ adoptionPolicy: 'off' });
+    const store = new RunStore(root);
+    await store.initialize();
+    const run = await createRun(root, config, 'run-launch-1234', {
+      state: 'starting',
+      windowId: undefined,
+    });
+    await store.persist(run);
+    const resources = new ResourceManager(root, config);
+    const reservation = await resources.reserve(run.runId, {
+      isActiveRun: vi.fn(async () => false),
+      isCleanupProtectedWindow: vi.fn(async () => false),
+    });
+
+    await expect(
+      resources.cleanup({
+        includeYoung: true,
+        isActiveRun: vi.fn(async () => false),
+        isLiveOwnedWindow: vi.fn(async () => false),
+      }),
+    ).resolves.toEqual([]);
+    await expect(readFile(run.manifestPath, 'utf8')).resolves.toContain('"state":"starting"');
+
+    await resources.releaseReservation(reservation);
+    const discoveredOwner = vi.fn(async () => true);
+    await expect(
+      resources.cleanup({
+        includeYoung: true,
+        isActiveRun: vi.fn(async () => false),
+        isLiveOwnedWindow: discoveredOwner,
+      }),
+    ).resolves.toEqual([]);
+    expect(discoveredOwner).toHaveBeenCalledWith(expect.objectContaining({ runId: run.runId }));
+  });
+
+  it('does not steal a stale-looking lock while its owner process is still alive', async () => {
+    const { root, config } = await fixtureConfig({ maxConcurrentRuns: 4 });
+    const store = new RunStore(root);
+    await store.initialize();
+    const active = await createRun(root, config, 'run-lock-live1');
+    await store.persist(active);
+    let clock = Date.now();
+    let entered!: () => void;
+    const operationEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let resume!: () => void;
+    const blocker = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const left = new ResourceManager(root, config, () => clock);
+    const right = new ResourceManager(root, config, () => clock);
+    const first = left.reserve('run-lock-left1', {
+      isActiveRun: async () => {
+        entered();
+        await blocker;
+        return true;
+      },
+    });
+    await operationEntered;
+    clock += 120_000;
+
+    await expect(right.reserve('run-lock-right')).rejects.toThrow('Timed out acquiring');
+    resume();
+    const reservation = await first;
+    await expect(readFile(reservation, 'utf8')).resolves.toMatch(/^\d+ /);
     await left.releaseReservation(reservation);
-    await expect(right.reserve('reserve-after1')).resolves.toContain('reserve-after1.reserve');
   });
 
   it('counts only externally revalidated active manifests when a tmux host is available', async () => {
@@ -518,7 +813,7 @@ describe('resource reservations and cleanup', () => {
     const { root, config } = await fixtureConfig({
       maxConcurrentRuns: 10,
       maxArtifactBytesPerRun: 1_024,
-      maxArtifactBytesTotal: 11_000,
+      maxArtifactBytesTotal: 80_000,
     });
     const left = new ResourceManager(root, config);
     const right = new ResourceManager(root, config);
@@ -547,7 +842,7 @@ describe('resource reservations and cleanup', () => {
   it('rolls back launch capacity when structural artifacts exceed total headroom', async () => {
     const { root, config } = await fixtureConfig({
       maxArtifactBytesPerRun: 1_024,
-      maxArtifactBytesTotal: 5_700,
+      maxArtifactBytesTotal: 34_000,
     });
     const resources = new ResourceManager(root, config);
     const reservation = await resources.reserve('run-overhead-1');
@@ -556,6 +851,7 @@ describe('resource reservations and cleanup', () => {
     await expect(resources.validateReservationCapacity(reservation)).rejects.toThrow(
       /after creating launch artifacts/,
     );
+    await resources.releaseReservation(reservation);
   });
 
   it('previews oldest eligible runs, protects live windows, and skips symlinks', async () => {
@@ -571,6 +867,7 @@ describe('resource reservations and cleanup', () => {
       startedAt: Date.now() - 20_000,
       endedAt: Date.now() - 10_000,
       exitCode: 0,
+      deliveryState: 'delivered',
     });
     const newer = await createRun(root, config, 'run-newer-123', {
       state: 'failed',
@@ -578,11 +875,17 @@ describe('resource reservations and cleanup', () => {
       startedAt: Date.now() - 2_000,
       endedAt: Date.now() - 1000,
       exitCode: 2,
+      deliveryState: 'failed',
+      completionDeliveryExhausted: true,
     });
     await store.persist(old);
     await store.persist(newer);
+    const fifo = join(root, `${old.runId}.stream`);
+    await execFileAsync('mkfifo', ['-m', '600', fifo]);
     const external = join(root, 'outside');
     await writeFile(external, 'do not delete');
+    const prefixedNotes = join(root, `${old.runId}.notes`);
+    await writeFile(prefixedNotes, 'keep notes');
     const linked = join(root, `${old.runId}.unsafe`);
     await symlink(external, linked);
 
@@ -591,11 +894,58 @@ describe('resource reservations and cleanup', () => {
     expect(preview.map((item) => item.runId)).toEqual([old.runId, newer.runId]);
     const removed = await resources.cleanup({
       includeYoung: true,
+      runIds: new Set([old.runId]),
       isLiveOwnedWindow: async (manifest) => manifest.runId === newer.runId,
     });
     expect(removed.map((item) => item.runId)).toEqual([old.runId]);
     await expect(readFile(external, 'utf8')).resolves.toBe('do not delete');
+    await expect(readFile(prefixedNotes, 'utf8')).resolves.toBe('keep notes');
     expect((await lstat(linked)).isSymbolicLink()).toBe(true);
+    await expect(lstat(fifo)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('protects terminal runs until delivery is settled and while in-memory work is active', async () => {
+    const { root, config } = await fixtureConfig({ completedArtifactRetentionSeconds: 0 });
+    const store = new RunStore(root);
+    await store.initialize();
+    const run = await createRun(root, config, 'run-pending-123', {
+      state: 'completed',
+      endedAt: Date.now(),
+      exitCode: 0,
+      deliveryState: 'pending',
+      completionDelivered: false,
+      completionClaimed: false,
+    });
+    await store.persist(run);
+    const resources = new ResourceManager(root, config);
+
+    await expect(resources.preview({ includeYoung: true })).resolves.toEqual([]);
+    run.deliveryState = 'failed';
+    run.completionDeliveryExhausted = false;
+    await store.persist(run);
+    await expect(resources.preview({ includeYoung: true })).resolves.toEqual([]);
+    run.completionDeliveryExhausted = true;
+    await store.persist(run);
+    await expect(resources.preview({ includeYoung: true })).resolves.toHaveLength(1);
+    run.deliveryState = 'delivered';
+    run.completionDelivered = true;
+    run.completionClaimed = true;
+    await store.persist(run);
+    await expect(
+      resources.cleanup({
+        includeYoung: true,
+        isCleanupProtectedRun: async (manifest) => manifest.runId === run.runId,
+      }),
+    ).resolves.toEqual([]);
+    await expect(readFile(run.manifestPath, 'utf8')).resolves.toContain(
+      '"deliveryState":"delivered"',
+    );
+
+    const removed = await resources.cleanup({
+      includeYoung: true,
+      isLiveOwnedWindow: async () => false,
+    });
+    expect(removed.map((candidate) => candidate.runId)).toEqual([run.runId]);
   });
 
   it('counts bounded artifacts and rejects quota pressure with cleanup guidance', async () => {

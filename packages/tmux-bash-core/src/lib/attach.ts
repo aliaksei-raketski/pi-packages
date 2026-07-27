@@ -36,7 +36,6 @@ export function assertWindowId(windowId: string): void {
 
 function assertBinary(value: string): void {
   assertSafeValue(value, 'tmux binary');
-  if (/\s/.test(value)) throw new Error('Tmux binary must not contain whitespace.');
 }
 
 function assertSafeValue(value: string, label: string): void {

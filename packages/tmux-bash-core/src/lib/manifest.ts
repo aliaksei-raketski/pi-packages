@@ -13,9 +13,11 @@ export type ManagedRunState =
   | 'killed'
   | 'orphaned';
 export type CompletionDeliveryState = 'pending' | 'queued' | 'delivered' | 'persisted' | 'failed';
+export type ManagedRunOrigin = 'managed' | 'user-bash';
 
 export interface ManagedRunManifest {
   runId: string;
+  origin?: ManagedRunOrigin;
   completionId: string;
   piSessionId: string;
   scope: Pick<TmuxWorkspaceScope, 'kind' | 'root' | 'hash'>;
@@ -36,6 +38,8 @@ export interface ManagedRunManifest {
   continuationDomain: string;
   completionDelivery: CompletionDelivery;
   deliveryState: CompletionDeliveryState;
+  completionDeliveryAttempts?: number;
+  completionDeliveryExhausted?: boolean;
   polling?: { intervalSeconds: number; lines: number };
   outputWasRotated: boolean;
   updatedAt: number;
@@ -64,6 +68,10 @@ export function parseManagedRunManifest(
   assertAbsoluteSafePath(options.artifactRoot, 'artifact root');
 
   const runId = requireIdentifier(value.runId, 'runId');
+  const origin =
+    value.origin === undefined
+      ? undefined
+      : requireEnum(value.origin, 'origin', ['managed', 'user-bash'] as const);
   if (options.expectedRunId !== undefined && runId !== options.expectedRunId) {
     throw new Error('Managed run manifest runId does not match its record identity.');
   }
@@ -117,6 +125,16 @@ export function parseManagedRunManifest(
     'persisted',
     'failed',
   ] as const);
+  const completionDeliveryAttempts = optionalInteger(
+    value.completionDeliveryAttempts,
+    'completionDeliveryAttempts',
+    0,
+    100_000,
+  );
+  const completionDeliveryExhausted =
+    value.completionDeliveryExhausted === undefined
+      ? undefined
+      : requireBoolean(value.completionDeliveryExhausted, 'completionDeliveryExhausted');
   const polling = parsePolling(value.polling);
   const outputWasRotated = requireBoolean(value.outputWasRotated, 'outputWasRotated');
   const updatedAt = requireTimestamp(value.updatedAt, 'updatedAt');
@@ -148,6 +166,7 @@ export function parseManagedRunManifest(
 
   return {
     runId,
+    ...(origin === undefined ? {} : { origin }),
     completionId,
     piSessionId,
     scope,
@@ -168,6 +187,8 @@ export function parseManagedRunManifest(
     continuationDomain,
     completionDelivery,
     deliveryState,
+    ...(completionDeliveryAttempts === undefined ? {} : { completionDeliveryAttempts }),
+    ...(completionDeliveryExhausted === undefined ? {} : { completionDeliveryExhausted }),
     ...(polling ? { polling } : {}),
     outputWasRotated,
     updatedAt,
@@ -283,7 +304,7 @@ function assertAbsoluteSafePath(value: string, key: string): void {
 }
 
 function requireIdentifier(value: unknown, key: string): string {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(value)) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(value)) {
     throw new Error(`Managed run manifest ${key} is invalid.`);
   }
   return value;

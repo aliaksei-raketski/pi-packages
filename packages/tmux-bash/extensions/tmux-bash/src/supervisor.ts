@@ -9,6 +9,7 @@ import {
   type ContinuationGateController,
 } from '@aliaksei-raketski/pi-continuation-gate-protocol';
 import {
+  sameManagedWindowOwner,
   TMUX_BASH_OWNERSHIP_MARKER,
   type CompletionDelivery,
   type ManagedRunManifest,
@@ -57,6 +58,9 @@ import {
 } from './types.js';
 
 const BACKGROUND_COMPLETION_SCAN_INTERVAL_MS = 250;
+const PANE_HEALTH_CHECK_INTERVAL_MS = 2_000;
+const MAX_LIST_RESULT_BYTES = 64 * 1024;
+const MAX_TMUX_RESULT_RUNS = 100;
 
 export class TmuxBashSupervisor {
   readonly state: TmuxBashRuntimeState;
@@ -65,6 +69,7 @@ export class TmuxBashSupervisor {
   private completion?: CompletionDeliveryService;
   private resourceScanTimer?: ReturnType<typeof setInterval>;
   private readonly sessionArtifacts = new Map<string, string>();
+  private readonly reportedDetachedFailures = new Set<string>();
 
   constructor(
     private readonly pi: ExtensionAPI,
@@ -128,12 +133,7 @@ export class TmuxBashSupervisor {
     this.state.disposed = false;
     this.state.statusContext = ctx;
     const sessionId = ctx.sessionManager.getSessionId();
-    let scope: TmuxWorkspaceScope | undefined;
-    try {
-      scope = await resolveWorkspaceScope(this.config, ctx.cwd);
-    } catch (error) {
-      if (this.config.nonGitScope === 'cwd') throw error;
-    }
+    const scope = await resolveWorkspaceScope(this.config, ctx.cwd);
     const runDir = this.runDirectory(scope, sessionId);
     await this.activateRunDirectory(runDir, scope);
     const store = this.runStore;
@@ -148,7 +148,12 @@ export class TmuxBashSupervisor {
         sessionId,
         scope,
       });
-      for (const run of [...adopted.live, ...adopted.completed, ...adopted.orphaned]) {
+      for (const run of [
+        ...adopted.live,
+        ...adopted.completed,
+        ...adopted.orphaned,
+        ...adopted.undelivered,
+      ]) {
         this.state.commands.set(run.runId, run);
       }
       for (const run of adopted.live) {
@@ -161,6 +166,9 @@ export class TmuxBashSupervisor {
       for (const run of adopted.completed) {
         await this.finishBackgroundCompletion(run, run.exitCode ?? 1, true);
       }
+      for (const run of adopted.undelivered) {
+        await this.deliverOrphanCompletion(run);
+      }
       if (adopted.diagnostics.length > 0) {
         ctx.ui.notify(adopted.diagnostics.slice(0, 5).join('\n'), 'warning');
       }
@@ -170,13 +178,17 @@ export class TmuxBashSupervisor {
         automatic: true,
         isLiveOwnedWindow: (manifest) => this.isLiveOwnedManifest(manifest),
         isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest),
+        isCleanupProtectedRun: (manifest) => this.isCleanupProtectedManifest(manifest),
       });
       this.resourceScanTimer = setInterval(() => {
-        void this.resources?.cleanup({
-          automatic: true,
-          isLiveOwnedWindow: (manifest) => this.isLiveOwnedManifest(manifest),
-          isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest),
-        });
+        void this.resources
+          ?.cleanup({
+            automatic: true,
+            isLiveOwnedWindow: (manifest) => this.isLiveOwnedManifest(manifest),
+            isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest),
+            isCleanupProtectedRun: (manifest) => this.isCleanupProtectedManifest(manifest),
+          })
+          .catch((error: unknown) => this.reportDetachedFailure('resource cleanup', error));
       }, this.config.resourceScanIntervalSeconds * 1_000);
       this.resourceScanTimer.unref();
     }
@@ -197,10 +209,33 @@ export class TmuxBashSupervisor {
     this.state.pollers.clear();
     for (const run of this.state.commands.values()) {
       if (run.completionRetryTimer) clearTimeout(run.completionRetryTimer);
+    }
+    await Promise.allSettled(
+      [...this.state.commands.values()].flatMap((run) => {
+        const pending: Promise<unknown>[] = [];
+        if (run.completionObserverPromise) pending.push(run.completionObserverPromise);
+        if (run.completionPromise) pending.push(run.completionPromise);
+        return pending;
+      }),
+    );
+    const preserveForAdoption = new Set<string>();
+    for (const run of this.state.commands.values()) {
+      if (this.config.adoptionPolicy === 'same-pi-session' && isUnsettledRunCompletion(run)) {
+        preserveForAdoption.add(run.runId);
+      }
       run.awaited = Boolean(run.gateId) || run.awaited;
       if (run.killed) {
         run.state = 'killed';
         run.endedAt ??= Date.now();
+      }
+      if (
+        isTerminalRunState(run.state) &&
+        !run.completionDelivered &&
+        !run.completionDeliveryFailed
+      ) {
+        run.completionClaimed = true;
+        run.completionDeliveryFailed = true;
+        run.deliveryState = 'failed';
       }
       await this.runStore?.persist(run).catch(() => undefined);
       this.releaseGate(run, 'abandoned', 'none');
@@ -213,19 +248,27 @@ export class TmuxBashSupervisor {
           !run.killed &&
           !run.endedAt &&
           (run.state === 'running' || run.state === 'starting');
-        if (isLive && this.config.adoptionPolicy === 'same-pi-session') {
+        const needsAdoption =
+          this.config.adoptionPolicy === 'same-pi-session' &&
+          (isLive || preserveForAdoption.has(runId));
+        if (needsAdoption) {
           // Durable manifests and exit sentinels must survive while Pi is offline so
           // same-session adoption can reconcile and deliver the eventual completion.
           continue;
         }
         if (isLive) {
-          await scheduleRunArtifactCleanup(runDir, runId).catch(() => undefined);
+          await scheduleRunArtifactCleanup(runDir, runId, {
+            onError: (error) => this.reportDetachedFailure('artifact cleanup process', error, run),
+          }).catch((error: unknown) =>
+            this.reportDetachedFailure('artifact cleanup launch', error, run),
+          );
         } else {
           await removeUncommittedArtifacts(runDir, runId).catch(() => undefined);
         }
       }
     }
     this.sessionArtifacts.clear();
+    await this.runStore?.releaseAllCompletionClaims();
 
     if (ctx) updateTmuxBashStatus(this.pi, ctx, { ...this.config, statusbarEnabled: false }, []);
     this.state.runDir = null;
@@ -312,8 +355,19 @@ export class TmuxBashSupervisor {
       if (run.gateId) this.acquireGate(run);
     } catch (error) {
       await resources.releaseReservation(reservationPath).catch(() => undefined);
-      if (run?.windowId) await this.tmux.killWindow(run.windowId).catch(() => undefined);
-      if (run && !(error instanceof ArtifactQuotaError)) {
+      const killConfirmed =
+        run?.windowId === undefined || (await this.tryKillOwnedWindow(run, 'launch failure'));
+      if (run && !(error instanceof ArtifactQuotaError) && !killConfirmed) {
+        run.reservationPath = undefined;
+        if (run.windowId) {
+          run.state = 'running';
+          run.backgroundReady = true;
+          this.ensureWatcher();
+          this.observeCompletion(run);
+        }
+        this.releaseGate(run, 'failed', 'none');
+        await runStore.persist(run).catch(() => undefined);
+      } else if (run && !(error instanceof ArtifactQuotaError)) {
         run.killed = signal?.aborted ?? false;
         run.endedAt = Date.now();
         run.completionClaimed = true;
@@ -347,13 +401,15 @@ export class TmuxBashSupervisor {
         throwIfCancelled(signal);
         run.backgroundReady = true;
         await this.runStore?.persist(run);
-        void this.completeIfReady(run, true);
+        this.observeCompletion(run);
         return running;
       } catch (error) {
         await this.failLaunchedRun(run, signal?.aborted ? 'cancelled' : 'failed', runStore).catch(
-          () => undefined,
+          () => false,
         );
-        this.state.commands.delete(runId);
+        if (run.state !== 'running' && run.state !== 'starting') {
+          this.state.commands.delete(runId);
+        }
         if (signal?.aborted) throw cancelledError();
         throw error;
       }
@@ -370,6 +426,7 @@ export class TmuxBashSupervisor {
     return resources.reserve(runId, {
       isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest, store),
       isCleanupProtectedWindow: (manifest) => this.isLiveOwnedManifest(manifest),
+      isCleanupProtectedRun: (manifest) => this.isCleanupProtectedManifest(manifest),
     });
   }
 
@@ -381,6 +438,7 @@ export class TmuxBashSupervisor {
     return resources.validateReservationCapacity(reservationPath, {
       isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest, store),
       isCleanupProtectedWindow: (manifest) => this.isLiveOwnedManifest(manifest),
+      isCleanupProtectedRun: (manifest) => this.isCleanupProtectedManifest(manifest),
     });
   }
 
@@ -398,10 +456,12 @@ export class TmuxBashSupervisor {
     awaited: boolean;
     completionDelivery: CompletionDelivery;
     reservationPath: string;
+    origin?: 'managed' | 'user-bash';
   }): CommandRun {
     return {
       ...input.artifacts,
       runId: input.runId,
+      origin: input.origin ?? 'managed',
       completionId: input.completionId,
       sessionId: input.sessionId,
       scope: input.scope,
@@ -491,6 +551,9 @@ export class TmuxBashSupervisor {
     const completionId = randomUUID().replaceAll('-', '');
     const reservationPath = await this.reserveRunSlot(resources, store, runId);
     let run: CommandRun | undefined;
+    let terminationAttempted = false;
+    let uncertainTermination = false;
+    let retainStreamDrain = false;
     let outputStream: ReadStream | undefined;
     let streamDone: Promise<void> | undefined;
     try {
@@ -533,6 +596,7 @@ export class TmuxBashSupervisor {
         awaited: false,
         completionDelivery: this.config.defaultCompletionDelivery,
         reservationPath,
+        origin: 'user-bash',
       });
       await this.registerStartingRun(run, store);
       await this.validateRunSlot(resources, store, reservationPath);
@@ -546,8 +610,21 @@ export class TmuxBashSupervisor {
       );
       const outcome = await this.waitForExit(run, timeoutMs, options.signal);
       if (outcome !== 'completed') {
-        await this.terminateForeground(run, outcome === 'aborted' ? 'cancelled' : 'failed', store);
-        throw new Error(outcome === 'aborted' ? 'aborted' : `timeout:${options.timeout}`);
+        terminationAttempted = true;
+        const termination = await this.terminateForeground(
+          run,
+          outcome === 'aborted' ? 'cancelled' : 'failed',
+          store,
+        );
+        uncertainTermination = termination === 'uncertain';
+        const continuation = uncertainTermination
+          ? ': termination could not be confirmed; the command continues under background monitoring'
+          : '';
+        throw new Error(
+          outcome === 'aborted'
+            ? `aborted${continuation}`
+            : `timeout:${options.timeout}${continuation}`,
+        );
       }
       await streamDone;
       const exitCode = await readExitCode(run.exitCodeFile);
@@ -561,22 +638,48 @@ export class TmuxBashSupervisor {
       return { exitCode: exitCode ?? null };
     } catch (error) {
       if (run?.windowId) {
-        await this.failLaunchedRun(
-          run,
-          options.signal?.aborted ? 'cancelled' : 'failed',
-          store,
-        ).catch(() => undefined);
+        if (!terminationAttempted && !run.endedAt && !run.killed) {
+          const cleaned = await this.failLaunchedRun(
+            run,
+            options.signal?.aborted ? 'cancelled' : 'failed',
+            store,
+          ).catch(() => false);
+          uncertainTermination = !cleaned;
+        }
       } else if (run) {
         this.state.commands.delete(run.runId);
         await removeUncommittedArtifacts(runDir, runId).catch(() => undefined);
         this.sessionArtifacts.delete(runId);
         run = undefined;
       }
+      if (uncertainTermination && outputStream && run?.streamFile) {
+        const streamPath = run.streamFile;
+        if (outputStream.closed) {
+          await rm(streamPath, { force: true }).catch(() => undefined);
+        } else {
+          retainStreamDrain = true;
+          outputStream.removeAllListeners();
+          outputStream.on('data', () => undefined);
+          const removeStream = () => {
+            void rm(streamPath, { force: true }).catch(() => undefined);
+          };
+          outputStream.once('close', removeStream);
+          outputStream.once('error', removeStream);
+        }
+      }
+      if (options.signal?.aborted) {
+        throw new Error(
+          uncertainTermination
+            ? 'aborted: termination could not be confirmed; the command continues under background monitoring'
+            : 'aborted',
+        );
+      }
       throw error;
     } finally {
-      outputStream?.destroy();
-      await streamDone?.catch(() => undefined);
-      if (run?.streamFile) await rm(run.streamFile, { force: true }).catch(() => undefined);
+      if (!retainStreamDrain) outputStream?.destroy();
+      if (streamDone && !retainStreamDrain) void streamDone.catch(() => undefined);
+      if (run?.streamFile && !retainStreamDrain)
+        await rm(run.streamFile, { force: true }).catch(() => undefined);
       if (!run) {
         await removeUncommittedArtifacts(runDir, runId).catch(() => undefined);
         this.sessionArtifacts.delete(runId);
@@ -608,10 +711,38 @@ export class TmuxBashSupervisor {
 
   async kill(windowId: string, ctx: ExtensionContext) {
     const run = await this.requireRun(windowId, ctx);
+    const completed = await this.completeIfReady(run, false);
+    if (completed) {
+      const output = completed.content[0]?.type === 'text' ? completed.content[0].text : '';
+      return this.tmuxResult(
+        'kill',
+        [run],
+        `Command already completed with exit code ${run.exitCode ?? 'unknown'}; it was not killed.\n${output}`.trim(),
+      );
+    }
+    if (run.state === 'orphaned') {
+      throw new Error(
+        `Tmux window ${windowId} is missing or no longer carries this run's ownership metadata.`,
+      );
+    }
     if (run.endedAt || run.killed) {
       return this.tmuxResult('kill', [run], `Managed command ${windowId} is already finished.`);
     }
-    if (run.windowId) await this.tmux.killWindow(run.windowId);
+    if (!run.windowId || !(await this.isOwnedWindow(run))) {
+      await this.failUnownedRun(run, false);
+      throw new Error(`Managed tmux window ${windowId} failed its ownership revalidation.`);
+    }
+    const lateCompletion = await this.completeIfReady(run, false);
+    if (lateCompletion) {
+      const output =
+        lateCompletion.content[0]?.type === 'text' ? lateCompletion.content[0].text : '';
+      return this.tmuxResult(
+        'kill',
+        [run],
+        `Command already completed with exit code ${run.exitCode ?? 'unknown'}; it was not killed.\n${output}`.trim(),
+      );
+    }
+    await this.tmux.killWindow(run.windowId);
     run.killed = true;
     run.endedAt ??= Date.now();
     run.completionClaimed = true;
@@ -669,6 +800,15 @@ export class TmuxBashSupervisor {
 
   async poll(windowId: string, ctx: ExtensionContext, interval?: number, lines?: number) {
     const run = await this.requireRun(windowId, ctx);
+    const completed = await this.completeIfReady(run, false);
+    if (completed) {
+      const output = completed.content[0]?.type === 'text' ? completed.content[0].text : '';
+      return this.tmuxResult(
+        'poll',
+        [run],
+        `Command already completed with exit code ${run.exitCode ?? 'unknown'}.\n${output}`.trim(),
+      );
+    }
     if (run.endedAt || run.killed) throw new Error(`Managed command ${windowId} is not running.`);
     const poller = this.startPoll(run, interval, lines);
     await this.runStore?.persist(run);
@@ -702,17 +842,19 @@ export class TmuxBashSupervisor {
     if (displayMarkers > 0) {
       lines.push(`${displayMarkers} display-only completion(s) were persisted without a UI.`);
     }
-    const result = this.tmuxResult('list', runs, lines.join('\n'));
+    let usage: ReturnType<TmuxBashSupervisor['resourceUsageDetails']> | undefined;
     if (this.resources) {
-      const usage = await this.resources.usage({
-        isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest),
-      });
-      result.details.usage = this.resourceUsageDetails(usage);
+      usage = this.resourceUsageDetails(
+        await this.resources.usage({
+          isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest),
+        }),
+      );
       lines.push(
         `Usage: ${usage.activeRuns} active, ${usage.reservations} reserved, ${usage.artifactBytes}/${this.config.maxArtifactBytesTotal} artifact bytes, ${usage.completedRuns}/${this.config.maxCompletedRuns} completed runs.`,
       );
-      result.content = [{ type: 'text', text: lines.join('\n') }];
     }
+    const result = this.tmuxResult('list', runs, boundedLines(lines, MAX_LIST_RESULT_BYTES));
+    if (usage) result.details.usage = usage;
     return result;
   }
 
@@ -721,15 +863,13 @@ export class TmuxBashSupervisor {
     const runs = this.list(ctx).filter((run) => this.state.pollers.has(run.runId));
     if (runs.length === 0)
       return this.tmuxResult('list-polls', [], 'No active tmux polls in scope.');
-    const text = runs
-      .flatMap((run) => {
-        const poller = this.state.pollers.get(run.runId);
-        return poller
-          ? [`${run.windowId}: every ${poller.intervalSeconds}s, ${poller.lines} lines`]
-          : [];
-      })
-      .join('\n');
-    return this.tmuxResult('list-polls', runs, text);
+    const lines = runs.flatMap((run) => {
+      const poller = this.state.pollers.get(run.runId);
+      return poller
+        ? [`${run.windowId}: every ${poller.intervalSeconds}s, ${poller.lines} lines`]
+        : [];
+    });
+    return this.tmuxResult('list-polls', runs, boundedLines(lines, MAX_LIST_RESULT_BYTES));
   }
 
   async sendInput(windowId: string, text: string, submit: boolean, ctx: ExtensionContext) {
@@ -774,6 +914,7 @@ export class TmuxBashSupervisor {
     const candidates = await resources.preview({
       includeYoung,
       isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest),
+      isCleanupProtectedRun: (manifest) => this.isCleanupProtectedManifest(manifest),
     });
     const listedCandidates = candidates.slice(0, 100);
     const text = candidates.length
@@ -806,7 +947,7 @@ export class TmuxBashSupervisor {
     return result;
   }
 
-  async cleanup(ctx: ExtensionContext, includeYoung = false) {
+  async cleanup(ctx: ExtensionContext, includeYoung = false, approvedRunIds?: readonly string[]) {
     this.assertActionEnabled('cleanup');
     this.assertReady(ctx);
     const resources = this.resources;
@@ -815,8 +956,15 @@ export class TmuxBashSupervisor {
       includeYoung,
       isLiveOwnedWindow: (manifest) => this.isLiveOwnedManifest(manifest),
       isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest),
+      isCleanupProtectedRun: (manifest) => this.isCleanupProtectedManifest(manifest),
+      ...(approvedRunIds === undefined ? {} : { runIds: new Set(approvedRunIds) }),
     });
-    for (const candidate of removed) this.state.commands.delete(candidate.runId);
+    for (const candidate of removed) {
+      const run = this.state.commands.get(candidate.runId);
+      if (run?.completionRetryTimer) clearTimeout(run.completionRetryTimer);
+      this.stopPoll(candidate.runId);
+      this.state.commands.delete(candidate.runId);
+    }
     const result = this.tmuxResult(
       'cleanup',
       [],
@@ -853,24 +1001,67 @@ export class TmuxBashSupervisor {
   ): Promise<AgentToolResult<TmuxBashDetails>> {
     const timeoutSeconds = clampTimeout(this.config, input.timeout);
     const timer = onUpdate
-      ? setInterval(
-          () => void this.sendForegroundUpdate(run, onUpdate),
-          this.config.foregroundUpdateIntervalMs,
-        )
+      ? setInterval(() => {
+          void this.sendForegroundUpdate(run, onUpdate).catch((error: unknown) =>
+            this.reportDetachedFailure('foreground progress update', error, run),
+          );
+        }, this.config.foregroundUpdateIntervalMs)
       : undefined;
     try {
-      const outcome = await this.waitForExit(run, timeoutSeconds * 1_000, signal);
-      if (outcome === 'completed') return await this.finishForeground(run);
+      let outcome: 'completed' | 'timeout' | 'aborted';
+      try {
+        outcome = await this.waitForExit(run, timeoutSeconds * 1_000, signal);
+      } catch (error) {
+        const termination = await this.terminateForeground(run, 'failed');
+        const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error));
+        const status =
+          termination === 'uncertain'
+            ? 'could not be confirmed; the command continues under background monitoring'
+            : `was terminated${reason ? `: ${reason}` : '.'}`;
+        throw new Error(
+          `tmux command monitoring failed and termination ${status}${termination === 'uncertain' && reason ? `: ${reason}` : ''}`,
+        );
+      }
+      if (outcome === 'completed') {
+        try {
+          return await this.finishForeground(run);
+        } catch (error) {
+          if (run.state === 'reserved' || run.state === 'starting' || run.state === 'running') {
+            const termination = await this.terminateForeground(run, 'failed');
+            const reason = boundedDiagnostic(
+              error instanceof Error ? error.message : String(error),
+            );
+            const status =
+              termination === 'uncertain'
+                ? 'could not be confirmed; the command continues under background monitoring'
+                : `was terminated${reason ? `: ${reason}` : '.'}`;
+            throw new Error(
+              `tmux completion reconciliation failed and termination ${status}${termination === 'uncertain' && reason ? `: ${reason}` : ''}`,
+            );
+          }
+          throw error;
+        }
+      }
       if (outcome === 'aborted') {
-        await this.terminateForeground(run, 'cancelled');
-        throw new Error(`tmux bash command was cancelled.\n${await this.errorOutput(run)}`);
+        const termination = await this.terminateForeground(run, 'cancelled');
+        const suffix =
+          termination === 'uncertain'
+            ? ' Termination could not be confirmed; the command continues under background monitoring.'
+            : '';
+        throw new Error(
+          `tmux bash command was cancelled.${suffix}\n${await this.errorOutput(run)}`,
+        );
       }
 
       const timeoutAction = input.timeoutAction ?? this.config.defaultTimeoutAction;
       if (timeoutAction === 'kill') {
-        await this.terminateForeground(run, 'failed');
+        const termination = await this.terminateForeground(run, 'failed');
+        const result =
+          termination === 'uncertain'
+            ? 'termination could not be confirmed; the command continues under background monitoring'
+            : 'was killed';
         throw new Error(
-          `tmux bash command timed out after ${timeoutSeconds}s and was killed.\n${await this.errorOutput(run)}`,
+          `tmux bash command timed out after ${timeoutSeconds}s and ${result}.\n${await this.errorOutput(run)}`,
         );
       }
 
@@ -892,7 +1083,7 @@ export class TmuxBashSupervisor {
       );
       run.backgroundReady = true;
       await this.runStore?.persist(run);
-      void this.completeIfReady(run, true);
+      this.observeCompletion(run);
       return running;
     } finally {
       if (timer) clearInterval(timer);
@@ -900,7 +1091,7 @@ export class TmuxBashSupervisor {
   }
 
   private async finishForeground(run: CommandRun): Promise<AgentToolResult<TmuxBashDetails>> {
-    const exitCode = await readExitCode(run.exitCodeFile);
+    const exitCode = await this.readRunExitCode(run);
     if (exitCode === undefined) throw new Error('tmux command exit sentinel was unreadable.');
     run.exitCode = exitCode;
     run.endedAt = Date.now();
@@ -922,8 +1113,20 @@ export class TmuxBashSupervisor {
     run: CommandRun,
     outcome: 'cancelled' | 'failed',
     store: RunStore | undefined = this.runStore,
-  ) {
-    if (run.windowId && (await this.isOwnedWindow(run))) await this.tmux.killWindow(run.windowId);
+  ): Promise<'terminated' | 'uncertain'> {
+    if (run.windowId && !(await this.tryKillOwnedWindow(run, 'foreground termination'))) {
+      run.mode = 'background';
+      run.backgroundReady = true;
+      run.completionClaimed = false;
+      run.completionDelivered = false;
+      run.completionDeliveryFailed = false;
+      run.deliveryState = 'pending';
+      await store?.persist(run).catch(() => undefined);
+      this.ensureWatcher();
+      this.observeCompletion(run);
+      this.publishStatus();
+      return 'uncertain';
+    }
     run.killed = true;
     run.endedAt = Date.now();
     run.deliveryState = 'failed';
@@ -932,16 +1135,33 @@ export class TmuxBashSupervisor {
     this.releaseGate(run, outcome, 'current-turn');
     await store?.transition(run, 'killed');
     this.publishStatus();
+    return 'terminated';
   }
 
   private async failLaunchedRun(
     run: CommandRun,
     outcome: 'cancelled' | 'failed',
     store: RunStore,
-  ): Promise<void> {
-    const ownedWindow = run.windowId ? await this.isOwnedWindow(run).catch(() => false) : false;
-    if (run.windowId && ownedWindow) {
-      await this.tmux.killWindow(run.windowId).catch(() => undefined);
+  ): Promise<boolean> {
+    if (!(await this.tryKillOwnedWindow(run, 'foreground failure'))) {
+      run.mode = 'background';
+      run.backgroundReady = true;
+      run.completionClaimed = false;
+      run.completionDelivered = false;
+      run.completionDeliveryFailed = false;
+      run.deliveryState = 'pending';
+      await store.persist(run).catch(() => undefined);
+      this.ensureWatcher();
+      this.observeCompletion(run);
+      this.reportDetachedFailure(
+        'foreground cleanup',
+        new Error(
+          'The owned tmux window could not be revalidated or terminated; monitoring continues.',
+        ),
+        run,
+      );
+      this.publishStatus();
+      return false;
     }
     run.killed = outcome === 'cancelled';
     run.endedAt = Date.now();
@@ -953,6 +1173,7 @@ export class TmuxBashSupervisor {
     await store.persist(run).catch(() => undefined);
     this.releaseGate(run, outcome, 'current-turn');
     this.publishStatus();
+    return true;
   }
 
   private waitForExit(
@@ -960,43 +1181,68 @@ export class TmuxBashSupervisor {
     timeoutMs: number | undefined,
     signal: AbortSignal | undefined,
   ): Promise<'completed' | 'timeout' | 'aborted'> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       let settled = false;
-      const finish = (outcome: 'completed' | 'timeout' | 'aborted') => {
-        if (settled) return;
-        settled = true;
+      let checking = false;
+      const cleanup = () => {
         clearInterval(interval);
         if (timeout) clearTimeout(timeout);
         signal?.removeEventListener('abort', abort);
+      };
+      const finish = (outcome: 'completed' | 'timeout' | 'aborted') => {
+        if (settled) return;
+        settled = true;
+        cleanup();
         resolve(outcome);
       };
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const check = async () => {
+        if (settled || checking) return;
+        checking = true;
+        try {
+          if ((await readExitCode(run.exitCodeFile)) !== undefined) finish('completed');
+        } catch (error) {
+          fail(error);
+        } finally {
+          checking = false;
+        }
+      };
       const abort = () => finish('aborted');
-      const interval = setInterval(() => {
-        void readExitCode(run.exitCodeFile).then((code) => {
-          if (code !== undefined) finish('completed');
-        });
-      }, 100);
+      const interval = setInterval(() => void check(), 100);
       const timeout =
         timeoutMs === undefined ? undefined : setTimeout(() => finish('timeout'), timeoutMs);
       signal?.addEventListener('abort', abort, { once: true });
       if (signal?.aborted) finish('aborted');
-      void readExitCode(run.exitCodeFile).then((code) => {
-        if (code !== undefined) finish('completed');
-      });
+      void check();
     });
   }
 
   private ensureWatcher(): void {
     if (!this.state.runDir) return;
     if (!this.state.watcher) {
-      this.state.watcher = watch(this.state.runDir, (_event, filename) => {
+      const watcher = watch(this.state.runDir, (_event, filename) => {
         if (!filename?.endsWith('.exit')) return;
         const runId = filename.slice(0, -'.exit'.length);
         const run = this.state.commands.get(runId);
         if (run?.mode === 'background' && run.backgroundReady) {
-          void this.completeIfReady(run, true);
+          this.observeCompletion(run);
         }
       });
+      watcher.on('error', (error) => {
+        if (this.state.watcher === watcher) this.state.watcher = null;
+        try {
+          watcher.close();
+        } catch (closeError) {
+          this.reportDetachedFailure('completion watcher close', closeError);
+        }
+        this.reportDetachedFailure('completion watcher', error);
+      });
+      this.state.watcher = watcher;
     }
     if (!this.state.completionMonitor) {
       this.state.completionMonitor = setInterval(() => {
@@ -1008,7 +1254,7 @@ export class TmuxBashSupervisor {
             !run.completionDeliveryFailed &&
             !run.completionRetryTimer
           ) {
-            void this.completeIfReady(run, true);
+            this.observeCompletion(run);
           }
         }
       }, BACKGROUND_COMPLETION_SCAN_INTERVAL_MS);
@@ -1020,7 +1266,7 @@ export class TmuxBashSupervisor {
     run: CommandRun,
     deliver: boolean,
   ): Promise<AgentToolResult<TmuxBashDetails> | undefined> {
-    const exitCode = await readExitCode(run.exitCodeFile);
+    const exitCode = await this.readRunExitCode(run);
     if (exitCode === undefined || run.completionDelivered || run.completionDeliveryFailed) {
       return undefined;
     }
@@ -1062,7 +1308,34 @@ export class TmuxBashSupervisor {
       };
     }
 
+    let completionLease = false;
     if (deliver && run.mode === 'background' && !this.state.disposed) {
+      completionLease = (await this.runStore?.claimCompletion(run.runId)) ?? true;
+      if (!completionLease) {
+        run.deliveryState = 'pending';
+        run.completionClaimed = false;
+        run.completionDelivered = false;
+        run.completionDeliveryFailed = false;
+        run.completionRetryTimer = setTimeout(() => {
+          run.completionRetryTimer = undefined;
+          this.observeCompletion(run);
+        }, this.config.completionDeliveryRetryBaseMs);
+        run.completionRetryTimer.unref();
+        await this.runStore?.persist(run).catch(() => undefined);
+        this.publishStatus();
+        return result;
+      }
+    }
+    if (deliver && run.mode === 'background' && this.state.disposed) {
+      // Shutdown must leave a terminal record discoverable for same-session adoption
+      // rather than treating an undelivered completion as delivered.
+      run.deliveryState = 'failed';
+      run.completionClaimed = false;
+      run.completionDelivered = false;
+      run.completionDeliveryFailed = false;
+      run.completionDeliveryExhausted = false;
+      await this.runStore?.persist(run).catch(() => undefined);
+    } else if (deliver && run.mode === 'background') {
       const output = result.content[0]?.type === 'text' ? result.content[0].text : '';
       const ctx = this.state.statusContext;
       const delivery = this.completion;
@@ -1078,6 +1351,7 @@ export class TmuxBashSupervisor {
         );
         run.completionClaimed = true;
         run.completionDelivered = true;
+        run.completionDeliveryExhausted = false;
         const wake = outcome.wake;
         this.releaseGate(
           run,
@@ -1096,26 +1370,51 @@ export class TmuxBashSupervisor {
         const exhausted =
           run.completionDeliveryFailures >= this.config.completionDeliveryMaxAttempts;
         run.completionDeliveryFailed = exhausted;
+        run.completionDeliveryExhausted = exhausted;
         if (exhausted) {
           const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error));
-          ctx.ui.notify(
-            `Tmux command ${run.windowId ?? run.runId} completed, but delivery failed after ${run.completionDeliveryFailures} attempts${reason ? `: ${reason}` : '.'}`,
-            'error',
-          );
+          let exhaustionPersisted = this.runStore === undefined;
+          try {
+            await this.runStore?.persist(run);
+            exhaustionPersisted = true;
+          } catch (persistError) {
+            this.reportDetachedFailure('completion exhaustion persistence', persistError, run);
+          }
+          if (completionLease && exhaustionPersisted) {
+            await this.runStore
+              ?.releaseCompletionClaim(run.runId)
+              .catch((releaseError: unknown) =>
+                this.reportDetachedFailure('completion claim release', releaseError, run),
+              );
+          }
+          // A failed persistence must retain the claim; do not let the common
+          // terminal cleanup path release it after this branch.
+          completionLease = false;
+          try {
+            ctx.ui.notify(
+              `Tmux command ${run.windowId ?? run.runId} completed, but delivery failed after ${run.completionDeliveryFailures} attempts${reason ? `: ${reason}` : '.'}`,
+              'error',
+            );
+          } catch (notifyError) {
+            this.reportDetachedFailure('completion delivery notification', notifyError, run);
+          }
         } else if (!this.state.disposed) {
           run.completionDeliveryFailed = false;
+          run.completionDeliveryExhausted = false;
           run.deliveryState = 'pending';
           const delay =
             this.config.completionDeliveryRetryBaseMs * 2 ** (run.completionDeliveryFailures - 1);
           run.completionRetryTimer = setTimeout(() => {
             run.completionRetryTimer = undefined;
-            void this.completeIfReady(run, true);
+            this.observeCompletion(run);
           }, delay);
           run.completionRetryTimer.unref();
         }
         await this.runStore?.persist(run).catch(() => undefined);
-        this.publishStatus();
-        return result;
+        if (!exhausted) {
+          this.publishStatus();
+          return result;
+        }
       }
     } else {
       run.deliveryState = 'delivered';
@@ -1131,7 +1430,11 @@ export class TmuxBashSupervisor {
         automatic: true,
         isLiveOwnedWindow: (manifest) => this.isLiveOwnedManifest(manifest),
         isActiveRun: (manifest) => this.isValidatedActiveManifest(manifest),
+        isCleanupProtectedRun: (manifest) => this.isCleanupProtectedManifest(manifest),
       });
+    }
+    if (completionLease && (run.completionDelivered || run.completionDeliveryFailed)) {
+      await this.runStore?.releaseCompletionClaim(run.runId);
     }
     this.publishStatus();
     return result;
@@ -1206,7 +1509,12 @@ export class TmuxBashSupervisor {
       lines: Math.min(10_000, Math.max(1, Math.floor(lines ?? this.config.pollContextLines))),
       lastOutput: '',
     };
-    poller.timer = setInterval(() => void this.pollTick(poller), poller.intervalSeconds * 1_000);
+    poller.timer = setInterval(() => {
+      void this.pollTick(poller).catch((error: unknown) => {
+        this.stopPoll(poller.runId);
+        this.reportDetachedFailure('poll update', error, run);
+      });
+    }, poller.intervalSeconds * 1_000);
     this.state.pollers.set(run.runId, poller);
     run.polling = { intervalSeconds: poller.intervalSeconds, lines: poller.lines };
     return poller;
@@ -1224,7 +1532,10 @@ export class TmuxBashSupervisor {
 
   private async pollTick(poller: Poller): Promise<void> {
     const run = this.state.commands.get(poller.runId);
-    if (!run || this.state.disposed) return void this.stopPoll(poller.runId);
+    if (!run || this.state.disposed) {
+      this.stopPoll(poller.runId);
+      return;
+    }
     if (await this.completeIfReady(run, true)) return;
     if (!(await this.isOwnedWindow(run))) {
       await this.failUnownedRun(run, true);
@@ -1318,11 +1629,11 @@ export class TmuxBashSupervisor {
       ...(terminate ? { terminate: true } : {}),
       details: {
         action,
-        runs: runs.map((run) => ({
+        runs: runs.slice(0, MAX_TMUX_RESULT_RUNS).map((run) => ({
           runId: run.runId,
           completionId: run.completionId,
           windowId: run.windowId,
-          command: sanitizeTerminalText(run.displayCommand),
+          command: boundedResultValue(sanitizeTerminalText(run.displayCommand), 512),
           state: this.details(run).state,
           background: run.mode === 'background',
           awaited: Boolean(run.gateId),
@@ -1341,8 +1652,23 @@ export class TmuxBashSupervisor {
     await Promise.all(
       this.list(ctx).map(async (run) => {
         if (run.endedAt || run.killed) return undefined;
-        if (await this.completeIfReady(run, false)) return undefined;
-        if (await this.isOwnedWindow(run)) return undefined;
+        try {
+          if ((await this.readRunExitCode(run)) !== undefined) return undefined;
+        } catch {
+          return undefined;
+        }
+        if (await this.isOwnedWindow(run)) {
+          if (run.windowId && (await this.tmux.isPaneDead(run.windowId))) {
+            try {
+              if ((await this.readRunExitCode(run)) === undefined) {
+                return this.failUnownedRun(run, false);
+              }
+            } catch {
+              return undefined;
+            }
+          }
+          return undefined;
+        }
         return this.failUnownedRun(run, false);
       }),
     );
@@ -1352,14 +1678,157 @@ export class TmuxBashSupervisor {
   private async requireRun(windowId: string, ctx: ExtensionContext): Promise<CommandRun> {
     const run = this.list(ctx).find((candidate) => candidate.windowId === windowId);
     if (!run) throw new Error(`No managed tmux window ${windowId} exists in the configured scope.`);
-    if (!run.endedAt && !run.killed && (await this.completeIfReady(run, false))) return run;
-    if (!run.endedAt && !run.killed && !(await this.isOwnedWindow(run))) {
-      await this.failUnownedRun(run, false);
+    if (run.state === 'orphaned') {
       throw new Error(
         `Tmux window ${windowId} is missing or no longer carries this run's ownership metadata.`,
       );
     }
-    return run;
+    if (run.endedAt || run.killed || (await this.readRunExitCode(run)) !== undefined) return run;
+    if (await this.isOwnedWindow(run)) return run;
+    // Completion can publish its sentinel and auto-close the pane while ownership
+    // revalidation is in flight. Recheck before declaring the run orphaned.
+    if (run.endedAt || run.killed || (await this.readRunExitCode(run)) !== undefined) return run;
+    await this.failUnownedRun(run, false);
+    if (
+      (run.state as string) !== 'orphaned' &&
+      (run.endedAt || run.killed || (await this.readRunExitCode(run)) !== undefined)
+    ) {
+      return run;
+    }
+    throw new Error(
+      `Tmux window ${windowId} is missing or no longer carries this run's ownership metadata.`,
+    );
+  }
+
+  private async tryKillOwnedWindow(run: CommandRun, operation: string): Promise<boolean> {
+    if (!run.windowId) return false;
+    try {
+      if (!(await this.isOwnedWindow(run))) return false;
+      await this.tmux.killWindow(run.windowId);
+      return true;
+    } catch (error) {
+      this.reportDetachedFailure(operation, error, run);
+      return false;
+    }
+  }
+
+  private async deliverOrphanCompletion(
+    run: CommandRun,
+    text?: string,
+    truncation?: TmuxBashDetails['truncation'],
+  ): Promise<void> {
+    if (run.completionDelivered) return;
+    if (!text) {
+      let formatted: ReturnType<typeof formatOutput>;
+      try {
+        formatted = formatOutput(await readOutput(run.outputFile, this.config.maxOutputBytes), {
+          maxLines: this.config.completionContextLines,
+          maxBytes: this.config.maxOutputBytes,
+          fullOutputPath: run.outputFile,
+        });
+      } catch {
+        formatted = { text: '', raw: '' };
+      }
+      text = `${run.windowId ?? run.runId} failed: the managed tmux window disappeared or is no longer owned by this Pi run.${formatted.text ? `\n${formatted.text}` : ''}`;
+      truncation = formatted.truncation;
+    }
+    const ctx = this.state.statusContext;
+    const delivery = this.completion;
+    let completionLease = false;
+    if (!this.state.disposed) {
+      completionLease = (await this.runStore?.claimCompletion(run.runId)) ?? true;
+      if (!completionLease) {
+        run.deliveryState = 'pending';
+        run.completionDelivered = false;
+        run.completionDeliveryFailed = false;
+        run.completionDeliveryExhausted = false;
+        await this.runStore?.persist(run).catch(() => undefined);
+        return;
+      }
+    }
+    if (this.state.disposed || !ctx || !delivery) {
+      run.deliveryState = 'failed';
+      run.completionDelivered = false;
+      run.completionDeliveryFailed = false;
+      run.completionDeliveryExhausted = false;
+      await this.runStore?.persist(run).catch(() => undefined);
+      return;
+    }
+    let terminal = false;
+    try {
+      const outcome = await delivery.deliverCompletion(
+        run,
+        { text, details: this.details(run, truncation) },
+        ctx,
+      );
+      run.completionClaimed = true;
+      run.completionDelivered = true;
+      run.completionDeliveryFailed = false;
+      run.completionDeliveryExhausted = false;
+      this.releaseGate(run, 'failed', outcome.wake, outcome.handoff?.handoffId);
+      run.awaited = false;
+      terminal = true;
+    } catch (error) {
+      run.completionClaimed = false;
+      run.completionDelivered = false;
+      run.completionDeliveryFailures += 1;
+      const exhausted = run.completionDeliveryFailures >= this.config.completionDeliveryMaxAttempts;
+      run.completionDeliveryFailed = exhausted;
+      run.completionDeliveryExhausted = exhausted;
+      run.deliveryState = exhausted ? 'failed' : 'pending';
+      this.releaseGate(run, 'failed', 'none');
+      run.awaited = false;
+      if (exhausted) {
+        const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error));
+        let exhaustionPersisted = this.runStore === undefined;
+        try {
+          await this.runStore?.persist(run);
+          exhaustionPersisted = true;
+        } catch (persistError) {
+          this.reportDetachedFailure('orphan completion exhaustion persistence', persistError, run);
+        }
+        if (completionLease && exhaustionPersisted) {
+          await this.runStore
+            ?.releaseCompletionClaim(run.runId)
+            .catch((releaseError: unknown) =>
+              this.reportDetachedFailure('completion claim release', releaseError, run),
+            );
+        }
+        // Keep the claim held when exhaustion was not durably persisted.
+        completionLease = false;
+        try {
+          ctx.ui.notify(
+            `Tmux orphaned command ${run.windowId ?? run.runId} could not deliver its failure notification after ${run.completionDeliveryFailures} attempts${reason ? `: ${reason}` : '.'}`,
+            'error',
+          );
+        } catch (notifyError) {
+          this.reportDetachedFailure('orphan completion notification', notifyError, run);
+        }
+        terminal = true;
+      } else {
+        const delay =
+          this.config.completionDeliveryRetryBaseMs * 2 ** (run.completionDeliveryFailures - 1);
+        run.completionRetryTimer = setTimeout(() => {
+          run.completionRetryTimer = undefined;
+          void this.deliverOrphanCompletion(run).catch((retryError) =>
+            this.reportDetachedFailure('orphan completion retry', retryError, run),
+          );
+        }, delay);
+        run.completionRetryTimer.unref();
+      }
+    }
+    await this.runStore?.persist(run).catch(() => undefined);
+    if (terminal && completionLease) await this.runStore?.releaseCompletionClaim(run.runId);
+    this.publishStatus();
+  }
+
+  private async readRunExitCode(run: CommandRun): Promise<number | undefined> {
+    try {
+      return await readExitCode(run.exitCodeFile);
+    } catch (error) {
+      await this.handleCompletionObserverFailure(run, error);
+      throw error;
+    }
   }
 
   private async isOwnedWindow(run: CommandRun): Promise<boolean> {
@@ -1388,23 +1857,13 @@ export class TmuxBashSupervisor {
     });
     const output = formatted.text ? `\n${formatted.text}` : '';
     const text = `${run.windowId ?? run.runId} failed: the managed tmux window disappeared or is no longer owned by this Pi run.${output}`;
-    if (deliverFollowUp && !this.state.disposed && this.completion && this.state.statusContext) {
-      try {
-        const outcome = await this.completion.deliverCompletion(
-          run,
-          { text, details: this.details(run, formatted.truncation) },
-          this.state.statusContext,
-        );
-        this.releaseGate(run, 'failed', outcome.wake, outcome.handoff?.handoffId);
-      } catch {
-        run.deliveryState = 'failed';
-        run.completionDelivered = false;
-        this.releaseGate(run, 'failed', 'none');
-      }
+    if (deliverFollowUp) {
+      await this.deliverOrphanCompletion(run, text, formatted.truncation);
     } else {
       run.deliveryState = 'delivered';
       run.completionDelivered = true;
       this.releaseGate(run, 'failed', 'current-turn');
+      await this.runStore?.persist(run).catch(() => undefined);
     }
     await this.runStore?.persist(run).catch(() => undefined);
     this.publishStatus();
@@ -1482,12 +1941,22 @@ export class TmuxBashSupervisor {
 
   private async requireLiveOwnedRun(windowId: string, ctx: ExtensionContext): Promise<CommandRun> {
     const run = await this.requireRun(windowId, ctx);
+    if ((await this.readRunExitCode(run)) !== undefined) {
+      throw new Error(`Managed command ${windowId} has already completed.`);
+    }
     if (run.endedAt || run.killed || run.state !== 'running') {
       throw new Error(`Managed command ${windowId} is not running.`);
     }
     if (!(await this.isOwnedWindow(run))) {
       await this.failUnownedRun(run, false);
       throw new Error(`Managed tmux window ${windowId} failed its ownership revalidation.`);
+    }
+    if (run.windowId && (await this.tmux.isPaneDead(run.windowId))) {
+      if ((await this.readRunExitCode(run)) === undefined) {
+        await this.failUnownedRun(run, false);
+        throw new Error(`Managed tmux window ${windowId} has exited without an exit sentinel.`);
+      }
+      throw new Error(`Managed command ${windowId} has already completed.`);
     }
     return run;
   }
@@ -1506,7 +1975,10 @@ export class TmuxBashSupervisor {
   }
 
   private assertActionEnabled(action: TmuxToolDetails['action']): void {
-    if (!this.config.enabledTmuxActions.includes(action)) {
+    const enabled = this.config.enabledTmuxActions.includes(action);
+    const cleanupUsesPreview =
+      action === 'cleanup-preview' && this.config.enabledTmuxActions.includes('cleanup');
+    if (!enabled && !cleanupUsesPreview) {
       throw new Error(`tmux action ${action} is disabled by configuration.`);
     }
   }
@@ -1515,30 +1987,23 @@ export class TmuxBashSupervisor {
     manifest: ManagedRunManifest,
     store: RunStore | undefined = this.runStore,
   ): Promise<boolean> {
-    if (!manifest.windowId) return false;
     try {
       if ((await readExitCode(manifest.exitCodeFile)) !== undefined) return false;
-      if (await this.tmux.isPaneDead(manifest.windowId)) return false;
-      const manifestPath =
-        store?.manifestPath(manifest.runId) ??
-        join(dirname(manifest.outputFile), `${manifest.runId}.manifest.json`);
-      return await this.tmux.isOwnedWindow(manifest.windowId, {
-        owner: TMUX_BASH_OWNERSHIP_MARKER,
-        scope: manifest.scope,
-        piSessionId: manifest.piSessionId,
-        runId: manifest.runId,
-        manifestPath,
-        completionId: manifest.completionId,
-        completionDelivery: manifest.completionDelivery,
-      });
+      const windowId = await this.ownedWindowForManifest(manifest, store);
+      return windowId !== undefined && !(await this.tmux.isPaneDead(windowId));
     } catch {
-      return false;
+      // Ambiguous filesystem/tmux failures must preserve quota headroom; never
+      // classify a possibly-live run as inactive for destructive cleanup.
+      return true;
     }
   }
 
   private async isLiveOwnedManifest(manifest: ManagedRunManifest): Promise<boolean> {
-    if (!manifest.windowId) return false;
     try {
+      if (!manifest.windowId) {
+        const discovered = await this.ownedWindowForManifest(manifest, this.runStore);
+        return discovered !== undefined && !(await this.tmux.isPaneDead(discovered));
+      }
       if (!(await this.tmux.hasWindow(manifest.windowId))) return false;
       if (!(await this.tmux.isPaneDead(manifest.windowId))) return true;
       const manifestPath =
@@ -1558,6 +2023,161 @@ export class TmuxBashSupervisor {
     } catch {
       return true;
     }
+  }
+
+  private async ownedWindowForManifest(
+    manifest: ManagedRunManifest,
+    store: RunStore | undefined,
+  ): Promise<string | undefined> {
+    const manifestPath =
+      store?.manifestPath(manifest.runId) ??
+      join(dirname(manifest.outputFile), `${manifest.runId}.manifest.json`);
+    const expected = {
+      owner: TMUX_BASH_OWNERSHIP_MARKER,
+      scope: manifest.scope,
+      piSessionId: manifest.piSessionId,
+      runId: manifest.runId,
+      manifestPath,
+      completionId: manifest.completionId,
+      completionDelivery: manifest.completionDelivery,
+    } as const;
+    if (manifest.windowId) {
+      return (await this.tmux.isOwnedWindow(manifest.windowId, expected))
+        ? manifest.windowId
+        : undefined;
+    }
+    const windows = await this.tmux.listManaged({
+      scope: manifest.scope,
+      piSessionId: manifest.piSessionId,
+    });
+    return windows.find((window) => sameManagedWindowOwner(window.metadata, expected))?.windowId;
+  }
+
+  private observeCompletion(run: CommandRun): void {
+    if (run.completionObserverPromise) return;
+    const observation = this.observeCompletionTask(run);
+    run.completionObserverPromise = observation;
+  }
+
+  private async observeCompletionTask(run: CommandRun): Promise<void> {
+    try {
+      const completed = await this.completeIfReady(run, run.origin !== 'user-bash');
+      if (completed || run.endedAt || run.killed) return;
+      const now = Date.now();
+      if (
+        run.windowId &&
+        (run.lastPaneHealthCheckAt === undefined ||
+          now - run.lastPaneHealthCheckAt >= PANE_HEALTH_CHECK_INTERVAL_MS)
+      ) {
+        run.lastPaneHealthCheckAt = now;
+        let paneDead: boolean;
+        try {
+          paneDead = await this.tmux.isPaneDead(run.windowId);
+        } catch (error) {
+          this.reportDetachedFailure('completion pane health check', error, run);
+          return;
+        }
+        if (!paneDead) return;
+        let owned: boolean;
+        try {
+          owned = await this.isOwnedWindow(run);
+        } catch (error) {
+          this.reportDetachedFailure('completion ownership check', error, run);
+          return;
+        }
+        if (!owned) {
+          await this.failUnownedRun(run, true);
+          return;
+        }
+        if ((await this.readRunExitCode(run)) === undefined) {
+          await this.failUnownedRun(run, true);
+        }
+      }
+    } catch (error) {
+      if (!run.completionDeliveryFailed) {
+        await this.handleCompletionObserverFailure(run, error);
+      }
+    } finally {
+      run.completionObserverPromise = undefined;
+    }
+  }
+
+  private async handleCompletionObserverFailure(run: CommandRun, error: unknown): Promise<void> {
+    if (this.state.disposed) return;
+    this.stopPoll(run.runId);
+    const wasActive =
+      run.state === 'reserved' || run.state === 'starting' || run.state === 'running';
+    if (wasActive) {
+      const terminated = await this.tryKillOwnedWindow(run, 'failed-run termination');
+      if (!terminated) {
+        run.completionClaimed = false;
+        run.completionDelivered = false;
+        run.completionDeliveryFailed = false;
+        run.deliveryState = 'pending';
+        run.backgroundReady = Boolean(run.windowId);
+        await this.runStore
+          ?.persist(run)
+          .catch((persistError: unknown) =>
+            this.reportDetachedFailure('completion failure persistence', persistError, run),
+          );
+        this.reportDetachedFailure('completion observer retry', error, run);
+        this.publishStatus();
+        return;
+      }
+    }
+    run.completionClaimed = true;
+    run.completionDelivered = false;
+    run.completionDeliveryFailed = true;
+    run.deliveryState = 'failed';
+    run.awaited = false;
+    run.backgroundReady = false;
+    this.releaseGate(run, 'failed', 'none');
+    if (wasActive) {
+      run.endedAt ??= Date.now();
+      await this.runStore
+        ?.transition(run, 'failed')
+        .catch((persistError: unknown) =>
+          this.reportDetachedFailure('completion failure persistence', persistError, run),
+        );
+    } else {
+      await this.runStore
+        ?.persist(run)
+        .catch((persistError: unknown) =>
+          this.reportDetachedFailure('completion failure persistence', persistError, run),
+        );
+    }
+    this.reportDetachedFailure('completion observer', error, run);
+    this.publishStatus();
+  }
+
+  private reportDetachedFailure(operation: string, error: unknown, run?: CommandRun): void {
+    const key = `${operation}:${run?.runId ?? 'global'}`;
+    if (this.reportedDetachedFailures.has(key)) return;
+    this.reportedDetachedFailures.add(key);
+    const reason = boundedDiagnostic(error instanceof Error ? error.message : String(error));
+    try {
+      this.state.statusContext?.ui.notify(
+        `Tmux ${operation} failed${run ? ` for ${run.windowId ?? run.runId}` : ''}${reason ? `: ${reason}` : '.'}`,
+        'error',
+      );
+    } catch {
+      // Detached diagnostics must never turn a durable cleanup or delivery failure
+      // into an unhandled exception.
+    }
+  }
+
+  private async isCleanupProtectedManifest(manifest: ManagedRunManifest): Promise<boolean> {
+    const run = this.state.commands.get(manifest.runId);
+    if (!run) return false;
+    return Boolean(
+      run.completionPromise ||
+      run.completionRetryTimer ||
+      (run.state !== 'completed' &&
+        run.state !== 'failed' &&
+        run.state !== 'killed' &&
+        run.state !== 'orphaned') ||
+      (isTerminalRunState(run.state) && !run.completionDelivered && !run.completionDeliveryFailed),
+    );
   }
 
   private resourceUsageDetails(usage: {
@@ -1606,6 +2226,56 @@ function cancelledError(): Error {
 
 function matchesScope(left: TmuxWorkspaceScope, right: TmuxWorkspaceScope): boolean {
   return (['kind', 'root', 'hash'] as const).every((key) => left[key] === right[key]);
+}
+
+function boundedLines(lines: string[], maximumBytes: number): string {
+  const selected: string[] = [];
+  let usedBytes = 0;
+  let omitted = 0;
+  for (const line of lines) {
+    const separatorBytes = selected.length === 0 ? 0 : 1;
+    const lineBytes = Buffer.byteLength(line);
+    if (usedBytes + separatorBytes + lineBytes <= maximumBytes) {
+      selected.push(line);
+      usedBytes += separatorBytes + lineBytes;
+    } else {
+      omitted += 1;
+    }
+  }
+  if (omitted === 0) return selected.join('\n');
+  const notice = `… ${omitted} additional line(s) omitted from bounded output.`;
+  while (
+    selected.length > 0 &&
+    Buffer.byteLength([...selected, notice].join('\n')) > maximumBytes
+  ) {
+    selected.pop();
+    omitted += 1;
+  }
+  return [...selected, notice].join('\n');
+}
+
+function boundedResultValue(value: string, maximumBytes: number): string {
+  if (Buffer.byteLength(value) <= maximumBytes) return value;
+  const suffix = '…';
+  let result = '';
+  for (const character of value) {
+    if (Buffer.byteLength(result + character + suffix) > maximumBytes) break;
+    result += character;
+  }
+  return result + suffix;
+}
+
+function isTerminalRunState(state: CommandRun['state']): boolean {
+  return state === 'completed' || state === 'failed' || state === 'killed' || state === 'orphaned';
+}
+
+function isUnsettledRunCompletion(run: CommandRun): boolean {
+  return Boolean(
+    run.completionObserverPromise ||
+    run.completionPromise ||
+    run.completionRetryTimer ||
+    (isTerminalRunState(run.state) && !run.completionDelivered && !run.completionDeliveryFailed),
+  );
 }
 
 function detailState(run: CommandRun): TmuxBashDetails['state'] {

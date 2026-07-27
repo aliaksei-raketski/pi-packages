@@ -1,5 +1,5 @@
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { chmod, lstat, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -7,14 +7,50 @@ import { promisify } from 'node:util';
 import type { CommandArtifacts, TmuxBashConfig } from './types.js';
 
 const execFileAsync = promisify(execFile);
+export const STRUCTURAL_ARTIFACT_HEADROOM_BYTES = 32 * 1024;
+// Covers the bounded manifest, exit/rotation markers, completion claim, temporary
+// sentinel, and other fixed launch metadata in addition to the three scripts.
+const STRUCTURAL_METADATA_OVERHEAD_BYTES = 8 * 1024;
+const RUN_ARTIFACT_SUFFIXES = [
+  '.command',
+  '.sh',
+  '.out',
+  '.exit',
+  '.exit.tmp',
+  '.live',
+  '.spool.mjs',
+  '.rotated',
+  '.rotated.tmp',
+  '.completion.claim',
+  '.manifest.json',
+  '.stream',
+] as const;
+
+export interface DetachedCleanupOptions {
+  spawn?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
+  onError?: (error: Error) => void;
+}
 
 export function shellQuote(value: string): string {
   if (!value) return "''";
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+export function isRunArtifactFileName(name: string, runId: string): boolean {
+  return RUN_ARTIFACT_SUFFIXES.some((suffix) => name === `${runId}${suffix}`);
+}
+
+export function artifactRunIdFromFileName(name: string): string | undefined {
+  const suffix = RUN_ARTIFACT_SUFFIXES.find((candidate) => name.endsWith(candidate));
+  if (!suffix) return undefined;
+  const runId = name.slice(0, -suffix.length);
+  return /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(runId) ? runId : undefined;
+}
+
 export function artifactPaths(runDir: string, runId: string): CommandArtifacts {
-  if (!/^[A-Za-z0-9_-]+$/.test(runId)) throw new Error('Invalid tmux-bash run ID.');
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(runId)) {
+    throw new Error('Invalid tmux-bash run ID.');
+  }
   return {
     commandFile: join(runDir, `${runId}.command`),
     scriptFile: join(runDir, `${runId}.sh`),
@@ -56,12 +92,24 @@ export async function createCommandArtifacts(input: {
     ),
     streamFile: input.streamOutput ? artifacts.streamFile : undefined,
   });
+  const spoolScript = buildSpoolScript();
+  const structuralBytes =
+    Buffer.byteLength(input.command) +
+    1 +
+    Buffer.byteLength(script) +
+    Buffer.byteLength(spoolScript) +
+    STRUCTURAL_METADATA_OVERHEAD_BYTES;
+  if (structuralBytes > STRUCTURAL_ARTIFACT_HEADROOM_BYTES) {
+    throw new Error(
+      `tmux-bash launch artifacts exceed the ${STRUCTURAL_ARTIFACT_HEADROOM_BYTES}-byte structural limit.`,
+    );
+  }
 
   await Promise.all([
     writeFile(artifacts.commandFile, `${input.command}\n`, { encoding: 'utf8', mode: 0o700 }),
     writeFile(artifacts.outputFile, '', { encoding: 'utf8', mode: 0o600 }),
     writeFile(artifacts.scriptFile, script, { encoding: 'utf8', mode: 0o700 }),
-    writeFile(artifacts.spoolFile, buildSpoolScript(), { encoding: 'utf8', mode: 0o600 }),
+    writeFile(artifacts.spoolFile, spoolScript, { encoding: 'utf8', mode: 0o600 }),
     writeFile(artifacts.liveFile, '', { encoding: 'utf8', mode: 0o600 }),
   ]);
   await Promise.all([chmod(artifacts.commandFile, 0o700), chmod(artifacts.scriptFile, 0o700)]);
@@ -78,7 +126,7 @@ export async function removeUncommittedArtifacts(runDir: string, runId: string):
   }
   const names = await readdir(runDir).catch(() => []);
   for (const name of names) {
-    if (name !== runId && !name.startsWith(`${runId}.`)) continue;
+    if (!isRunArtifactFileName(name, runId)) continue;
     const path = join(runDir, name);
     const details = await lstat(path).catch(() => undefined);
     if (!details || (!details.isFile() && !details.isSymbolicLink() && !details.isFIFO())) continue;
@@ -86,9 +134,14 @@ export async function removeUncommittedArtifacts(runDir: string, runId: string):
   }
 }
 
-export async function scheduleRunArtifactCleanup(runDir: string, runId: string): Promise<void> {
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(runId)) throw new Error('Invalid tmux-bash run ID.');
-  const cleanup = spawn(
+export async function scheduleRunArtifactCleanup(
+  runDir: string,
+  runId: string,
+  options: DetachedCleanupOptions = {},
+): Promise<void> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/.test(runId))
+    throw new Error('Invalid tmux-bash run ID.');
+  const cleanup = (options.spawn ?? spawn)(
     process.execPath,
     [
       '--input-type=module',
@@ -98,6 +151,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 const root = process.env.TMUX_BASH_RUN_DIR;
 const runId = process.env.TMUX_BASH_RUN_ID;
+const artifactNames = new Set(JSON.parse(process.env.TMUX_BASH_ARTIFACT_NAMES ?? '[]'));
 if (!root || !runId) process.exit(1);
 const live = join(root, runId + '.live');
 while (await lstat(live).then(() => true, (error) => {
@@ -109,22 +163,31 @@ const names = await readdir(root).catch((error) => {
   throw error;
 });
 for (const name of names) {
-  if (name === runId || name.startsWith(runId + '.')) await rm(join(root, name), { force: true });
+  if (artifactNames.has(name)) await rm(join(root, name), { force: true });
 }`,
     ],
     {
       detached: true,
-      env: { TMUX_BASH_RUN_DIR: runDir, TMUX_BASH_RUN_ID: runId },
+      env: {
+        TMUX_BASH_RUN_DIR: runDir,
+        TMUX_BASH_RUN_ID: runId,
+        TMUX_BASH_ARTIFACT_NAMES: JSON.stringify(
+          RUN_ARTIFACT_SUFFIXES.map((suffix) => `${runId}${suffix}`),
+        ),
+      },
       stdio: 'ignore',
     },
   );
-  cleanup.unref();
+  await detachCleanupProcess(cleanup, options.onError);
 }
 
-export async function scheduleRunDirectoryCleanup(runDir: string): Promise<void> {
+export async function scheduleRunDirectoryCleanup(
+  runDir: string,
+  options: DetachedCleanupOptions = {},
+): Promise<void> {
   const sentinel = join(runDir, '.cleanup-on-exit');
   await writeFile(sentinel, '', { encoding: 'utf8', mode: 0o600 });
-  const cleanup = spawn(
+  const cleanup = (options.spawn ?? spawn)(
     process.execPath,
     [
       '--input-type=module',
@@ -150,6 +213,35 @@ await rm(root, { recursive: true, force: true });`,
       stdio: 'ignore',
     },
   );
+  await detachCleanupProcess(cleanup, options.onError);
+}
+
+async function detachCleanupProcess(
+  cleanup: ChildProcess,
+  onError: ((error: Error) => void) | undefined,
+): Promise<void> {
+  const report = (error: Error) => onError?.(error);
+  cleanup.on('error', report);
+  cleanup.on('exit', (code, signal) => {
+    if (code === 0) return;
+    report(
+      new Error(
+        `Detached cleanup process failed${signal ? ` with signal ${signal}` : ` with exit code ${code ?? 'unknown'}`}.`,
+      ),
+    );
+  });
+  await new Promise<void>((resolve, reject) => {
+    const spawned = () => {
+      cleanup.off('error', failed);
+      resolve();
+    };
+    const failed = (error: Error) => {
+      cleanup.off('spawn', spawned);
+      reject(error);
+    };
+    cleanup.once('spawn', spawned);
+    cleanup.once('error', failed);
+  });
   cleanup.unref();
 }
 
@@ -257,47 +349,129 @@ exit "$status"
 
 function buildSpoolScript(): string {
   return `import { createWriteStream } from 'node:fs';
-import { open, readFile, writeFile } from 'node:fs/promises';
+import { open, readFile, rename, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 
 const [outputFile, maximumText, rotationMarkerFile, streamFile] = process.argv.slice(2);
 const maximum = Number(maximumText);
 const notice = Buffer.from('[tmux-bash spool limit reached; earlier output truncated; showing bounded tail]\\n');
+const boundedNotice = notice.subarray(0, Math.min(notice.length, maximum));
+const tailBytes = Math.max(0, maximum - boundedNotice.length);
 let file = await open(outputFile, 'a');
 let position = (await file.stat()).size;
-const stream = streamFile ? createWriteStream(streamFile) : undefined;
-if (stream) await once(stream, 'open');
+let rotated = false;
+let ringWrite = 0;
+let ringLength = 0;
+let totalBytes = position;
+let metadataGeneration = 0;
+let stream = streamFile ? createWriteStream(streamFile) : undefined;
+if (stream) {
+  stream.on('error', () => {
+    stream = undefined;
+  });
+  await once(stream, 'open').catch(() => {
+    stream = undefined;
+  });
+}
 
 async function rotate(chunk) {
+  await writeRingMetadata(false, true);
   await file.close();
   const current = await readFile(outputFile).catch(() => Buffer.alloc(0));
-  const tailBytes = Math.max(0, maximum - notice.length);
   const combined = Buffer.concat([current, chunk]);
   const tail = combined.subarray(Math.max(0, combined.length - tailBytes));
-  const boundedNotice = notice.subarray(0, Math.min(notice.length, maximum));
-  const next = maximum <= notice.length ? boundedNotice : Buffer.concat([boundedNotice, tail]);
+  const next = maximum <= boundedNotice.length ? boundedNotice : Buffer.concat([boundedNotice, tail]);
   await writeFile(outputFile, next.subarray(0, maximum), { mode: 0o600 });
-  await writeFile(rotationMarkerFile, '', { mode: 0o600 });
-  file = await open(outputFile, 'a');
-  position = (await file.stat()).size;
+  file = await open(outputFile, 'r+');
+  rotated = true;
+  ringLength = tail.length;
+  ringWrite = tailBytes === 0 ? 0 : ringLength % tailBytes;
+  await writeRingMetadata(false);
+}
+
+async function writeRingMetadata(finalized, writing = false) {
+  const temporaryMarker = rotationMarkerFile + '.tmp';
+  metadataGeneration += 1;
+  await writeFile(temporaryMarker, JSON.stringify({
+    version: 2,
+    generation: metadataGeneration,
+    finalized,
+    writing,
+    noticeBytes: boundedNotice.length,
+    tailBytes,
+    ringWrite,
+    ringLength,
+    totalBytes,
+  }), { mode: 0o600 });
+  await rename(temporaryMarker, rotationMarkerFile);
+}
+
+async function appendRing(chunk) {
+  if (tailBytes === 0) return;
+  let value = chunk;
+  if (value.length >= tailBytes) {
+    value = value.subarray(value.length - tailBytes);
+    await file.write(value, 0, value.length, boundedNotice.length);
+    ringLength = tailBytes;
+    ringWrite = 0;
+    return;
+  }
+  let offset = 0;
+  while (offset < value.length) {
+    const amount = Math.min(value.length - offset, tailBytes - ringWrite);
+    await file.write(value, offset, amount, boundedNotice.length + ringWrite);
+    offset += amount;
+    ringWrite = (ringWrite + amount) % tailBytes;
+    ringLength = Math.min(tailBytes, ringLength + amount);
+  }
 }
 
 for await (const value of process.stdin) {
   const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+  totalBytes = Math.min(Number.MAX_SAFE_INTEGER, totalBytes + chunk.length);
   if (!process.stdout.write(chunk)) await once(process.stdout, 'drain');
-  if (stream && !stream.write(chunk)) await once(stream, 'drain');
-  if (position + chunk.length > maximum) {
+  if (stream) {
+    try {
+      if (!stream.write(chunk)) await once(stream, 'drain');
+    } catch {
+      stream = undefined;
+    }
+  }
+  if (!rotated && position + chunk.length > maximum) {
     await rotate(chunk);
+  } else if (rotated) {
+    await writeRingMetadata(false, true);
+    await appendRing(chunk);
   } else {
     await file.write(chunk);
     position += chunk.length;
   }
+  if (rotated) await writeRingMetadata(false);
 }
 
-await file.close();
+if (rotated) {
+  await writeRingMetadata(false, true);
+  await file.close();
+}
+if (rotated && tailBytes > 0) {
+  const current = await readFile(outputFile).catch(() => Buffer.alloc(0));
+  const ring = current.subarray(boundedNotice.length, boundedNotice.length + tailBytes);
+  const ordered = ringLength < tailBytes
+    ? ring.subarray(0, ringLength)
+    : Buffer.concat([ring.subarray(ringWrite), ring.subarray(0, ringWrite)]);
+  await writeFile(outputFile, Buffer.concat([boundedNotice, ordered]).subarray(0, maximum), { mode: 0o600 });
+  ringLength = ordered.length;
+  ringWrite = 0;
+}
+if (rotated) await writeRingMetadata(true);
+if (!rotated) await file.close();
 if (stream) {
-  stream.end();
-  await once(stream, 'close');
+  try {
+    stream.end();
+    await once(stream, 'close');
+  } catch {
+    // A detached user-bash reader must not terminate the command spool.
+  }
 }
 `;
 }

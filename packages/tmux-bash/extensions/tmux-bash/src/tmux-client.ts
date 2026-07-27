@@ -104,6 +104,7 @@ export class TmuxClient {
     try {
       throwIfAborted(input.signal);
       await this.setMetadata(windowId, input.metadata, input.signal);
+      throwIfAborted(input.signal);
     } catch (error) {
       await this.killWindow(windowId).catch(() => undefined);
       throw error;
@@ -132,7 +133,7 @@ export class TmuxClient {
     signal?: AbortSignal,
   ): Promise<ManagedWindowMetadata | undefined> {
     assertWindowId(windowId);
-    if (!(await this.hasWindow(windowId))) return undefined;
+    if (!(await this.hasWindow(windowId, signal))) return undefined;
     const values: Record<string, string | undefined> = {};
     for (const key of Object.values(TMUX_BASH_METADATA_KEYS)) {
       const result = await this.executeProcess(
@@ -140,7 +141,11 @@ export class TmuxClient {
         ['show-options', '-w', '-v', '-t', windowId, key],
         signal,
       );
-      if (result.code === 0) values[key] = result.stdout.replace(/\r?\n$/, '');
+      if (result.code === 0) {
+        values[key] = result.stdout.replace(/\r?\n$/, '');
+      } else if (!isMissingTmuxValue(result.stderr)) {
+        throw tmuxError(`read window option ${key}`, result);
+      }
     }
     try {
       return parseManagedWindowMetadata(values);
@@ -158,9 +163,11 @@ export class TmuxClient {
     );
   }
 
-  async killWindow(windowId: string): Promise<void> {
+  async killWindow(windowId: string, signal?: AbortSignal): Promise<void> {
     assertWindowId(windowId);
-    const result = await this.executeProcess(this.binary, ['kill-window', '-t', windowId]);
+    const result = signal
+      ? await this.executeProcess(this.binary, ['kill-window', '-t', windowId], signal)
+      : await this.executeProcess(this.binary, ['kill-window', '-t', windowId]);
     if (result.code !== 0 && !/can't find window|no server running/i.test(result.stderr)) {
       throw tmuxError(`kill window ${windowId}`, result);
     }
@@ -181,33 +188,54 @@ export class TmuxClient {
     return result.stdout;
   }
 
-  async hasWindow(windowId: string): Promise<boolean> {
+  async hasWindow(windowId: string, signal?: AbortSignal): Promise<boolean> {
     assertWindowId(windowId);
-    const result = await this.executeProcess(this.binary, [
-      'display-message',
-      '-p',
-      '-t',
-      windowId,
-      '#{window_id}',
-    ]);
-    return result.code === 0 && result.stdout.trim() === windowId;
+    const result = signal
+      ? await this.executeProcess(
+          this.binary,
+          ['display-message', '-p', '-t', windowId, '#{window_id}'],
+          signal,
+        )
+      : await this.executeProcess(this.binary, [
+          'display-message',
+          '-p',
+          '-t',
+          windowId,
+          '#{window_id}',
+        ]);
+    if (result.code === 0) return result.stdout.trim() === windowId;
+    if (/can't find window|no server running/i.test(result.stderr)) return false;
+    throw tmuxError(`inspect window ${windowId}`, result);
   }
 
-  async isPaneDead(windowId: string): Promise<boolean> {
+  async isPaneDead(windowId: string, signal?: AbortSignal): Promise<boolean> {
     assertWindowId(windowId);
-    const result = await this.executeProcess(this.binary, [
-      'display-message',
-      '-p',
-      '-t',
-      windowId,
-      '#{pane_dead}',
-    ]);
-    if (result.code !== 0) throw tmuxError(`inspect pane ${windowId}`, result);
+    const result = signal
+      ? await this.executeProcess(
+          this.binary,
+          ['display-message', '-p', '-t', windowId, '#{pane_dead}'],
+          signal,
+        )
+      : await this.executeProcess(this.binary, [
+          'display-message',
+          '-p',
+          '-t',
+          windowId,
+          '#{pane_dead}',
+        ]);
+    if (result.code !== 0) {
+      if (/can't find window|no server running/i.test(result.stderr)) return true;
+      throw tmuxError(`inspect pane ${windowId}`, result);
+    }
     return result.stdout.trim() === '1';
   }
 
-  async isOwnedWindow(windowId: string, expected: ManagedWindowIdentity): Promise<boolean> {
-    const actual = await this.getMetadata(windowId);
+  async isOwnedWindow(
+    windowId: string,
+    expected: ManagedWindowIdentity,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const actual = await this.getMetadata(windowId, signal);
     return actual !== undefined && sameManagedWindowOwner(actual, expected);
   }
 
@@ -325,6 +353,12 @@ function abortError(): Error {
   const error = new Error('tmux bash command was cancelled.');
   error.name = 'AbortError';
   return error;
+}
+
+function isMissingTmuxValue(stderr: string): boolean {
+  return /^(?:missing|unknown option|invalid option(?::|$)|no such option|option .* (?:does not exist|not found)|can't find (?:window|session)|no server running)/i.test(
+    stderr,
+  );
 }
 
 function tmuxError(operation: string, result: TmuxExecResult): Error {
