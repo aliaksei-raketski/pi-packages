@@ -59,6 +59,27 @@ describe('bash result rendering', () => {
     expect(expanded).toContain('line-10');
   });
 
+  it('renders completion policy, adoption, and bounded-output rotation diagnostics', () => {
+    const rendered = renderBashResult(
+      {
+        content: [],
+        details: {
+          state: 'running',
+          awaited: true,
+          outputFile: '/tmp/output',
+          completionDelivery: 'display',
+          adopted: true,
+          outputWasRotated: true,
+        },
+      } as never,
+      { expanded: true, isPartial: false },
+      theme,
+    );
+    expect(rendered.render(200).join('\n')).toContain(
+      'awaited · completion=display · adopted · output rotated',
+    );
+  });
+
   it('preserves model truncation notices and full-output paths when display is collapsed', () => {
     const rendered = renderBashResult(
       {

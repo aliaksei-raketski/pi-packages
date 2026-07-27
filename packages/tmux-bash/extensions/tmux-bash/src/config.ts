@@ -14,7 +14,16 @@ const ALL_ACTIONS: readonly TmuxAction[] = [
   'list-polls',
   'await',
   'unawait',
+  'attach',
+  'send-input',
+  'send-key',
+  'cleanup-preview',
+  'cleanup',
 ];
+
+const DEFAULT_ACTIONS: readonly TmuxAction[] = ALL_ACTIONS.filter(
+  (action) => action !== 'send-input' && action !== 'send-key',
+);
 
 export const DEFAULT_TMUX_BASH_CONFIG: Readonly<TmuxBashConfig> = {
   bashToolName: 'bash',
@@ -24,9 +33,10 @@ export const DEFAULT_TMUX_BASH_CONFIG: Readonly<TmuxBashConfig> = {
   defaultTimeoutAction: 'background',
   foregroundUpdateIntervalMs: 1_000,
   tmuxBinary: 'tmux',
-  tmuxSessionScope: 'git-root',
+  tmuxSessionScope: 'workspace',
   globalTmuxSessionName: 'pi-tmux-bash',
   gitRootTmuxSessionNameTemplate: 'pi-{gitHash}',
+  cwdTmuxSessionNameTemplate: 'pi-cwd-{scopeHash}',
   tmuxWindowScope: 'pi-session',
   tmuxWindowNameTemplate: '{name}-{runId}',
   maxTmuxWindowNameLength: 64,
@@ -49,9 +59,25 @@ export const DEFAULT_TMUX_BASH_CONFIG: Readonly<TmuxBashConfig> = {
   environmentDenylist: ['TMUX', 'TMUX_PANE', 'PWD', 'OLDPWD', 'SHLVL', '_'],
   defaultWaitForBackgroundCompletion: false,
   defaultWaitAfterForegroundTimeout: true,
-  enabledTmuxActions: [...ALL_ACTIONS],
+  enabledTmuxActions: [...DEFAULT_ACTIONS],
   systemPrompt: true,
   statusbarEnabled: true,
+  adoptionPolicy: 'off',
+  adoptionScanTimeoutMs: 5_000,
+  adoptPolling: true,
+  durableOutputDir: join(getAgentDir(), 'tmux-bash'),
+  interactiveInputEnabled: false,
+  maxInputBytes: 16 * 1024,
+  routeUserBash: false,
+  defaultCompletionDelivery: 'model',
+  maxConcurrentRuns: 16,
+  maxArtifactBytesPerRun: 10 * 1024 * 1024,
+  maxArtifactBytesTotal: 1024 * 1024 * 1024,
+  maxCompletedRuns: 100,
+  completedArtifactRetentionSeconds: 24 * 60 * 60,
+  resourceScanIntervalSeconds: 60,
+  quotaPolicy: 'reject-new',
+  nonGitScope: 'error',
 };
 
 export interface LoadTmuxBashConfigOptions {
@@ -84,12 +110,11 @@ export function loadTmuxBashConfig(options: LoadTmuxBashConfigOptions = {}): Tmu
   if (!isRecord(input)) {
     throw new Error(`Invalid tmux-bash config ${configPath}: expected a JSON object.`);
   }
-
-  return validateTmuxBashConfig({ ...DEFAULT_TMUX_BASH_CONFIG, ...input });
+  return validateTmuxBashConfig(normalizeConfigInput(input));
 }
 
 export function validateTmuxBashConfig(input: Record<string, unknown>): TmuxBashConfig {
-  const config = input as unknown as TmuxBashConfig;
+  const config = normalizeConfigInput(input) as unknown as TmuxBashConfig;
   requireToolName(config.bashToolName, 'bashToolName');
   requireToolName(config.tmuxToolName, 'tmuxToolName');
   requireInteger(config.defaultTimeoutSeconds, 'defaultTimeoutSeconds', 1);
@@ -97,10 +122,11 @@ export function validateTmuxBashConfig(input: Record<string, unknown>): TmuxBash
   requireEnum(config.defaultTimeoutAction, 'defaultTimeoutAction', ['background', 'kill']);
   requireInteger(config.foregroundUpdateIntervalMs, 'foregroundUpdateIntervalMs', 50);
   requireBinary(config.tmuxBinary);
-  requireEnum(config.tmuxSessionScope, 'tmuxSessionScope', ['global', 'git-root']);
+  requireEnum(config.tmuxSessionScope, 'tmuxSessionScope', ['global', 'workspace']);
   requireTemplate(config.globalTmuxSessionName, 'globalTmuxSessionName');
   requireTemplate(config.gitRootTmuxSessionNameTemplate, 'gitRootTmuxSessionNameTemplate');
-  requireEnum(config.tmuxWindowScope, 'tmuxWindowScope', ['pi-session', 'git-root', 'all']);
+  requireTemplate(config.cwdTmuxSessionNameTemplate, 'cwdTmuxSessionNameTemplate');
+  requireEnum(config.tmuxWindowScope, 'tmuxWindowScope', ['pi-session', 'workspace', 'all']);
   requireTemplate(config.tmuxWindowNameTemplate, 'tmuxWindowNameTemplate');
   requireInteger(config.maxTmuxWindowNameLength, 'maxTmuxWindowNameLength', 8, 200);
   requireBoolean(config.autoCloseWindowsOnCompletion, 'autoCloseWindowsOnCompletion');
@@ -121,12 +147,7 @@ export function validateTmuxBashConfig(input: Record<string, unknown>): TmuxBash
   requireInteger(config.completedExpandedDisplayLines, 'completedExpandedDisplayLines', 3, 10_000);
   requireInteger(config.completionDeliveryMaxAttempts, 'completionDeliveryMaxAttempts', 1, 20);
   requireInteger(config.completionDeliveryRetryBaseMs, 'completionDeliveryRetryBaseMs', 10, 60_000);
-  if (typeof config.outputDir !== 'string' || config.outputDir.includes('\0')) {
-    throw new Error('tmux-bash config outputDir must be a string without NUL bytes.');
-  }
-  if (config.outputDir && !isAbsolute(config.outputDir)) {
-    throw new Error('tmux-bash config outputDir must be empty or absolute.');
-  }
+  requireAbsoluteOrEmptyPath(config.outputDir, 'outputDir');
   requireBoolean(config.preserveOutputFiles, 'preserveOutputFiles');
   if (!Array.isArray(config.environmentDenylist) || !config.environmentDenylist.every(isEnvName)) {
     throw new Error(
@@ -144,11 +165,45 @@ export function validateTmuxBashConfig(input: Record<string, unknown>): TmuxBash
   }
   requireBoolean(config.systemPrompt, 'systemPrompt');
   requireBoolean(config.statusbarEnabled, 'statusbarEnabled');
+  requireEnum(config.adoptionPolicy, 'adoptionPolicy', ['off', 'same-pi-session']);
+  requireInteger(config.adoptionScanTimeoutMs, 'adoptionScanTimeoutMs', 100, 60_000);
+  requireBoolean(config.adoptPolling, 'adoptPolling');
+  requireAbsolutePath(config.durableOutputDir, 'durableOutputDir');
+  requireBoolean(config.interactiveInputEnabled, 'interactiveInputEnabled');
+  requireInteger(config.maxInputBytes, 'maxInputBytes', 1, 1024 * 1024);
+  requireBoolean(config.routeUserBash, 'routeUserBash');
+  requireEnum(config.defaultCompletionDelivery, 'defaultCompletionDelivery', [
+    'model',
+    'display',
+    'next-turn',
+  ]);
+  requireInteger(config.maxConcurrentRuns, 'maxConcurrentRuns', 1, 10_000);
+  requireInteger(
+    config.maxArtifactBytesPerRun,
+    'maxArtifactBytesPerRun',
+    1_024,
+    1024 * 1024 * 1024,
+  );
+  requireInteger(
+    config.maxArtifactBytesTotal,
+    'maxArtifactBytesTotal',
+    config.maxArtifactBytesPerRun,
+  );
+  requireInteger(config.maxCompletedRuns, 'maxCompletedRuns', 1, 1_000_000);
+  requireInteger(config.completedArtifactRetentionSeconds, 'completedArtifactRetentionSeconds', 0);
+  requireInteger(config.resourceScanIntervalSeconds, 'resourceScanIntervalSeconds', 1, 86_400);
+  requireEnum(config.quotaPolicy, 'quotaPolicy', ['reject-new', 'cleanup-completed']);
+  requireEnum(config.nonGitScope, 'nonGitScope', ['error', 'cwd']);
 
+  const enabledTmuxActions = [...new Set(config.enabledTmuxActions)].filter(
+    (action) =>
+      config.interactiveInputEnabled || (action !== 'send-input' && action !== 'send-key'),
+  );
   return {
     ...config,
+    maxSpoolBytes: config.maxArtifactBytesPerRun,
     environmentDenylist: [...new Set(config.environmentDenylist)],
-    enabledTmuxActions: [...new Set(config.enabledTmuxActions)],
+    enabledTmuxActions,
   };
 }
 
@@ -161,6 +216,16 @@ export function clampPollInterval(config: TmuxBashConfig, interval?: number): nu
   const requested = interval ?? config.defaultPollIntervalSeconds;
   const minimum = config.pollDelivery === 'model' ? config.minimumModelPollIntervalSeconds : 1;
   return Math.min(config.maxTimeoutSeconds, Math.max(minimum, Math.floor(requested)));
+}
+
+function normalizeConfigInput(input: Record<string, unknown>): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...DEFAULT_TMUX_BASH_CONFIG, ...input };
+  if (merged.tmuxSessionScope === 'git-root') merged.tmuxSessionScope = 'workspace';
+  if (merged.tmuxWindowScope === 'git-root') merged.tmuxWindowScope = 'workspace';
+  if (input.maxArtifactBytesPerRun === undefined && input.maxSpoolBytes !== undefined) {
+    merged.maxArtifactBytesPerRun = input.maxSpoolBytes;
+  }
+  return merged;
 }
 
 function requireToolName(value: unknown, key: string): asserts value is string {
@@ -180,6 +245,17 @@ function requireBinary(value: unknown): asserts value is string {
   if (value.includes('/') && !isAbsolute(value)) {
     throw new Error('tmux-bash config tmuxBinary must be a command name or absolute path.');
   }
+}
+
+function requireAbsoluteOrEmptyPath(value: unknown, key: string): asserts value is string {
+  if (typeof value !== 'string' || value.includes('\0') || (value && !isAbsolute(value))) {
+    throw new Error(`tmux-bash config ${key} must be empty or an absolute path without NUL bytes.`);
+  }
+}
+
+function requireAbsolutePath(value: unknown, key: string): asserts value is string {
+  requireAbsoluteOrEmptyPath(value, key);
+  if (!value) throw new Error(`tmux-bash config ${key} must be an absolute path.`);
 }
 
 function requireInteger(

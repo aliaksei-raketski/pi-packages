@@ -14,7 +14,13 @@ export function createBashPromptGuidelines(config: TmuxBashConfig): string[] {
     'After bash returns an awaited background command, stop immediately: do not call get_goal, tmux await, tmux poll, or emit waiting commentary; completion will resume work automatically.',
     'If required finite work was started without a continuation gate, call tmux action await once on its stable window, then stop immediately; do not repeatedly call goal tools, poll, or emit waiting updates.',
     `If omitted for an explicit background command, waitForCompletion defaults to ${configuredDefault} in this installation.`,
-    'Background bash completion is reported automatically while this Pi process remains running.',
+    config.adoptionPolicy === 'same-pi-session'
+      ? 'Background bash completion is durable and may be recovered after a same-session Pi restart; another Pi session never adopts it.'
+      : 'Background bash completion is reported automatically only while this Pi runtime remains active because restart adoption is disabled.',
+    'Choose completionDelivery independently from waiting: model wakes with a follow-up, display stays out of model context with wake=none, and next-turn waits for the next natural model turn.',
+    'Never place passwords, API keys, or other secrets in tmux send-input arguments; model tool arguments are session-visible.',
+    'The model-facing tmux attach action only presents a safe structured command and never takes terminal control.',
+    'Use tmux cleanup-preview before tmux cleanup, and never delete live or unowned runs.',
     'Use stable @-prefixed window IDs with tmux actions; tmux window indexes are not stable.',
   ];
 }

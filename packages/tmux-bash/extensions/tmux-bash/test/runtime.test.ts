@@ -1,14 +1,18 @@
 import {
   CONTINUATION_GATE_ACQUIRE_EVENT,
   CONTINUATION_GATE_RELEASE_EVENT,
+  CONTINUATION_GATE_SNAPSHOT_EVENT,
   createContinuationGateController,
 } from '@aliaksei-raketski/pi-continuation-gate-protocol';
-import { writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_TMUX_BASH_CONFIG } from '../src/config.js';
 import { TmuxBashRuntime } from '../src/runtime.js';
 import { TmuxClient, type TmuxExecutor } from '../src/tmux-client.js';
+import { TMUX_BASH_DISPLAY_COMPLETION } from '../src/types.js';
 
 class EventBus {
   private handlers = new Map<string, Set<(payload: unknown) => void>>();
@@ -40,6 +44,56 @@ afterEach(async () => {
 });
 
 describe('TmuxBashRuntime', () => {
+  it('surfaces durable no-UI display markers and resource usage through tmux list', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tmux-list-diagnostics-'));
+    const events = new EventBus();
+    const pi = { events, sendMessage: vi.fn(), appendEntry: vi.fn() };
+    const controller = createContinuationGateController(pi as never, {
+      source: 'pi-tmux-bash',
+    });
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        outputDir: root,
+        durableOutputDir: root,
+        statusbarEnabled: false,
+      },
+      controller,
+      new TmuxClient(
+        'tmux',
+        vi.fn(async () => ({ stdout: '', stderr: '', code: 0 })),
+      ),
+    );
+    activeRuntimes.push(runtime);
+    const base = fakeContext();
+    const context = {
+      ...base,
+      sessionManager: {
+        ...base.sessionManager,
+        getBranch: () => [
+          {
+            type: 'custom',
+            customType: TMUX_BASH_DISPLAY_COMPLETION,
+            data: { displayed: false },
+          },
+        ],
+      },
+    };
+    await runtime.startSession(context as never);
+    const result = await runtime.listResult(context as never);
+    expect(result.content[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('display-only completion(s) were persisted without a UI'),
+    });
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining('Usage: 0 active'),
+    });
+    expect(result.details.usage).toMatchObject({ activeRuns: 0, reservations: 0 });
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
   it('queues completion before gate release when the file watcher misses the exit event', async () => {
     const events = new EventBus();
     const ordering: string[] = [];
@@ -369,13 +423,14 @@ describe('TmuxBashRuntime', () => {
     activeRuntimes.push(runtime);
     await runtime.startSession(context as never);
     const result = await runtime.executeBash(
-      { command: 'sleep 10', background: true },
+      { command: 'sleep 10', background: true, completionDelivery: 'next-turn' },
       undefined,
       undefined,
       context as never,
     );
     expect(result.terminate).not.toBe(true);
     expect(controller.list('session-1')).toHaveLength(0);
+    expect(result.details?.completionDelivery).toBe('next-turn');
   });
 
   it('transitions a foreground timeout to an awaited background run', async () => {
@@ -434,6 +489,50 @@ describe('TmuxBashRuntime', () => {
     ).rejects.toThrow(/timed out after 1s and was killed/);
     expect(fakeTmux.execute).toHaveBeenCalledWith('tmux', ['kill-window', '-t', '@94']);
     expect(controller.list('session-1')).toHaveLength(0);
+  });
+
+  it('rejects interactive input for a completed managed window before invoking tmux input', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tmux-completed-input-'));
+    const events = new EventBus();
+    const pi = { events, sendMessage: vi.fn() };
+    const execute = vi.fn<TmuxExecutor>(async (_binary, args) => ({
+      stdout: args[0] === 'new-window' ? '@96\n' : '',
+      stderr: '',
+      code: 0,
+    }));
+    const controller = createContinuationGateController(pi, { source: 'pi-tmux-bash' });
+    const runtime = new TmuxBashRuntime(
+      pi as never,
+      {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        outputDir: root,
+        durableOutputDir: root,
+        interactiveInputEnabled: true,
+        enabledTmuxActions: [...DEFAULT_TMUX_BASH_CONFIG.enabledTmuxActions, 'send-input'],
+        statusbarEnabled: false,
+      },
+      controller,
+      new TmuxClient('tmux', execute),
+    );
+    activeRuntimes.push(runtime);
+    const context = fakeContext();
+    await runtime.startSession(context as never);
+    const started = await runtime.executeBash(
+      { command: 'sleep 10', background: true },
+      undefined,
+      undefined,
+      context as never,
+    );
+    const run = runtime.state.commands.get(started.details?.runId ?? '');
+    if (!run?.windowId) throw new Error('Expected a managed window.');
+    run.state = 'completed';
+    run.endedAt = Date.now();
+    execute.mockClear();
+    await expect(runtime.sendInput(run.windowId, 'value', true, context as never)).rejects.toThrow(
+      'not running',
+    );
+    expect(execute).not.toHaveBeenCalled();
+    await rm(root, { recursive: true, force: true });
   });
 
   it('does not launch an already-cancelled background call', async () => {
@@ -573,6 +672,157 @@ describe('TmuxBashRuntime', () => {
     expect(releases).toHaveLength(1);
   });
 
+  it('reacquires adopted live gates before publishing the authoritative snapshot', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tmux-adoption-runtime-'));
+    const events = new EventBus();
+    const context = fakeContext();
+    const fakeTmux = managedTmux('@98');
+    const config = {
+      ...DEFAULT_TMUX_BASH_CONFIG,
+      outputDir: root,
+      durableOutputDir: root,
+      adoptionPolicy: 'same-pi-session' as const,
+      autoCloseWindowsOnCompletion: false,
+      statusbarEnabled: false,
+    };
+    const firstController = createContinuationGateController({ events } as never, {
+      source: 'pi-tmux-bash',
+    });
+    const first = new TmuxBashRuntime(
+      { events, sendMessage: vi.fn(), appendEntry: vi.fn() } as never,
+      config,
+      firstController,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(first);
+    await first.startSession(context as never);
+    await first.executeBash(
+      {
+        command: 'sleep 10',
+        background: true,
+        waitForCompletion: true,
+        pollInterval: 60,
+      },
+      undefined,
+      undefined,
+      context as never,
+    );
+    await first.shutdown(context as never);
+    firstController.dispose();
+
+    const ordering: string[] = [];
+    events.on(CONTINUATION_GATE_ACQUIRE_EVENT, () => ordering.push('acquire'));
+    events.on(CONTINUATION_GATE_SNAPSHOT_EVENT, () => ordering.push('snapshot'));
+    const secondController = createContinuationGateController({ events } as never, {
+      source: 'pi-tmux-bash',
+    });
+    const second = new TmuxBashRuntime(
+      { events, sendMessage: vi.fn(), appendEntry: vi.fn() } as never,
+      config,
+      secondController,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(second);
+    await second.startSession(context as never);
+    expect(ordering.indexOf('acquire')).toBeGreaterThanOrEqual(0);
+    expect(ordering.indexOf('snapshot')).toBeGreaterThan(ordering.indexOf('acquire'));
+    expect(secondController.list('session-1')).toHaveLength(1);
+    expect(second.state.pollers.size).toBe(1);
+    const adopted = [...second.state.commands.values()];
+    expect(adopted).toHaveLength(1);
+    const adoptedRun = adopted[0];
+    if (!adoptedRun) throw new Error('Expected one adopted run.');
+    expect(adoptedRun).toMatchObject({ adopted: true, awaited: true, state: 'running' });
+    adoptedRun.killed = true;
+    await second.shutdown(context as never);
+    secondController.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('delivers a completed-while-offline run once without reconstructing its gate', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'tmux-offline-runtime-'));
+    const events = new EventBus();
+    const context = fakeContext();
+    const fakeTmux = managedTmux('@99');
+    const config = {
+      ...DEFAULT_TMUX_BASH_CONFIG,
+      outputDir: root,
+      durableOutputDir: root,
+      adoptionPolicy: 'same-pi-session' as const,
+      autoCloseWindowsOnCompletion: false,
+      statusbarEnabled: false,
+    };
+    const firstController = createContinuationGateController({ events } as never, {
+      source: 'pi-tmux-bash',
+    });
+    const first = new TmuxBashRuntime(
+      { events, sendMessage: vi.fn(), appendEntry: vi.fn() } as never,
+      config,
+      firstController,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(first);
+    await first.startSession(context as never);
+    const started = await first.executeBash(
+      { command: 'sleep 10', background: true, waitForCompletion: true },
+      undefined,
+      undefined,
+      context as never,
+    );
+    const offlineRun = first.state.commands.get(started.details?.runId ?? '');
+    if (!offlineRun) throw new Error('Expected offline run.');
+    await first.shutdown(context as never);
+    firstController.dispose();
+    await writeFile(offlineRun.outputFile, '$ sleep 10\noffline done\n');
+    await writeFile(offlineRun.exitCodeFile, '0\n');
+
+    const messages: unknown[] = [];
+    const secondController = createContinuationGateController({ events } as never, {
+      source: 'pi-tmux-bash',
+    });
+    const second = new TmuxBashRuntime(
+      {
+        events,
+        appendEntry: vi.fn(),
+        sendMessage: vi.fn((message) => messages.push(message)),
+      } as never,
+      config,
+      secondController,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(second);
+    await second.startSession(context as never);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ content: expect.stringContaining('offline done') });
+    expect(secondController.list('session-1')).toHaveLength(0);
+    expect(JSON.parse(await readFile(offlineRun.manifestPath, 'utf8'))).toMatchObject({
+      awaited: false,
+      deliveryState: 'delivered',
+    });
+    await second.shutdown(context as never);
+    secondController.dispose();
+
+    const thirdController = createContinuationGateController({ events } as never, {
+      source: 'pi-tmux-bash',
+    });
+    const third = new TmuxBashRuntime(
+      {
+        events,
+        appendEntry: vi.fn(),
+        sendMessage: vi.fn((message) => messages.push(message)),
+      } as never,
+      config,
+      thirdController,
+      new TmuxClient('tmux', fakeTmux.execute),
+    );
+    activeRuntimes.push(third);
+    await third.startSession(context as never);
+    expect(messages).toHaveLength(1);
+    await third.shutdown(context as never);
+    thirdController.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
   it('delivers completion once when a poller and completion observer race', async () => {
     const events = new EventBus();
     const pi = { events, sendMessage: vi.fn() };
@@ -635,6 +885,8 @@ function managedTmux(windowId: string) {
         metadata.set(args[4] ?? '', args[5] ?? '');
         return { stdout: '', stderr: '', code: 0 };
       case 'display-message':
+        return { stdout: `${windowId}\n`, stderr: '', code: 0 };
+      case 'list-windows':
         return { stdout: `${windowId}\n`, stderr: '', code: 0 };
       case 'show-options':
         return metadata.has(args.at(-1) ?? '')

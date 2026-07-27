@@ -23,10 +23,13 @@
   ],
   "references": [
     {
-      "path": "../continuation-gate-protocol/tsconfig.lib.json"
+      "path": "../tmux-bash-core/tsconfig.lib.json"
     },
     {
       "path": "../statusline-protocol/tsconfig.lib.json"
+    },
+    {
+      "path": "../continuation-gate-protocol/tsconfig.lib.json"
     }
   ],
   "exclude": [

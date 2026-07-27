@@ -17,6 +17,7 @@ Nx monorepo for public npm-distributed [Pi](https://pi.dev) packages.
 | `packages/statusline-protocol`         | `@aliaksei-raketski/pi-statusline-protocol`         | Shared source-aware structured status protocol.                                     | `pi install npm:@aliaksei-raketski/pi-statusline-protocol`         |
 | `packages/taiga-ui-docs`               | `@aliaksei-raketski/pi-taiga-ui-docs`               | Taiga UI docs skill backed by a bundled helper script.                              | `pi install npm:@aliaksei-raketski/pi-taiga-ui-docs`               |
 | `packages/tmux-bash`                   | `@aliaksei-raketski/pi-tmux-bash`                   | Tmux-backed command execution with bounded output and continuation gates.           | `pi install npm:@aliaksei-raketski/pi-tmux-bash`                   |
+| `packages/tmux-bash-core`              | `@aliaksei-raketski/pi-tmux-bash-core`              | Compiled read-only scope, manifest, metadata, discovery, and attach helpers.        | `npm install @aliaksei-raketski/pi-tmux-bash-core`                 |
 
 ## Development
 

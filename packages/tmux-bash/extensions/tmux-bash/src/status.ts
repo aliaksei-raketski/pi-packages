@@ -46,7 +46,7 @@ export function updateTmuxBashStatus(
   else clearStatus(pi, statusContext, TMUX_BASH_STATUS_KEY, TMUX_BASH_STATUS_SOURCE);
 }
 
-export function createStatusContext(ctx: ExtensionContext): StatuslineUICtx {
+function createStatusContext(ctx: ExtensionContext): StatuslineUICtx {
   return {
     setStatus: (key, text) => ctx.ui.setStatus(key, text),
     theme: ctx.ui.theme,

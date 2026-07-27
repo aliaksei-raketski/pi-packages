@@ -10,6 +10,7 @@ import {
   loadTmuxBashConfig,
   validateTmuxBashConfig,
 } from '../src/config.js';
+import { createTmuxInputSchema } from '../src/schemas.js';
 
 const tempDirectories: string[] = [];
 
@@ -43,6 +44,10 @@ describe('tmux-bash config', () => {
     expect(config.completedCompactDisplayLines).toBe(5);
     expect(config.completedExpandedDisplayLines).toBe(20);
     expect(config.maxSpoolBytes).toBe(10 * 1024 * 1024);
+    expect(config.adoptionPolicy).toBe('off');
+    expect(config.interactiveInputEnabled).toBe(false);
+    expect(config.defaultCompletionDelivery).toBe('model');
+    expect(config.nonGitScope).toBe('error');
   });
 
   it('rejects invalid security-sensitive paths and actions', () => {
@@ -50,7 +55,7 @@ describe('tmux-bash config', () => {
       validateTmuxBashConfig({ ...DEFAULT_TMUX_BASH_CONFIG, tmuxBinary: './tmux' }),
     ).toThrow(/tmuxBinary/);
     expect(() =>
-      validateTmuxBashConfig({ ...DEFAULT_TMUX_BASH_CONFIG, enabledTmuxActions: ['attach'] }),
+      validateTmuxBashConfig({ ...DEFAULT_TMUX_BASH_CONFIG, enabledTmuxActions: ['unknown'] }),
     ).toThrow(/enabledTmuxActions/);
     expect(() =>
       validateTmuxBashConfig({ ...DEFAULT_TMUX_BASH_CONFIG, maxSpoolBytes: 100 }),
@@ -58,6 +63,32 @@ describe('tmux-bash config', () => {
     expect(() =>
       validateTmuxBashConfig({ ...DEFAULT_TMUX_BASH_CONFIG, completionDeliveryMaxAttempts: 0 }),
     ).toThrow(/completionDeliveryMaxAttempts/);
+  });
+
+  it('normalizes the old git-root window scope and hides disabled input actions', () => {
+    const config = validateTmuxBashConfig({
+      ...DEFAULT_TMUX_BASH_CONFIG,
+      tmuxWindowScope: 'git-root',
+      interactiveInputEnabled: false,
+      enabledTmuxActions: ['list', 'send-input', 'send-key'],
+    });
+    expect(config.tmuxWindowScope).toBe('workspace');
+    expect(config.enabledTmuxActions).toEqual(['list']);
+  });
+
+  it('omits disabled interactive actions from the public tool schema', () => {
+    const disabled = validateTmuxBashConfig({
+      ...DEFAULT_TMUX_BASH_CONFIG,
+      interactiveInputEnabled: false,
+      enabledTmuxActions: ['list', 'send-input', 'send-key'],
+    });
+    expect(JSON.stringify(createTmuxInputSchema(disabled))).not.toContain('send-input');
+    const enabled = validateTmuxBashConfig({
+      ...DEFAULT_TMUX_BASH_CONFIG,
+      interactiveInputEnabled: true,
+      enabledTmuxActions: ['list', 'send-input', 'send-key'],
+    });
+    expect(JSON.stringify(createTmuxInputSchema(enabled))).toContain('send-input');
   });
 
   it('clamps timeouts and model polling', () => {

@@ -1,5 +1,6 @@
-import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { execFile, execFileSync } from 'node:child_process';
+import { createReadStream } from 'node:fs';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -8,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createCommandArtifacts,
   createPiSessionEnvironment,
+  removeUncommittedArtifacts,
   scheduleRunDirectoryCleanup,
   shellQuote,
 } from '../src/command-artifacts.js';
@@ -110,9 +112,7 @@ describe('command artifacts', () => {
     await expect(readFile(artifacts.temporaryExitCodeFile, 'utf8')).rejects.toMatchObject({
       code: 'ENOENT',
     });
-    await expect(readFile(artifacts.scriptFile, 'utf8')).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
+    await expect(readFile(artifacts.scriptFile, 'utf8')).resolves.toContain('#!/usr/bin/env bash');
   });
 
   it('bounds the on-disk output spool without cutting off command stdout', async () => {
@@ -132,6 +132,76 @@ describe('command artifacts', () => {
     expect(stdout).toHaveLength(5_000);
     expect((await stat(artifacts.outputFile)).size).toBeLessThanOrEqual(1_024);
     expect(output).toContain('tmux-bash spool limit reached');
+  });
+
+  it('keeps a bounded binary tail while duplicating exact bytes to the pane stream', async () => {
+    const runDir = await mkdtemp(join(tmpdir(), 'tmux-artifacts-binary-'));
+    directories.push(runDir);
+    const expected = Buffer.from(Array.from({ length: 8192 }, (_, index) => index % 256));
+    const artifacts = await createCommandArtifacts({
+      runDir,
+      runId: 'binary123',
+      command: `${shellQuote(process.execPath)} -e ${shellQuote('process.stdout.write(Buffer.from(Array.from({length:8192},(_,i)=>i%256)))')}`,
+      displayCommand: 'produce binary output',
+      config: {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        maxSpoolBytes: 1_024,
+        maxArtifactBytesPerRun: 1_024,
+      },
+    });
+
+    const stdout = execFileSync(artifacts.scriptFile);
+    const output = await readFile(artifacts.outputFile);
+    expect(stdout).toEqual(expected);
+    expect(output.length).toBeLessThanOrEqual(1_024);
+    expect(output.subarray(-128)).toEqual(expected.subarray(-128));
+    await expect(readFile(artifacts.rotationMarkerFile)).resolves.toBeInstanceOf(Buffer);
+  });
+
+  it('streams exact user-bash bytes through its FIFO without including the display header', async () => {
+    const runDir = await mkdtemp(join(tmpdir(), 'tmux-artifacts-stream-'));
+    directories.push(runDir);
+    const expected = Buffer.from(Array.from({ length: 8192 }, (_, index) => index % 256));
+    const artifacts = await createCommandArtifacts({
+      runDir,
+      runId: 'stream123',
+      command: `${shellQuote(process.execPath)} -e ${shellQuote('process.stdout.write(Buffer.from(Array.from({length:8192},(_,i)=>i%256)))')}`,
+      displayCommand: 'secret display header',
+      config: {
+        ...DEFAULT_TMUX_BASH_CONFIG,
+        maxSpoolBytes: 1_024,
+        maxArtifactBytesPerRun: 1_024,
+      },
+      streamOutput: true,
+    });
+    if (!artifacts.streamFile) throw new Error('Expected a FIFO path.');
+    const reader = createReadStream(artifacts.streamFile);
+    const received = (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of reader) chunks.push(Buffer.from(chunk));
+      return Buffer.concat(chunks);
+    })();
+
+    await execFileAsync(artifacts.scriptFile, []);
+    expect(await received).toEqual(expected);
+    expect((await stat(artifacts.outputFile)).size).toBeLessThanOrEqual(1_024);
+  });
+
+  it('rolls back only a generated run prefix after an uncommitted startup failure', async () => {
+    const runDir = await mkdtemp(join(tmpdir(), 'tmux-artifacts-rollback-'));
+    directories.push(runDir);
+    const artifacts = await createCommandArtifacts({
+      runDir,
+      runId: 'rollback123',
+      command: 'true',
+      displayCommand: 'true',
+      config: DEFAULT_TMUX_BASH_CONFIG,
+    });
+    const unrelated = join(runDir, 'unrelated-safe');
+    await writeFile(unrelated, 'keep');
+    await removeUncommittedArtifacts(runDir, 'rollback123');
+    await expect(stat(artifacts.commandFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(unrelated, 'utf8')).resolves.toBe('keep');
   });
 
   it('removes retained artifacts after a live command exits', async () => {

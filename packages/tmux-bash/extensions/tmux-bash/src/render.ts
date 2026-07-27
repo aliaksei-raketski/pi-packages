@@ -48,6 +48,12 @@ export function renderBashResult(
       : `${details.state}${details.exitCode === undefined ? '' : ` (${details.exitCode})`}`,
   );
   if (details.awaited) text += theme.fg('warning', ' · awaited');
+  const flags = [
+    details.completionDelivery ? `completion=${details.completionDelivery}` : '',
+    details.adopted ? 'adopted' : '',
+    details.outputWasRotated ? 'output rotated' : '',
+  ].filter(Boolean);
+  if (flags.length > 0) text += theme.fg('dim', ` · ${flags.join(' · ')}`);
   const output = sanitizeTerminalText(
     result.content.find((item) => item.type === 'text')?.text ?? '',
   );

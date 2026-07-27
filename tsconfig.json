@@ -38,6 +38,9 @@
     },
     {
       "path": "./packages/caffeinate"
+    },
+    {
+      "path": "./packages/tmux-bash-core"
     }
   ]
 }

@@ -15,6 +15,12 @@ export function createBashInputSchema(config: TmuxBashConfig): TSchema {
       background: Type.Optional(Type.Boolean()),
       pollInterval: Type.Optional(Type.Number({ minimum: 1 })),
       pollLines: Type.Optional(Type.Integer({ minimum: 1, maximum: 10_000 })),
+      completionDelivery: Type.Optional(
+        StringEnum(['model', 'display', 'next-turn'] as const, {
+          description:
+            'Completion policy: model follow-up, display-only wake=none, or persistence for the next natural turn.',
+        }),
+      ),
       waitForCompletion: Type.Optional(
         Type.Boolean({
           description:
@@ -36,6 +42,7 @@ export interface BashInput {
   background?: boolean;
   pollInterval?: number;
   pollLines?: number;
+  completionDelivery?: 'model' | 'display' | 'next-turn';
   waitForCompletion?: boolean;
 }
 
@@ -49,6 +56,11 @@ export function createTmuxInputSchema(config: TmuxBashConfig): TSchema {
       ),
       interval: Type.Optional(Type.Number({ minimum: 1 })),
       lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 10_000 })),
+      text: Type.Optional(
+        Type.String({ description: 'Literal UTF-8 input. Never use this field for secrets.' }),
+      ),
+      submit: Type.Optional(Type.Boolean({ description: 'Send Enter after literal input.' })),
+      key: Type.Optional(StringEnum(['enter', 'escape', 'ctrl-c', 'ctrl-d'] as const)),
     },
     { additionalProperties: false },
   );
@@ -59,4 +71,7 @@ export type TmuxInput = {
   windowId?: string;
   interval?: number;
   lines?: number;
+  text?: string;
+  submit?: boolean;
+  key?: 'enter' | 'escape' | 'ctrl-c' | 'ctrl-d';
 };

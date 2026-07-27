@@ -1,11 +1,27 @@
+import {
+  assertWindowId,
+  buildAttachCommand,
+  listManagedTmuxWindows,
+  managedWindowMetadataEntries,
+  parseManagedWindowMetadata,
+  sameManagedWindowOwner,
+  shellQuote,
+  TMUX_BASH_METADATA_KEYS,
+  type ListManagedTmuxWindowsOptions,
+  type ListedManagedTmuxWindow,
+  type ManagedWindowIdentity,
+  type ManagedWindowMetadata,
+  type StructuredTmuxCommand,
+} from '@aliaksei-raketski/pi-tmux-bash-core';
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 
-import { shellQuote } from './command-artifacts.js';
+import type { InteractiveKey } from './types.js';
 
 const execFileAsync = promisify(execFile);
 
-export interface TmuxExecResult {
+interface TmuxExecResult {
   stdout: string;
   stderr: string;
   code: number;
@@ -15,22 +31,11 @@ export interface TmuxExecutor {
   (binary: string, args: string[], signal?: AbortSignal): Promise<TmuxExecResult>;
 }
 
-export interface ManagedWindowIdentity {
-  version: string;
-  gitRoot: string;
-  piSessionId: string;
-  runId: string;
-}
-
-export interface ManagedWindowMetadata extends ManagedWindowIdentity {
-  startedAt: number;
-  outputFile: string;
-  displayCommand: string;
-}
+export type { ManagedWindowIdentity, ManagedWindowMetadata };
 
 export class TmuxClient {
   constructor(
-    private readonly binary: string,
+    readonly binary: string,
     private readonly executeProcess: TmuxExecutor = executeTmux,
   ) {}
 
@@ -78,8 +83,6 @@ export class TmuxClient {
   }): Promise<string> {
     await this.ensureSession(input.sessionName, input.signal);
     throwIfAborted(input.signal);
-    // Let this short operation return its stable ID even if cancellation arrives mid-call,
-    // so a window created by tmux can always be cleaned up deterministically.
     const result = await this.executeProcess(this.binary, [
       'new-window',
       '-d',
@@ -96,9 +99,7 @@ export class TmuxClient {
     ]);
     if (result.code !== 0) throw tmuxError('create window', result);
     const windowId = result.stdout.trim();
-    if (!/^@\d+$/.test(windowId)) {
-      throw new Error(`tmux returned an invalid stable window ID: ${windowId || '(empty)'}.`);
-    }
+    assertWindowId(windowId);
 
     try {
       throwIfAborted(input.signal);
@@ -115,16 +116,8 @@ export class TmuxClient {
     metadata: ManagedWindowMetadata,
     signal?: AbortSignal,
   ): Promise<void> {
-    const entries: Array<[string, string]> = [
-      ['@pi_tmux_bash', metadata.version],
-      ['@pi_tmux_bash_git_root', metadata.gitRoot],
-      ['@pi_tmux_bash_session_id', metadata.piSessionId],
-      ['@pi_tmux_bash_run_id', metadata.runId],
-      ['@pi_tmux_bash_started_at', String(metadata.startedAt)],
-      ['@pi_tmux_bash_output_file', metadata.outputFile],
-      ['@pi_tmux_bash_command', metadata.displayCommand],
-    ];
-    for (const [key, value] of entries) {
+    assertWindowId(windowId);
+    for (const [key, value] of managedWindowMetadataEntries(metadata)) {
       const result = await this.executeProcess(
         this.binary,
         ['set-option', '-w', '-t', windowId, key, value],
@@ -132,6 +125,37 @@ export class TmuxClient {
       );
       if (result.code !== 0) throw tmuxError(`tag window ${windowId}`, result);
     }
+  }
+
+  async getMetadata(
+    windowId: string,
+    signal?: AbortSignal,
+  ): Promise<ManagedWindowMetadata | undefined> {
+    assertWindowId(windowId);
+    if (!(await this.hasWindow(windowId))) return undefined;
+    const values: Record<string, string | undefined> = {};
+    for (const key of Object.values(TMUX_BASH_METADATA_KEYS)) {
+      const result = await this.executeProcess(
+        this.binary,
+        ['show-options', '-w', '-v', '-t', windowId, key],
+        signal,
+      );
+      if (result.code === 0) values[key] = result.stdout.replace(/\r?\n$/, '');
+    }
+    try {
+      return parseManagedWindowMetadata(values);
+    } catch {
+      return undefined;
+    }
+  }
+
+  async listManaged(
+    options: ListManagedTmuxWindowsOptions = {},
+  ): Promise<ListedManagedTmuxWindow[]> {
+    return listManagedTmuxWindows(
+      (args, signal) => this.executeProcess(this.binary, [...args], signal),
+      options,
+    );
   }
 
   async killWindow(windowId: string): Promise<void> {
@@ -170,26 +194,74 @@ export class TmuxClient {
   }
 
   async isOwnedWindow(windowId: string, expected: ManagedWindowIdentity): Promise<boolean> {
-    if (!(await this.hasWindow(windowId))) return false;
-    const options: Array<[keyof ManagedWindowIdentity, string]> = [
-      ['version', '@pi_tmux_bash'],
-      ['gitRoot', '@pi_tmux_bash_git_root'],
-      ['piSessionId', '@pi_tmux_bash_session_id'],
-      ['runId', '@pi_tmux_bash_run_id'],
-    ];
-    for (const [field, option] of options) {
-      const result = await this.executeProcess(this.binary, [
-        'show-options',
-        '-w',
-        '-v',
+    const actual = await this.getMetadata(windowId);
+    return actual !== undefined && sameManagedWindowOwner(actual, expected);
+  }
+
+  async sendLiteralInput(
+    windowId: string,
+    text: string,
+    submit: boolean,
+    beforePaste?: () => Promise<void>,
+  ): Promise<void> {
+    assertWindowId(windowId);
+    if (text.includes('\0')) throw new Error('Interactive tmux input cannot contain NUL bytes.');
+    const bufferName = `pi-tmux-${randomUUID().replaceAll('-', '')}`;
+    try {
+      const set = await this.executeProcess(this.binary, [
+        'set-buffer',
+        '-b',
+        bufferName,
+        '--',
+        text,
+      ]);
+      if (set.code !== 0) throw tmuxError(`prepare input for ${windowId}`, set);
+      await beforePaste?.();
+      const paste = await this.executeProcess(this.binary, [
+        'paste-buffer',
+        '-b',
+        bufferName,
         '-t',
         windowId,
-        option,
+        '-d',
       ]);
-      if (result.code !== 0 || result.stdout.replace(/\r?\n$/, '') !== expected[field])
-        return false;
+      if (paste.code !== 0) throw tmuxError(`send input to ${windowId}`, paste);
+      if (submit) await this.sendKey(windowId, 'enter');
+    } finally {
+      await this.executeProcess(this.binary, ['delete-buffer', '-b', bufferName]).catch(
+        () => undefined,
+      );
     }
-    return true;
+  }
+
+  async sendKey(windowId: string, key: InteractiveKey): Promise<void> {
+    assertWindowId(windowId);
+    const token: Record<InteractiveKey, string> = {
+      enter: 'Enter',
+      escape: 'Escape',
+      'ctrl-c': 'C-c',
+      'ctrl-d': 'C-d',
+    };
+    const result = await this.executeProcess(this.binary, [
+      'send-keys',
+      '-t',
+      windowId,
+      token[key],
+    ]);
+    if (result.code !== 0) throw tmuxError(`send key to ${windowId}`, result);
+  }
+
+  attachCommand(
+    sessionName: string,
+    windowId: string,
+    insideTmux = Boolean(process.env.TMUX),
+  ): StructuredTmuxCommand {
+    return buildAttachCommand({
+      binary: this.binary,
+      sessionName,
+      windowId,
+      insideTmux,
+    });
   }
 
   attachHint(
@@ -197,14 +269,11 @@ export class TmuxClient {
     windowId: string,
     insideTmux = Boolean(process.env.TMUX),
   ): string {
-    assertWindowId(windowId);
-    return insideTmux
-      ? `tmux select-window -t ${windowId}`
-      : `tmux attach-session -t ${shellQuote(sessionName)} \\; select-window -t ${windowId}`;
+    return this.attachCommand(sessionName, windowId, insideTmux).display;
   }
 }
 
-export async function executeTmux(
+async function executeTmux(
   binary: string,
   args: string[],
   signal?: AbortSignal,
@@ -233,10 +302,6 @@ export async function executeTmux(
       code: typeof failed.code === 'number' ? failed.code : 1,
     };
   }
-}
-
-export function assertWindowId(windowId: string): void {
-  if (!/^@\d+$/.test(windowId)) throw new Error(`Invalid tmux window ID: ${windowId}.`);
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

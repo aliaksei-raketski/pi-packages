@@ -1,145 +1,201 @@
 # @aliaksei-raketski/pi-tmux-bash
 
-A first-party Pi extension that replaces the model-facing `bash` tool with tmux-backed command execution. Foreground commands retain normal shell-tool behavior, while commands that outlive the foreground timeout continue in managed tmux windows and report completion later.
+A Pi extension that replaces model-facing `bash` with owned tmux windows. It preserves normal foreground behavior while adding durable background runs, stable `@<windowId>` control, completion policies, optional interactive input and `!` routing, safe attach UX, resource quotas, and opt-in non-Git scopes.
 
-## Prerequisite
+## Prerequisite and installation
 
-Install `tmux` and ensure it is available on `PATH`, or set `tmuxBinary` to an absolute path in configuration.
-
-## Install
+Install `tmux` on `PATH` (or configure an absolute `tmuxBinary`), then install:
 
 ```sh
 pi install npm:@aliaksei-raketski/pi-tmux-bash
 ```
 
-The package registers two model-facing tools:
+The package registers model-facing `bash` and `tmux` tools plus `/tmux-attach`, `/tmux-cleanup-preview`, and `/tmux-cleanup` where enabled.
 
-- `bash` — runs every model command in an extension-owned tmux window;
-- `tmux` — lists, inspects, polls, awaits, unawaits, or kills only managed windows in scope.
-
-Pi's user `!` and `!!` commands are intentionally unchanged.
-
-## Usage
-
-Foreground execution:
+## Command lifecycle and waiting
 
 ```json
-{ "command": "pnpm nx test my-project" }
+{ "command": "pnpm nx test app" }
 ```
 
-Explicit background execution:
+Explicit background process:
 
 ```json
-{ "command": "pnpm nx serve app", "background": true, "waitForCompletion": false }
+{
+  "command": "pnpm nx serve app",
+  "background": true,
+  "waitForCompletion": false
+}
 ```
 
-Finite asynchronous work that should suspend synthetic goal continuation:
+Example of required finite asynchronous work:
 
 ```json
 {
   "command": "pnpm nx test app",
   "background": true,
-  "waitForCompletion": true
+  "waitForCompletion": true,
+  "completionDelivery": "model"
 }
 ```
 
-> **Use `waitForCompletion` for required finite asynchronous work, even while
-> other productive work can continue. Do not use it for persistent servers,
-> watchers, or REPLs.**
+Use `waitForCompletion: true` for every required finite command, including tests, builds, and subagents, regardless of duration or concurrent productive work. Use `false` only for persistent servers, watchers, or REPLs that are intentionally expected to remain alive. Waiting and completion delivery are independent.
 
-Background completion is delivered automatically as a follow-up model message while the same Pi runtime remains active. The message is queued before the continuation gate is released.
+The lifecycle is persisted as `reserved → starting → running → completed|failed|killed|orphaned`. A foreground timeout defaults to background execution and is awaited by default; `timeoutAction: "kill"` kills the validated owned window instead. Cancellation kills foreground work. Non-zero foreground exits remain normal bash tool errors with the actual status.
 
-## Foreground timeout behavior
+## Completion delivery policies
 
-The default foreground timeout is 120 seconds. `timeoutAction` controls what happens at the limit:
+`defaultCompletionDelivery` is `model`; each bash call may override it with `completionDelivery`.
 
-- `background` (default) leaves the command running and returns its stable window ID;
-- `kill` kills the owned window and reports a tool error.
+- `model` queues one bounded follow-up custom message, commits its wake handoff, then releases an awaited gate with `wake: "producer-message"`.
+- `display` persists and shows one TUI/RPC notification without model context, then releases with `wake: "none"`. Without UI, the `tmux` tool's `list` action and durable entries retain the diagnostic.
+- `next-turn` persists a bounded pending completion and releases with `wake: "none"`. The next natural model turn injects and consumes it once; it never creates a turn itself.
 
-An unexpected foreground-to-background transition is awaited by default because the original call expressed foreground intent. Set `waitForCompletion: false` to opt out. Explicit background calls are not awaited by default.
+A display-only awaited command resumes an autonomous workflow only when a consumer explicitly enables the continuation protocol's single-winner `wake: none` auto-resume policy. Otherwise Pi remains idle until natural input.
 
-Cancellation kills the managed window. Non-zero foreground exits throw a tool error containing bounded output and the exit code.
+Stable `completionId` values are persisted in manifests and session entries. Watcher, poller, adoption, and retry observations are idempotent. Before model redelivery after restart, the extension scans the active branch for an existing completion or consumed marker.
+
+## Restart adoption
+
+Adoption is off by default. Enable it only with a durable absolute directory:
+
+```jsonc
+{
+  "adoptionPolicy": "same-pi-session",
+  "durableOutputDir": "/home/me/.pi/agent/tmux-bash",
+  "adoptionScanTimeoutMs": 5000,
+  "adoptPolling": true,
+}
+```
+
+On `session_start`, the extension independently scans complete tmux ownership metadata and strict durable manifests before publishing its authoritative gate snapshot. It:
+
+- adopts only the same `ctx.sessionManager.getSessionId()` and canonical workspace scope;
+- restores only validated live awaited gates and optional pollers;
+- delivers a completion written while Pi was offline without reconstructing a completed gate;
+- marks a missing-window/no-sentinel run orphaned;
+- ignores another session, changed ownership, malformed data, symlinks, unsafe permissions, and pre-enhancement windows missing the complete current metadata shape;
+- treats tmux absence or scan timeout as a bounded startup diagnostic rather than a Pi startup failure.
+
+Shutdown persists live intent, releases only in-process gates, stops timers, and does not kill preserved windows. Adoption cannot recover work whose tmux metadata or manifest was never fully committed, and cannot guarantee delivery if both the Pi session entry and durable completion marker are lost in the same storage failure.
+
+There are no schema/protocol version fields or compatibility negotiation. Older windows carrying only `gitRoot`/`v1` options remain externally alive but unmanaged.
 
 ## `tmux` actions
 
-All target actions require stable IDs such as `@123`; numeric window indexes are rejected.
+Targets use stable IDs such as `@123`; numeric indexes and arbitrary sessions are rejected.
 
-| Action       | Behavior                                                               |
-| ------------ | ---------------------------------------------------------------------- |
-| `list`       | List managed windows in configured scope.                              |
-| `peek`       | Read a bounded tail from the output artifact.                          |
-| `kill`       | Kill only the matching managed window and release its gate.            |
-| `poll`       | Start periodic progress delivery.                                      |
-| `unpoll`     | Stop polling without changing wait state.                              |
-| `list-polls` | List active pollers.                                                   |
-| `await`      | Idempotently acquire a continuation gate for a running finite command. |
-| `unawait`    | Release the gate without killing the command.                          |
+- `list` / `peek`: list in-scope runs or read a bounded tail. `list` includes resource usage diagnostics.
+- `kill`: revalidate ownership, kill the run, and release its gate.
+- `poll` / `unpoll` / `list-polls`: manage progress delivery independently of waiting.
+- `await` / `unawait`: idempotently acquire or release a finite run's continuation gate without changing the process.
+- `attach`: return safe structured argv and a shell-quoted display command; never take TUI control.
+- `send-input` / `send-key`: opt-in literal UTF-8 input or one fixed control key.
+- `cleanup-preview` / `cleanup`: preview or delete only validated eligible non-running artifacts.
 
-Polling and waiting are independent. Polls provide progress; continuation gates suppress only synthetic idle continuation. A model-delivered poll may wake the agent while a gate remains active.
+### Interactive input
 
-## Attaching
+Enable input explicitly and include the actions:
 
-Every background result includes an attach hint. Outside tmux it resembles:
-
-```sh
-tmux attach-session -t pi-0123456789 \; select-window -t @123
+```jsonc
+{
+  "interactiveInputEnabled": true,
+  "maxInputBytes": 16384,
+  "enabledTmuxActions": ["list", "peek", "kill", "await", "unawait", "send-input", "send-key"],
+}
 ```
 
-Inside tmux, use:
+`send-input` uses tmux buffer/paste semantics and argv, never shell composition or tmux key syntax. `submit` defaults to `true`. `send-key` accepts only `enter`, `escape`, `ctrl-c`, or `ctrl-d`. Every call revalidates a live, in-scope, metadata-owned stable window. Input does not poll, await, unawait, or alter completion policy.
 
-```sh
-tmux select-window -t @123
+**Never put passwords, API keys, or other secrets in model tool arguments. Tool arguments remain session-visible.** Input text is not logged, displayed, or persisted in the manifest.
+
+### Attach UX
+
+The model action only presents `{ binary, args, display }`. `/tmux-attach [@id]` is the explicit user action. With no ID it selects among live in-scope runs, confirms how to return to Pi, revalidates ownership after confirmation, then temporarily stops/restarts the TUI around inherited-stdio tmux. RPC/non-TUI contexts only present the safe command.
+
+Outside tmux the argv attaches the owned session and selects the stable window. Inside tmux it uses `select-window` without shell composition. Session names are data, not executable syntax.
+
+## Optional `!` and `!!` routing
+
+`routeUserBash` defaults to `false`. When true, the extension handles Pi's `user_bash` event with a `BashOperations` adapter backed by the same tmux supervisor.
+
+- `event.cwd` is honored for each command;
+- stdout/stderr bytes are forwarded in order;
+- normal non-zero status is returned as the actual exit code;
+- timeout and cancellation kill the foreground owned window;
+- no continuation gate, poller, background completion, or synthetic message is created;
+- `PI_SESSION_ID`, session file, provider/model, and reasoning variables are removed;
+- Pi still owns `!!` context exclusion because the extension returns standard operations/results.
+
+No background syntax is added. Extension event ordering matters: only one `user_bash` router should own a command. Place tmux-bash deliberately relative to SSH, interactive-shell, sandbox, or other routers; leave `routeUserBash` off when another router should win.
+
+## Resource limits and bounded output
+
+Defaults are nonzero and apply per canonical workspace durable root:
+
+```jsonc
+{
+  "maxConcurrentRuns": 16,
+  "maxArtifactBytesPerRun": 10485760,
+  "maxArtifactBytesTotal": 1073741824,
+  "maxCompletedRuns": 100,
+  "completedArtifactRetentionSeconds": 86400,
+  "resourceScanIntervalSeconds": 60,
+  "quotaPolicy": "reject-new",
+}
 ```
 
-Window titles are presentation only. Ownership is enforced with tmux user-option metadata and the runtime registry, never inferred from titles or indexes.
+A filesystem lock and reservation files serialize cross-process slot checks. Startup failures release reservations. Existing running work is reconciled and counted before new work; running work is never killed to satisfy quota.
 
-## Output and truncation
+The generated Node bounded-tee helper duplicates exact combined bytes to the tmux pane while compacting the private tail artifact in place. It never renames an open `tee` inode, preserves `PIPESTATUS[0]`, marks rotation, and keeps the file at or below `maxArtifactBytesPerRun`. Small command, wrapper, manifest, marker, and sentinel files count toward total usage.
 
-Each command receives a private per-session artifact directory (mode `0700` where supported):
+`cleanup-preview` reports bounded oldest-first candidates and reclaimable bytes. Model cleanup observes configured retention. `/tmux-cleanup` can include retained completed runs only after explicit user confirmation. Cleanup rechecks that no owned live window exists and refuses symlinks, paths outside the durable root, live runs, and unowned resources.
 
-- `<runId>.command` — exact command body while the command is running;
-- `<runId>.sh` — generated wrapper while the command is running;
-- `<runId>.out` — combined stdout/stderr, bounded by `maxSpoolBytes`;
-- `<runId>.exit` — atomically published exit status.
+## Workspace scope and non-Git fallback
 
-Model-visible output is tail-truncated by independent byte and context-line limits. Compact and expanded tool cards have separate presentation limits, so reducing UI output does not discard model context. Truncation notices identify the full output path. Unless `preserveOutputFiles` is enabled, wrappers containing environment values are deleted as soon as the command exits. Shutdown schedules detached cleanup for a live command's directory after its final process exits. Command output and tmux metadata are treated as untrusted text.
+Git always takes precedence. Scope identity is `{ kind, root, hash }`, where `root` is canonicalized through `realpath`; directories with the same basename never collide.
 
-## Scope and sessions
+The default remains secure/erroring outside Git:
 
-By default, tmux sessions are derived from the Git root, while model actions are restricted to commands created by the current Pi session. Commands outside a Git worktree return a clear error. The tmux window ID (`#{window_id}`) is stable even when window indexes change.
+```jsonc
+{ "nonGitScope": "error" }
+```
 
-Completed commands can close their tmux window automatically while their output artifact remains available for the lifetime of the Pi session.
+Opt in to a canonical cwd scope:
 
-## Continuation gates and Pi Goal
+```jsonc
+{
+  "nonGitScope": "cwd",
+  "cwdTmuxSessionNameTemplate": "pi-cwd-{scopeHash}",
+}
+```
 
-This package communicates through `@aliaksei-raketski/pi-continuation-gate-protocol`; it does not import or depend on the goal package. When used with `@aliaksei-raketski/pi-goal`:
+`tmuxSessionScope` now uses `"workspace"` or `"global"`; `tmuxWindowScope` uses `"pi-session"`, `"workspace"`, or `"all"`. The old window-filter value `"git-root"` is explicitly normalized to `"workspace"` for configuration migration, but old tmux metadata is not adopted.
 
-1. a finite background command acquires a generic gate;
-2. goal continuation remains idle while the gate exists;
-3. tmux prepares a wake handoff and queues completion as a follow-up;
-4. the handoff is committed, then the gate is released with `wake: "producer-message"` and its handoff ID;
-5. goal continuation can resume after the completion turn settles.
+## Continuation gates, Goal, and status
 
-Every finite background command whose result is required—including tests, builds, and subagents—should use `waitForCompletion: true`, regardless of its duration or whether other productive work can continue concurrently. Continuation gates do not block the current agent run; they suppress only synthetic idle continuation.
+The package depends only on the generic continuation-gate protocol, not Pi Goal. An awaited model completion queues its producer message before releasing its gate with the committed handoff. Display/next-turn persist first and release with `wake: "none"`. Gates use the protocol's default continuation domain.
 
-Use `waitForCompletion: false` only for processes intentionally expected to remain alive indefinitely, such as servers, watchers, and REPLs. If required finite work was started without a gate, acquire one with the `tmux` tool's `await` action before becoming idle.
+Statusline publication remains load-order-independent through `@aliaksei-raketski/pi-statusline-protocol`: `N bg job(s)` is running; `N bg jobs · M awaited` is awaiting. Zero live jobs clears status. Expanded list diagnostics can show adoption, completion policy, output rotation, pending completions, and quota usage without putting raw unbounded output into status.
 
-The extension exposes the configured `defaultWaitForBackgroundCompletion` value in both its model prompt guidance and the `waitForCompletion` tool-schema description. The same guidance explicitly distinguishes required finite work from persistent processes and warns that slow or long-running does not mean persistent.
+## Public compiled helpers
 
-## Statusline integration
+Read-only consumers can install `@aliaksei-raketski/pi-tmux-bash-core`:
 
-The extension publishes `tmux-bash` status through `@aliaksei-raketski/pi-statusline-protocol` and also uses Pi's built-in footer status fallback:
+```ts
+import {
+  listManagedTmuxWindows,
+  parseManagedRunManifest,
+  resolveTmuxWorkspaceScope,
+  TMUX_BASH_METADATA_KEYS,
+} from '@aliaksei-raketski/pi-tmux-bash-core';
+```
 
-- `1 bg job` / `2 bg jobs` uses the `running` state and `accent` fallback color;
-- `2 bg jobs · 1 awaited` uses the `awaiting` state and `warning` fallback color.
+It ships compiled ESM and declarations and has no Pi extension resource or `ExtensionAPI` dependency. Its public boundary is intentionally read-only: canonical scope resolution with injected hosts, strict manifest/metadata parsing, naming, ownership comparison, bounded discovery with an injected executor, structured attach construction, and stable constants. It does not export launching, gates, completion mutation, input, deletion, or runtime maps.
 
-Only active managed background commands are counted; completed commands and idle tmux shells are not. Zero jobs clears both fallback and structured status. A snapshot provider makes extension load order irrelevant. Set `statusbarEnabled` to `false` to disable both forms.
+## Configuration reference
 
-## Configuration
-
-The extension loads JSONC from `$PI_TMUX_BASH_CONFIG` when set, otherwise from `tmux-bash.jsonc` in Pi's global agent directory. Invalid configuration fails extension registration instead of silently weakening scope or security.
-
-Common options:
+Configuration is JSONC from `$PI_TMUX_BASH_CONFIG`, or `tmux-bash.jsonc` under Pi's global agent directory. Invalid values fail registration rather than weakening safety.
 
 ```jsonc
 {
@@ -148,34 +204,45 @@ Common options:
   "defaultTimeoutAction": "background",
   "defaultWaitForBackgroundCompletion": false,
   "defaultWaitAfterForegroundTimeout": true,
+  "defaultCompletionDelivery": "model",
+
   "tmuxBinary": "tmux",
-  "tmuxSessionScope": "git-root",
+  "tmuxSessionScope": "workspace",
+  "globalTmuxSessionName": "pi-tmux-bash",
+  "gitRootTmuxSessionNameTemplate": "pi-{gitHash}",
+  "cwdTmuxSessionNameTemplate": "pi-cwd-{scopeHash}",
   "tmuxWindowScope": "pi-session",
-  "autoCloseWindowsOnCompletion": true,
+  "tmuxWindowNameTemplate": "{name}-{runId}",
+  "nonGitScope": "error",
+
+  "adoptionPolicy": "off",
+  "adoptionScanTimeoutMs": 5000,
+  "adoptPolling": true,
+  "durableOutputDir": "/absolute/path/under/pi-agent/tmux-bash",
+
+  "interactiveInputEnabled": false,
+  "maxInputBytes": 16384,
+  "routeUserBash": false,
+
   "pollDelivery": "display",
   "defaultPollIntervalSeconds": 30,
   "minimumModelPollIntervalSeconds": 15,
   "maxOutputBytes": 51200,
   "maxSpoolBytes": 10485760,
-  "foregroundContextLines": 2000,
-  "completionContextLines": 20,
-  "pollContextLines": 80,
-  "peekContextLines": 200,
-  "completedCompactDisplayLines": 5,
-  "completedExpandedDisplayLines": 20,
-  "completionDeliveryMaxAttempts": 5,
-  "completionDeliveryRetryBaseMs": 250,
+  "maxArtifactBytesPerRun": 10485760,
+  "maxArtifactBytesTotal": 1073741824,
+  "maxConcurrentRuns": 16,
+  "maxCompletedRuns": 100,
+  "completedArtifactRetentionSeconds": 86400,
+  "resourceScanIntervalSeconds": 60,
+  "quotaPolicy": "reject-new",
+
+  "autoCloseWindowsOnCompletion": true,
   "preserveOutputFiles": false,
   "statusbarEnabled": true,
 }
 ```
 
-`maxOutputBytes` bounds each read into model context, while `maxSpoolBytes` is the hard on-disk quota for a command log. The four context-line settings independently limit foreground, completion, poll, and peek results. The compact and expanded display settings affect only completed tool cards. Completion delivery uses bounded exponential backoff controlled by the attempt and base-delay settings.
+`maxSpoolBytes` is accepted as the direct migration alias for `maxArtifactBytesPerRun`; internal execution uses the latter. `enabledTmuxActions` narrows the public enum, and disabled interactive actions are omitted even if mistakenly listed. `environmentDenylist` defaults to `TMUX`, `TMUX_PANE`, `PWD`, `OLDPWD`, `SHLVL`, and `_`.
 
-`enabledTmuxActions` can narrow the public `tmux` schema. `environmentDenylist` excludes sensitive/process-specific variables from generated wrappers; `TMUX`, `TMUX_PANE`, `PWD`, `OLDPWD`, `SHLVL`, and `_` are denied by default.
-
-## Shutdown and security boundary
-
-Tmux processes can continue after Pi exits, but baseline v1 does not adopt them after restart and cannot promise post-exit completion messages. Shutdown removes watchers, timers, gates, and status providers; it does not kill preserved background tmux windows. Unless output preservation is configured, a detached cleanup helper removes artifacts after surviving commands exit.
-
-Commands run with the user's permissions. The extension uses argument-array subprocess invocation for tmux, shell-quotes wrapper paths and environment values, restricts actions to managed stable IDs, and never provides arbitrary tmux target access.
+Commands and input run with the user's permissions. Tmux is always invoked with argument arrays. Wrapper paths/environment values are quoted only where Bash syntax is required. Command text and output are bounded and sanitized before model/UI rendering.

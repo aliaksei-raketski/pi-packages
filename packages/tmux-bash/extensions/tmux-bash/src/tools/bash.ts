@@ -11,7 +11,7 @@ export function registerBashTool(pi: ExtensionAPI, runtime: TmuxBashRuntime): vo
     name: runtime.config.bashToolName,
     label: 'bash (tmux)',
     description:
-      'Execute a shell command in an owned tmux window. Foreground output is returned when complete; background commands return a stable window ID and report completion automatically. Output is bounded and full logs remain in a private artifact file.',
+      'Execute a shell command in an owned tmux window. Foreground output is returned when complete; background commands return a stable window ID and use the selected completion policy. Model output and the private on-disk tail artifact are bounded.',
     promptSnippet: BASH_PROMPT_SNIPPET,
     promptGuidelines: runtime.config.systemPrompt ? createBashPromptGuidelines(runtime.config) : [],
     parameters: createBashInputSchema(runtime.config),
