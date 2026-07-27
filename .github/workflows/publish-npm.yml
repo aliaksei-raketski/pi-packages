@@ -1,7 +1,7 @@
 name: Publish npm packages
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       ci_sha:
         description: CI-verified main-branch commit that produced the release.
@@ -10,11 +10,6 @@ on:
       release_sha:
         description: Release commit created from the CI-verified commit.
         required: true
-        type: string
-      projects:
-        description: Optional comma-separated Nx projects to publish.
-        required: false
-        default: ''
         type: string
 
 permissions:
@@ -84,10 +79,4 @@ jobs:
       - name: Publish with Nx Release
         env:
           NPM_CONFIG_PROVENANCE: 'true'
-          PUBLISH_PROJECTS: ${{ inputs.projects }}
-        run: |
-          if [ -n "$PUBLISH_PROJECTS" ]; then
-            pnpm nx release publish --projects "$PUBLISH_PROJECTS"
-          else
-            pnpm nx release publish
-          fi
+        run: pnpm nx release publish

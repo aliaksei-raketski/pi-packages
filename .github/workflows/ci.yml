@@ -6,12 +6,13 @@ on:
       - main
   pull_request:
 
-permissions:
-  actions: read
-  contents: read
+permissions: {}
 
 jobs:
   main:
+    permissions:
+      actions: read
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -40,5 +41,16 @@ jobs:
       - name: Audit production dependencies
         run: pnpm run audit:prod
 
-      - name: Test projects with tests
-        run: pnpm run test
+      - name: Test projects in CI mode
+        run: pnpm run test:ci
+
+  release:
+    name: Release
+    needs: main
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      id-token: write
+    uses: ./.github/workflows/release.yml
+    with:
+      ci_sha: ${{ github.sha }}
