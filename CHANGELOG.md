@@ -1,3 +1,13 @@
+## 0.3.17 (2026-07-27)
+
+### 🩹 Fixes
+
+- **tmux-bash:** align guidance with enabled actions ([ba71869](https://github.com/aliaksei-raketski/pi-packages/commit/ba71869))
+
+### ❤️ Thank You
+
+- Aliaksei Raketski @aliaksei-raketski
+
 ## 0.3.16 (2026-07-27)
 
 ### 🚀 Features

@@ -1,6 +1,6 @@
 {
   "name": "@aliaksei-raketski/pi-continuation-gate-protocol",
-  "version": "0.3.16",
+  "version": "0.3.17",
   "type": "module",
   "description": "Shared continuation gate protocol for autonomous Pi extensions.",
   "keywords": [
